@@ -25,7 +25,7 @@ This block is written and re-added by `next dev` — verify at `node_modules/nex
 - 정체: 사내 Kubernetes 플랫폼(RKE2) 사용자 포털의 프론트엔드
 - 스택: **Next.js 16.3.1 (App Router) / React 19.2.8 / TypeScript 6.0.3 / Tailwind CSS v4 / shadcn-ui(new-york) / lucide-react / next-auth 5 beta**
 - 경로 alias: `@/*` → 프로젝트 루트 (`tsconfig.json`)
-- 패키지 매니저: npm (`package-lock.json` 기준). `node >= 20.9.0`
+- 패키지 매니저: npm (`package-lock.json` 기준). `node ^22.15.0 || ^24.0.0 || >=26.0.0`
 
 ### 명령어
 

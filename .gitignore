@@ -1,0 +1,37 @@
+.env
+.env.*
+# 봇 토큰은 확장자가 없어 *.token 규칙에 걸리지 않는다. 접두사로 통째로 막고 예시만 연다.
+environments/bot-token*
+!environments/bot-token-example
+environments/*.env
+environments/**/*.env
+!environments/*.env.example
+!environments/**/*.env.example
+__pycache__/
+*.pyc
+*.pem
+*.key
+*root-token*
+*unseal*
+*registry-token*
+*dns-api-token*
+*db-dump*
+kubeconfig
+*.kubeconfig
+/온프레미스_K8s_2인_공개서비스_3주_구축계획서_v0.5.pdf
+# RKE2 실 토큰이 들어간 사본은 커밋 금지 (rke/**/config.yaml 은 값 없는 템플릿만 커밋)
+rke/**/*.local.yaml
+evidence/**/raw-logs/
+# D4 매니페스트는 계약에서 생성하고 커밋한다. 임시 렌더 디렉터리는 제외한다.
+.rendered/
+/apps/portal-lite/ui/node_modules/
+/apps/portal-lite/ui/.next/
+/apps/portal-lite/ui/out/
+/apps/portal-lite/ui/*.tsbuildinfo
+# 로컬 개발 도구 설정 (Claude Code)
+.claude/
+# 봇 토큰 등 로컬 시크릿 보관 위치는 저장소 밖(/home/ubuntu/.secrets)을 쓴다
+*.token
+wildcard
+SADP Keycloak IAM_authentik_meta.xml
+.kube
