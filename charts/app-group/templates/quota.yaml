@@ -1,0 +1,60 @@
+{{- if .Values.quota.enabled }}
+{{- $cpu := include "app-group.quotaCPU" . }}
+{{- $memory := include "app-group.quotaMemory" . }}
+{{- if or (not $cpu) (not $memory) }}
+{{- fail "quota.enabled=true 인데 CPU/메모리 상한이 없다. platform.quota 계약값이나 quota.cpu/quota.memory 를 채워라" }}
+{{- end }}
+apiVersion: v1
+kind: ResourceQuota
+metadata:
+  name: {{ include "app-group.name" . }}-quota
+  namespace: {{ include "app-group.namespace" . }}
+  labels:
+    {{- include "app-group.labels" . | nindent 4 }}
+  annotations:
+    # AppGroup 하나가 사용자 1인 상한을 넘지 못하게 한다. 앱 개수가 늘어도 총량은 같다.
+    platform.example.io/source: contracts/platform-production.yaml spec.policy.userQuota
+spec:
+  hard:
+    requests.cpu: {{ $cpu | quote }}
+    requests.memory: {{ $memory | quote }}
+    limits.cpu: {{ $cpu | quote }}
+    limits.memory: {{ $memory | quote }}
+    pods: {{ include "app-group.quotaPods" . | quote }}
+    {{- with .Values.platform.appGroups.storage }}
+    {{- if or (lt (int .maxClaims) 1) (not .total) }}
+    {{- fail "AppGroup storage 계약에는 maxClaims와 total이 필요하다" }}
+    {{- end }}
+    persistentvolumeclaims: {{ .maxClaims | quote }}
+    requests.storage: {{ .total | quote }}
+    {{- end }}
+{{- end }}
+{{- if .Values.limitRange.enabled }}
+---
+apiVersion: v1
+kind: LimitRange
+metadata:
+  name: {{ include "app-group.name" . }}-limits
+  namespace: {{ include "app-group.namespace" . }}
+  labels:
+    {{- include "app-group.labels" . | nindent 4 }}
+spec:
+  limits:
+    - type: Container
+      {{- if .Values.quota.enabled }}
+      max:
+        cpu: {{ include "app-group.quotaCPU" . | quote }}
+        memory: {{ include "app-group.quotaMemory" . | quote }}
+      {{- end }}
+      min:
+        cpu: {{ .Values.limitRange.min.cpu | quote }}
+        memory: {{ .Values.limitRange.min.memory | quote }}
+      # ResourceQuota 가 limits.* 를 걸면 값이 없는 Pod 는 생성 자체가 거부된다.
+      # charts/app-profile 은 항상 채우지만, 직접 넣은 Pod 를 위해 기본값을 준다.
+      default:
+        cpu: {{ .Values.limitRange.default.cpu | quote }}
+        memory: {{ .Values.limitRange.default.memory | quote }}
+      defaultRequest:
+        cpu: {{ .Values.limitRange.defaultRequest.cpu | quote }}
+        memory: {{ .Values.limitRange.defaultRequest.memory | quote }}
+{{- end }}

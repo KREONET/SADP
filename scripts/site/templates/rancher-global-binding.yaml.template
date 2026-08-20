@@ -1,0 +1,7 @@
+# 전역 관리자. 계획서 7.2 의 platform-admin 에 해당한다.
+apiVersion: management.cattle.io/v3
+kind: GlobalRoleBinding
+metadata:
+  name: __BINDING_NAME__
+globalRoleName: __GLOBAL_ROLE__
+groupPrincipalName: __GROUP_PRINCIPAL__

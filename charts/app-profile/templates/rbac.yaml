@@ -1,0 +1,53 @@
+{{- if .Values.rbac.enabled }}
+{{- /*
+  Kubernetes API 읽기가 필요한 앱(카탈로그 실시간 상태 프로브 등)만 켠다.
+  권한은 아래 두 가지로 제한된다. 값으로 규칙을 넓힐 수 없다.
+    - discovery.k8s.io/endpointslices: get, list
+  watch/create/update/delete, Secret/Pod/Node 접근은 어떤 값으로도 만들 수 없다.
+  ClusterRole을 쓰지 않으므로 부여 범위는 항상 Namespace 안에 갇힌다.
+*/ -}}
+{{- $sa := include "app-profile.serviceAccountName" . -}}
+{{- $namespaces := include "app-profile.rbacNamespaces" . | fromYamlArray -}}
+apiVersion: v1
+kind: ServiceAccount
+metadata:
+  name: {{ $sa }}
+  namespace: {{ .Release.Namespace }}
+  labels:
+    {{- include "app-profile.labels" . | nindent 4 }}
+{{- /*
+  이 SA의 토큰은 Pod spec의 projected volume이 수명 제한(expirationSeconds)과 함께
+  발급한다. 자동 마운트를 끄면 다른 경로로 토큰이 새는 것을 막을 수 있다.
+*/}}
+automountServiceAccountToken: false
+{{- range $ns := $namespaces }}
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: Role
+metadata:
+  name: {{ include "app-profile.statusReaderName" $ }}
+  namespace: {{ $ns }}
+  labels:
+    {{- include "app-profile.labels" $ | nindent 4 }}
+rules:
+  - apiGroups: ["discovery.k8s.io"]
+    resources: ["endpointslices"]
+    verbs: ["get", "list"]
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: RoleBinding
+metadata:
+  name: {{ include "app-profile.statusReaderName" $ }}
+  namespace: {{ $ns }}
+  labels:
+    {{- include "app-profile.labels" $ | nindent 4 }}
+roleRef:
+  apiGroup: rbac.authorization.k8s.io
+  kind: Role
+  name: {{ include "app-profile.statusReaderName" $ }}
+subjects:
+  - kind: ServiceAccount
+    name: {{ $sa }}
+    namespace: {{ $.Release.Namespace }}
+{{- end }}
+{{- end }}

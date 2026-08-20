@@ -1,0 +1,41 @@
+/** 화면 7(서비스 카탈로그, `/services`) 문구. */
+
+export const ko = {
+  metaTitle: "서비스 카탈로그",
+  title: "플랫폼 대시보드",
+  catalogInfo: "카탈로그 안내",
+  catalogSettings: "카탈로그 설정",
+  addService: "새 서비스 추가",
+  iconAdminOnly: "관리자 전용",
+  iconBeta: "베타",
+  iconVerified: "검증됨",
+  metaRoles: "역할",
+  metaTeam: "담당팀",
+  actionAdminOnly: "관리자 전용",
+  actionDetails: "상세 보기",
+  actionVisit: "바로가기",
+  actionManage: "관리",
+  actionAccess: "접속",
+  emptyTitle: "조건에 맞는 서비스가 없습니다",
+  emptyDescription: "좌측 VISIBILITY / STATUS 필터를 다시 확인해 주세요.",
+};
+
+export const en: typeof ko = {
+  metaTitle: "Service Catalog",
+  title: "Platform Dashboard",
+  catalogInfo: "Catalog info",
+  catalogSettings: "Catalog settings",
+  addService: "Add Service",
+  iconAdminOnly: "Admin only",
+  iconBeta: "Beta",
+  iconVerified: "Verified",
+  metaRoles: "Roles",
+  metaTeam: "Team",
+  actionAdminOnly: "Admin Only",
+  actionDetails: "Details",
+  actionVisit: "Visit",
+  actionManage: "Manage",
+  actionAccess: "Access",
+  emptyTitle: "No services match your filters",
+  emptyDescription: "Review the VISIBILITY / STATUS filters on the left.",
+};

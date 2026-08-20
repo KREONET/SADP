@@ -1,0 +1,7 @@
+ui/node_modules
+ui/.next
+ui/.env
+ui/.env.*
+ui/*.tsbuildinfo
+ui/npm-debug.log*
+.git

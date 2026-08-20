@@ -1,0 +1,4 @@
+#!/usr/bin/env bash
+# 설치: ln -sf ../../scripts/pre-commit .git/hooks/pre-commit
+# CI 가 도는 것과 같은 가드를 커밋 전에 로컬에서 돌린다.
+exec bash "$(git rev-parse --show-toplevel)/scripts/ci-guard.sh"

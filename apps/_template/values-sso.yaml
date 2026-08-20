@@ -1,0 +1,50 @@
+# Generated oidc app example; copy to a new values file before editing.
+app:
+  name: sample-sso
+  project: research
+  environment: prod
+image:
+  repository: registry.example.invalid/example/sadp/sample-sso
+  tag: '0000000000000000000000000000000000000000'
+  digest: ''
+  pullPolicy: IfNotPresent
+imagePullSecrets:
+- forgejo-registry-pull
+service:
+  port: 8080
+  healthPath: /healthz
+exposure:
+  enabled: true
+  mode: external
+  host: sample-sso.sadp.example.invalid
+authentication:
+  mode: oidc
+configuration:
+  config:
+    APP_ENV: prod
+    LOG_LEVEL: info
+  externalSecrets:
+  - name: oidc-client
+    secretStore: openbao-sample-sso
+    remotePath: apps/research/prod/workloads/sadp-apps/eso-sample-sso
+    inject: false
+    keys:
+    - OIDC_CLIENT_SECRET
+    targetKeyMap:
+      OIDC_CLIENT_SECRET: client-secret
+  injection:
+    mode: envFrom
+  reload:
+    enabled: true
+    pausePeriod: 1m
+eso:
+  createSecretStore: true
+  role: portal-zone-app-eso
+oidc:
+  clientSecretName: ''
+  callbackPath: /oauth2/callback
+  logoutPath: /logout
+  allowedGroups:
+  - sample-sso-user
+networkPolicy:
+  egressMode: blocked

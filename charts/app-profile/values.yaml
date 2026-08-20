@@ -1,0 +1,215 @@
+# 기본값. platform.* 는 contracts/values-platform-production.yaml 이 덮어쓴다(직접 수정 금지).
+platform:
+  baseDomain: ""
+  appGroups:
+    # AppGroup values가 반드시 배포되어야 하는 Namespace 접두사. 계약이 채운다.
+    namespacePrefix: ""
+    maxServices: 0
+    storage:
+      storageClass: ""
+      volumeSize: ""
+      maxClaims: 0
+      total: ""
+  gateway:
+    namespace: ""
+    name: ""
+    sectionName: ""
+  openbao:
+    kvMount: kv
+    pathPrefix: apps
+    caConfigMap: openbao-ca
+    # AppGroup의 ClusterSecretStore가 OpenBao Namespace의 CA를 읽을 때만 사용한다.
+    # 단일 Zone 앱은 기존 namespaced SecretStore를 유지한다.
+    caConfigMapNamespace: ""
+    server: ""
+    authMount: kubernetes
+    audience: vault
+    roles:
+      zoneApp: ""
+      groupApp: ""
+      groupRegistry: ""
+  keycloak:
+    issuer: ""
+  network:
+    # networkPolicy.egressMode=web 이 0.0.0.0/0 에서 빼는 대역.
+    # contracts/values-platform-production.yaml 이 채운다. 비면 web 모드는 렌더에 실패한다.
+    internalCIDRs: []
+
+app:
+  name: ""
+  # AppGroup(Stack) 이름. 여러 앱을 한 Namespace 에 묶을 때만 채운다.
+  # 비어 있으면 기존 단일 앱 배포와 완전히 같다.
+  group: ""
+  project: ""
+  environment: beta
+
+# 0은 승인된 유지보수/테스트 페이지 중지에만 사용한다.
+replicaCount: 1
+
+image:
+  repository: ""
+  tag: ""        # commit SHA. latest 금지
+  digest: ""     # 있으면 digest 우선
+  pullPolicy: IfNotPresent
+  # true/false를 명시하면 그 값을 따른다. null은 이전 Portal 생성물 호환용으로,
+  # Docker Hub image만 public으로 판별하고 나머지는 기존처럼 Secret을 사용한다.
+  usePullSecret: null
+
+# OCI private registry 사용 시 Namespace에 미리 만든 dockerconfigjson Secret 이름.
+imagePullSecrets: []
+
+service:
+  # false는 포트를 듣지 않는 Compose worker 전용이다. Service/HTTPRoute/수신 NP/probe를
+  # 만들지 않지만 Deployment와 egress NetworkPolicy는 그대로 유지한다.
+  enabled: true
+  port: 8080
+  # http | tcp | none. 기존 단일 앱은 /healthz HTTP probe를 계속 쓰고,
+  # Compose의 DB/캐시는 tcp를 선택한다. none은 probe를 제공하지 못하는 앱에만 쓴다.
+  probe:
+    type: http
+  healthPath: /healthz
+
+# 노출과 인증은 별개다.
+#   exposure.mode=external  Service + HTTPRoute + 외부 도메인
+#   exposure.mode=internal  Service 만. 같은 Namespace/AppGroup 에서 Service DNS 로만 접근
+exposure:
+  # false 는 승인된 유지보수/중지에만 쓴다(replicaCount=0 과 함께).
+  enabled: true
+  # external | internal. 비워 두면 아래 type 에서 유도하고, 그것도 없으면 external 이다.
+  # 기본값을 "" 로 두는 이유는 하위호환이다. 여기에 external 을 박으면 type=oidc 만 적은
+  # 기존 values 의 인증이 조용히 꺼진다.
+  mode: ""
+  # deprecated: public | oidc. mode 들이 비어 있을 때만 해석한다.
+  #   public -> exposure.mode=external + authentication.mode=none
+  #   oidc   -> exposure.mode=external + authentication.mode=oidc
+  type: ""
+  host: ""
+  # baseDomain 자체를 쓰는 플랫폼 Portal만 생성기가 apex-<listener>를 넣는다.
+  sectionName: ""
+
+# 외부에서 들어올 때 SSO 로그인을 요구할지. exposure.mode=external 에서만 oidc 를 쓸 수 있다.
+authentication:
+  mode: ""       # none | oidc (비우면 exposure.type 에서 유도)
+
+configuration:
+  config: {}
+  externalSecrets: []
+  injection:
+    mode: envFrom   # envFrom | env | volume
+    mountPath: /etc/app
+  reload:
+    enabled: true
+    pausePeriod: "1m"
+
+eso:
+  # 앱 Namespace 전용 SecretStore/ServiceAccount를 이 Chart가 생성할지 여부
+  createSecretStore: true
+  serviceAccountName: ""   # 비우면 eso-<app>
+  # 비우면 신규 workload 경로는 플랫폼 고정 role을 쓴다. 기존 단일 앱 exact 경로만
+  # 하위호환으로 eso-<project>-<env>-<app>를 유도한다.
+  role: ""
+
+oidc:
+  clientSecretName: ""     # 비우면 <app>-oidc-client
+  callbackPath: /oauth2/callback
+  logoutPath: /logout
+  # 하나의 Keycloak realm을 여러 시스템이 나눠 쓴다. 로그인만으로 모든 시스템에 들어갈 수
+  # 없도록, 시스템마다 허용 그룹을 직접 정한다. 비우면 realm 로그인만으로 통과하므로
+  # 시스템 간 경계가 사라진다.
+  allowedGroups: []
+  # Keycloak group membership mapper가 토큰에 넣는 claim 이름이다.
+  groupsClaim: groups
+  # Envoy가 group claim을 읽으려면 ID token을 upstream 헤더로 넘겨야 한다.
+  idTokenHeader: Authorization
+  # JWKS 경로. Keycloak 표준 경로를 issuer 뒤에 붙인다.
+  jwksPath: /protocol/openid-connect/certs
+
+resources:
+  requests:
+    cpu: 100m
+    memory: 128Mi
+  limits:
+    cpu: 500m
+    memory: 512Mi
+
+podSecurity:
+  # restricted | postgres | redis. DB preset은 UID/GID와 쓰기 가능한 경로만 고정해서
+  # 열며 hostPath나 raw volume 입력은 받지 않는다. persistence가 켜지면 data 경로는 PVC다.
+  profile: restricted
+  runAsUser: 10001
+  runAsGroup: 10001
+
+# 재시작·재배포 후에도 남아야 하는 상태나 Compose named volume을 위한 PVC.
+# 기본값 false: 상태 없는 앱은 아무것도 바뀌지 않는다.
+persistence:
+  enabled: false
+  # 비우면 이 Chart가 <app>-data PVC를 만든다. 이미 있는 PVC를 쓰려면 이름을 적는다.
+  existingClaim: ""
+  # RWO + Deployment strategy=Recreate 조합이 기본이다. RWX는 동시 쓰기를 허용하므로
+  # append-only 로그에는 쓰지 않는다(쓰려면 replicaCount와 잠금 설계를 함께 봐야 한다).
+  accessMode: ReadWriteOnce
+  size: 1Gi
+  # 비우면 클러스터 기본 StorageClass를 쓴다.
+  storageClass: ""
+  mountPath: /data
+  # helm uninstall로 신청 이력이 사라지지 않게 기본으로 남긴다.
+  keepOnDelete: true
+
+# Kubernetes API 읽기가 필요한 앱만 켠다. 켜도 부여되는 권한은 Chart에 고정되어 있고
+# (discovery.k8s.io/endpointslices get,list) 값으로 넓힐 수 없다.
+rbac:
+  enabled: false
+  serviceAccountName: ""   # 비우면 <app>
+  # Role/RoleBinding을 만들 Namespace 목록. 비우면 릴리스 Namespace 하나.
+  # ClusterRole을 쓰지 않으므로 여기 적은 Namespace 밖은 읽을 수 없다.
+  namespaces: []
+  # projected token 수명(초). 최소 600. kubelet이 만료 전에 갱신해 준다.
+  tokenExpirationSeconds: 3600
+  tokenAudience: https://kubernetes.default.svc.cluster.local
+
+# 포털이 신규 앱 Secret을 OpenBao에 최초 저장할 때만 켠다. 사람의 수정·삭제 권한과
+# 분리된 Kubernetes auth role을 사용하며 일반 앱에서는 반드시 false다.
+openbaoWriter:
+  enabled: false
+  audience: vault
+  tokenExpirationSeconds: 3600
+  mountPath: /var/run/openbao
+  caConfigMap: openbao-ca
+
+# portal-lite 전용 자동 빌드/배포 권한. 일반 앱에서는 반드시 false다.
+# Role은 단일 Zone의 Job/Deployment와 지정 Argo Namespace의 Application 삭제에만 쓴다.
+portalPipeline:
+  enabled: false
+  argoNamespace: devtroncd
+
+# Namespace default-deny와 함께 사용한다. 앱은 DNS 외 egress를 명시적으로 열어야 한다.
+networkPolicy:
+  enabled: true
+  # blocked  DNS + 아래에 적은 내부 앱/Pod 만. 인터넷 없음.
+  # web      위 + 인터넷 TCP 80/443 (platform.network.internalCIDRs 는 except 로 제외).
+  #          도메인 단위 허용이 아니다. FQDN 정책은 Cilium 같은 별도 CNI 기능이 필요하다.
+  # custom   위 + allowedCIDRs 로 직접 적은 목적지.
+  # 기본이 custom 인 이유는 하위호환이다(기존 values 는 allowedCIDRs 만 갖고 있다).
+  egressMode: custom
+  dns:
+    namespace: kube-system
+    podLabels:
+      k8s-app: kube-dns
+  # 같은 AppGroup(Namespace) 안의 앱을 이름으로 지정한다. [{app, port, protocol}]
+  # 렌더 단계에서 app.kubernetes.io/name selector 로 바뀐다.
+  allowedApps: []
+  # Service/VIP가 DNAT된 뒤 정책이 평가되는 CNI를 위해 backend Pod를
+  # namespace+label로 최소 허용한다.
+  allowedPods: []
+  # egressMode=custom 에서만 쓸 수 있다.
+  allowedCIDRs: []
+  ingress:
+    # 비우면 app.group 앱과 internal 단일 앱에서 켜진다. internal 단일 앱은 같은
+    # Release Namespace만 허용해 다른 Namespace의 ClusterIP 직접 접근을 막는다.
+    # true 로 켜면 여기 적힌 앱과 (외부 노출이면) Gateway 외에는 이 앱에 닿지 못한다.
+    enabled: null
+    allowedApps: []
+  nms:
+    enabled: false
+    destinationCIDR: ""
+    port: 0

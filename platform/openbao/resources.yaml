@@ -1,0 +1,73 @@
+# OpenBao API의 hop-by-hop TLS 인증서. 외부 wildcard 인증서와 별도인 내부 CA 체인이다.
+apiVersion: cert-manager.io/v1
+kind: Certificate
+metadata:
+  name: openbao-server
+  namespace: openbao
+spec:
+  secretName: openbao-server-tls
+  duration: 2160h
+  renewBefore: 360h
+  privateKey:
+    algorithm: ECDSA
+    size: 256
+    rotationPolicy: Always
+  issuerRef:
+    group: cert-manager.io
+    kind: ClusterIssuer
+    name: beta-internal-ca-issuer
+  dnsNames:
+    - openbao
+    - openbao.openbao
+    - openbao.openbao.svc
+    - openbao.openbao.svc.cluster.local
+    - openbao-active
+    - openbao-active.openbao
+    - openbao-active.openbao.svc
+    - openbao-active.openbao.svc.cluster.local
+    - openbao-internal.openbao.svc.cluster.local
+    - "*.openbao-internal.openbao.svc.cluster.local"
+---
+# Envoy가 OpenBao 백엔드 인증서를 내부 CA로 검증한다. openbao-ca는 bootstrap script가
+# beta-internal-ca-keypair의 ca.crt만 복사해 생성하며 private key는 복사하지 않는다.
+apiVersion: gateway.networking.k8s.io/v1
+kind: BackendTLSPolicy
+metadata:
+  name: openbao
+  namespace: openbao
+spec:
+  targetRefs:
+    - group: ""
+      kind: Service
+      name: openbao-active
+  validation:
+    caCertificateRefs:
+      - group: ""
+        kind: ConfigMap
+        name: openbao-ca
+    hostname: openbao-active.openbao.svc.cluster.local
+---
+# AppGroup ESO 역할은 Namespace label selector로 app-* 경계만 허용한다. OpenBao가
+# selector를 판정하려면 Namespace label을 읽어야 하지만, 다른 객체의 클러스터 권한은
+# 필요하지 않다.
+apiVersion: rbac.authorization.k8s.io/v1
+kind: ClusterRole
+metadata:
+  name: openbao-namespace-label-reader
+rules:
+  - apiGroups: [""]
+    resources: ["namespaces"]
+    verbs: ["get"]
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: ClusterRoleBinding
+metadata:
+  name: openbao-namespace-label-reader
+roleRef:
+  apiGroup: rbac.authorization.k8s.io
+  kind: ClusterRole
+  name: openbao-namespace-label-reader
+subjects:
+  - kind: ServiceAccount
+    name: openbao
+    namespace: openbao

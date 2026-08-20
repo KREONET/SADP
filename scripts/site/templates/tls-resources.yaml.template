@@ -1,0 +1,64 @@
+# 자동 생성 파일. contracts/platform-production.yaml을 수정한 뒤 scripts/site/render-exposure.py를 실행한다.
+# DNS-01 자격증명 Secret(__CREDENTIAL_SECRET_NAME__)은 이 파일에 포함되지 않는다.
+# 부트스트랩 Secret 이므로 cert-manager Namespace 에 별도로 생성한다(platform/README.md 참고).
+apiVersion: cert-manager.io/v1
+kind: ClusterIssuer
+metadata:
+  name: __ISSUER_NAME__-staging
+spec:
+  acme:
+    server: __ACME_STAGING_SERVER__
+    email: __ACME_EMAIL__
+    privateKeySecretRef:
+      name: __ACCOUNT_KEY_SECRET__-staging
+    solvers:
+      - selector:
+          dnsZones:
+            - __DNS_ZONE__
+        dns01:
+__SOLVER_BLOCK__
+---
+apiVersion: cert-manager.io/v1
+kind: ClusterIssuer
+metadata:
+  name: __ISSUER_NAME__
+spec:
+  acme:
+    server: __ACME_PRODUCTION_SERVER__
+    email: __ACME_EMAIL__
+    privateKeySecretRef:
+      name: __ACCOUNT_KEY_SECRET__
+    solvers:
+      - selector:
+          dnsZones:
+            - __DNS_ZONE__
+        dns01:
+__SOLVER_BLOCK__
+---
+# wildcard 는 한 단계만 덮으므로 apex(__BASE_DOMAIN__)를 dnsNames 에 함께 넣는다.
+# Secret 은 Gateway 와 같은 Namespace 에 생성되어야 ReferenceGrant 없이 참조할 수 있다.
+apiVersion: cert-manager.io/v1
+kind: Certificate
+metadata:
+  name: __ACTIVE_CERTIFICATE_NAME__
+  namespace: __GATEWAY_NAMESPACE__
+spec:
+  secretName: __ACTIVE_TLS_SECRET__
+  commonName: "*.__BASE_DOMAIN__"
+  dnsNames:
+    - "*.__BASE_DOMAIN__"
+    - "__BASE_DOMAIN__"
+  issuerRef:
+    group: cert-manager.io
+    kind: ClusterIssuer
+    name: __ACTIVE_ISSUER_NAME__
+  privateKey:
+    algorithm: RSA
+    size: 2048
+    encoding: PKCS1
+    rotationPolicy: Always
+  usages:
+    - digital signature
+    - key encipherment
+    - server auth
+  revisionHistoryLimit: 3

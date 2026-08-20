@@ -1,0 +1,238 @@
+# 자동 생성 파일. contracts/platform-production.yaml을 수정한 뒤 scripts/site/render-exposure.py를 실행한다.
+apiVersion: metallb.io/v1beta1
+kind: IPAddressPool
+metadata:
+  name: sadp-envoy-vip
+  namespace: metallb-system
+spec:
+  addresses:
+    - 10.20.30.200-10.20.30.220
+  autoAssign: false
+---
+apiVersion: metallb.io/v1beta1
+kind: L2Advertisement
+metadata:
+  name: envoy-gateway-l2
+  namespace: metallb-system
+spec:
+  ipAddressPools:
+    - sadp-envoy-vip
+---
+apiVersion: v1
+kind: Namespace
+metadata:
+  name: sadp-apps
+  annotations:
+    field.cattle.io/projectId: local:proj-sadp-apps
+  labels:
+    platform.example.io/route: allowed
+---
+apiVersion: v1
+kind: Namespace
+metadata:
+  name: sadp-platform
+  annotations:
+    field.cattle.io/projectId: local:proj-sadp-platform
+  labels:
+    platform.example.io/route: allowed
+---
+apiVersion: gateway.envoyproxy.io/v1alpha1
+kind: EnvoyProxy
+metadata:
+  name: sadp-envoy-proxy
+  namespace: envoy-gateway-system
+spec:
+  provider:
+    type: Kubernetes
+    kubernetes:
+      envoyService:
+        annotations:
+          metallb.io/address-pool: sadp-envoy-vip
+          metallb.io/loadBalancerIPs: 10.20.30.200
+
+---
+apiVersion: gateway.networking.k8s.io/v1
+kind: GatewayClass
+metadata:
+  name: envoy-public
+spec:
+  controllerName: gateway.envoyproxy.io/gatewayclass-controller
+---
+# HTTPS listener 와 HTTP->HTTPS redirect HTTPRoute 는 TLS 입력이 확정되면 이 Gateway 뒤에 붙는다.
+# scripts/site/templates/exposure-https.yaml.template 참고. Gateway 는 이 파일의 마지막 문서여야 한다.
+apiVersion: gateway.networking.k8s.io/v1
+kind: Gateway
+metadata:
+  name: sadp-gateway
+  namespace: envoy-gateway-system
+spec:
+  gatewayClassName: envoy-public
+  addresses:
+    - type: IPAddress
+      value: 10.20.30.200
+  infrastructure:
+    parametersRef:
+      group: gateway.envoyproxy.io
+      kind: EnvoyProxy
+      name: sadp-envoy-proxy
+  listeners:
+    - name: http
+      hostname: "*.sadp.example.invalid"
+      protocol: HTTP
+      port: 80
+      allowedRoutes:
+        namespaces:
+          from: Selector
+          selector:
+            matchLabels:
+              platform.example.io/route: allowed
+        kinds:
+          - group: gateway.networking.k8s.io
+            kind: HTTPRoute
+    # wildcard 인증서는 apex도 포함하지만 "*.example" listener 자체는 apex와 일치하지
+    # 않는다. Portal을 baseDomain에 둘 수 있도록 정확한 hostname listener를 따로 둔다.
+    - name: apex-http
+      hostname: "sadp.example.invalid"
+      protocol: HTTP
+      port: 80
+      allowedRoutes:
+        namespaces:
+          from: Selector
+          selector:
+            matchLabels:
+              platform.example.io/route: allowed
+        kinds:
+          - group: gateway.networking.k8s.io
+            kind: HTTPRoute
+---
+apiVersion: gateway.networking.k8s.io/v1
+kind: HTTPRoute
+metadata:
+  name: rancher
+  namespace: sadp-platform
+spec:
+  parentRefs:
+    - group: gateway.networking.k8s.io
+      kind: Gateway
+      namespace: envoy-gateway-system
+      name: sadp-gateway
+      sectionName: http
+  hostnames:
+    - rancher.sadp.example.invalid
+  rules:
+    - matches:
+        - path:
+            type: PathPrefix
+            value: /
+      backendRefs:
+        - group: ""
+          kind: Service
+          namespace: cattle-system
+          name: rancher
+          port: 80
+---
+# HTTPRoute 가 다른 Namespace 의 Service 를 backendRef 로 쓰려면 대상 Namespace 의 허가가 필요하다.
+# 이 방식이면 Gateway 의 allowedRouteNamespaces 를 늘리지 않고, 컴포넌트 Application 의
+# CreateNamespace 소유권과도 충돌하지 않는다.
+apiVersion: gateway.networking.k8s.io/v1beta1
+kind: ReferenceGrant
+metadata:
+  name: rancher-from-platform-routes
+  namespace: cattle-system
+spec:
+  from:
+    - group: gateway.networking.k8s.io
+      kind: HTTPRoute
+      namespace: sadp-platform
+  to:
+    - group: ""
+      kind: Service
+      name: rancher
+---
+apiVersion: gateway.networking.k8s.io/v1
+kind: HTTPRoute
+metadata:
+  name: sso
+  namespace: sadp-platform
+spec:
+  parentRefs:
+    - group: gateway.networking.k8s.io
+      kind: Gateway
+      namespace: envoy-gateway-system
+      name: sadp-gateway
+      sectionName: http
+  hostnames:
+    - sso.sadp.example.invalid
+  rules:
+    - matches:
+        - path:
+            type: PathPrefix
+            value: /
+      backendRefs:
+        - group: ""
+          kind: Service
+          namespace: keycloak
+          name: keycloak
+          port: 8080
+---
+# HTTPRoute 가 다른 Namespace 의 Service 를 backendRef 로 쓰려면 대상 Namespace 의 허가가 필요하다.
+# 이 방식이면 Gateway 의 allowedRouteNamespaces 를 늘리지 않고, 컴포넌트 Application 의
+# CreateNamespace 소유권과도 충돌하지 않는다.
+apiVersion: gateway.networking.k8s.io/v1beta1
+kind: ReferenceGrant
+metadata:
+  name: sso-from-platform-routes
+  namespace: keycloak
+spec:
+  from:
+    - group: gateway.networking.k8s.io
+      kind: HTTPRoute
+      namespace: sadp-platform
+  to:
+    - group: ""
+      kind: Service
+      name: keycloak
+---
+apiVersion: gateway.networking.k8s.io/v1
+kind: HTTPRoute
+metadata:
+  name: openbao
+  namespace: sadp-platform
+spec:
+  parentRefs:
+    - group: gateway.networking.k8s.io
+      kind: Gateway
+      namespace: envoy-gateway-system
+      name: sadp-gateway
+      sectionName: http
+  hostnames:
+    - openbao.sadp.example.invalid
+  rules:
+    - matches:
+        - path:
+            type: PathPrefix
+            value: /
+      backendRefs:
+        - group: ""
+          kind: Service
+          namespace: openbao
+          name: openbao-active
+          port: 8200
+---
+# HTTPRoute 가 다른 Namespace 의 Service 를 backendRef 로 쓰려면 대상 Namespace 의 허가가 필요하다.
+# 이 방식이면 Gateway 의 allowedRouteNamespaces 를 늘리지 않고, 컴포넌트 Application 의
+# CreateNamespace 소유권과도 충돌하지 않는다.
+apiVersion: gateway.networking.k8s.io/v1beta1
+kind: ReferenceGrant
+metadata:
+  name: openbao-from-platform-routes
+  namespace: openbao
+spec:
+  from:
+    - group: gateway.networking.k8s.io
+      kind: HTTPRoute
+      namespace: sadp-platform
+  to:
+    - group: ""
+      kind: Service
+      name: openbao-active

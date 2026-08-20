@@ -1,0 +1,6 @@
+apiVersion: v2
+name: app-profile
+description: 사용자 앱 표준 프로필 Chart (Deployment/Service/ConfigMap/ExternalSecret/HTTPRoute/SecurityPolicy)
+type: application
+version: 0.1.0
+appVersion: "0.1.0"

@@ -1,0 +1,85 @@
+"use client"
+
+import * as React from "react"
+import { type VariantProps } from "class-variance-authority"
+import { ToggleGroup as ToggleGroupPrimitive } from "radix-ui"
+
+import { cn } from "@/lib/utils"
+import { toggleVariants } from "@/components/ui/toggle"
+
+const ToggleGroupContext = React.createContext<
+  VariantProps<typeof toggleVariants> & {
+    spacing?: number
+  }
+>({
+  size: "default",
+  variant: "default",
+  spacing: 0,
+})
+
+function ToggleGroup({
+  className,
+  variant,
+  size,
+  spacing = 0,
+  children,
+  ...props
+}: React.ComponentProps<typeof ToggleGroupPrimitive.Root> &
+  VariantProps<typeof toggleVariants> & {
+    spacing?: number
+  }) {
+  return (
+    <ToggleGroupPrimitive.Root
+      data-slot="toggle-group"
+      data-variant={variant}
+      data-size={size}
+      data-spacing={spacing}
+      // 플랫폼 CSP 가 `style-src 'self' 'nonce-...'` 라서 inline style 속성은 브라우저가 차단한다.
+      // (nonce 가 있으면 'unsafe-inline' 이 무시되고, style 속성은 nonce 로 허용할 수 없다.)
+      // 그래서 CSS 변수 주입 대신 data-spacing 기반 정적 클래스로 gap 을 준다.
+      className={cn(
+        "group/toggle-group flex w-fit items-center gap-0 rounded-md data-[spacing=1]:gap-1 data-[spacing=2]:gap-2 data-[spacing=default]:data-[variant=outline]:shadow-xs",
+        className
+      )}
+      {...props}
+    >
+      <ToggleGroupContext.Provider value={{ variant, size, spacing }}>
+        {children}
+      </ToggleGroupContext.Provider>
+    </ToggleGroupPrimitive.Root>
+  )
+}
+
+function ToggleGroupItem({
+  className,
+  children,
+  variant,
+  size,
+  ...props
+}: React.ComponentProps<typeof ToggleGroupPrimitive.Item> &
+  VariantProps<typeof toggleVariants>) {
+  const context = React.useContext(ToggleGroupContext)
+
+  return (
+    <ToggleGroupPrimitive.Item
+      data-slot="toggle-group-item"
+      data-variant={context.variant || variant}
+      data-size={context.size || size}
+      data-spacing={context.spacing}
+      className={cn(
+        toggleVariants({
+          variant: context.variant || variant,
+          size: context.size || size,
+        }),
+        "w-auto min-w-0 shrink-0 px-3 focus:z-10 focus-visible:z-10",
+        "data-[spacing=0]:rounded-none data-[spacing=0]:shadow-none data-[spacing=0]:first:rounded-l-md data-[spacing=0]:last:rounded-r-md data-[spacing=0]:data-[variant=outline]:border-l-0 data-[spacing=0]:data-[variant=outline]:first:border-l",
+        className
+      )}
+      {...props}
+    >
+      {children}
+    </ToggleGroupPrimitive.Item>
+  )
+}
+
+export { ToggleGroup, ToggleGroupItem }

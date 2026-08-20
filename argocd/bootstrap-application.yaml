@@ -1,0 +1,23 @@
+apiVersion: argoproj.io/v1alpha1
+kind: Application
+metadata:
+  name: platform-bootstrap
+  namespace: devtroncd
+spec:
+  project: platform-system
+  source:
+    repoURL: https://forgejo.example.invalid/example/sadp.git
+    targetRevision: main
+    path: argocd/applications
+    directory:
+      recurse: true
+  destination:
+    server: https://kubernetes.default.svc
+    namespace: devtroncd
+  syncPolicy:
+    automated:
+      prune: false
+      selfHeal: true
+    syncOptions:
+    - CreateNamespace=true
+    - PruneLast=true

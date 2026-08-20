@@ -1,0 +1,49 @@
+apiVersion: argoproj.io/v1alpha1
+kind: Application
+metadata:
+  name: openbao
+  namespace: devtroncd
+  annotations:
+    argocd.argoproj.io/sync-wave: '-15'
+spec:
+  project: platform-system
+  sources:
+  - chart: openbao
+    repoURL: https://openbao.github.io/openbao-helm
+    targetRevision: 0.28.6
+    helm:
+      releaseName: openbao
+      valueFiles:
+      - $values/platform/openbao/values-beta.yaml
+  - repoURL: https://forgejo.example.invalid/example/sadp.git
+    targetRevision: main
+    ref: values
+  destination:
+    namespace: openbao
+    server: https://kubernetes.default.svc
+  syncPolicy:
+    automated:
+      prune: false
+      selfHeal: true
+    syncOptions:
+    - CreateNamespace=true
+    - ServerSideApply=true
+    retry:
+      limit: 10
+      backoff:
+        duration: 10s
+        factor: 2
+        maxDuration: 3m
+  ignoreDifferences:
+  - group: apps
+    kind: Deployment
+    jqPathExpressions:
+    - .status.terminatingReplicas
+  - group: apps
+    kind: ReplicaSet
+    jqPathExpressions:
+    - .status.terminatingReplicas
+  - group: apps
+    kind: StatefulSet
+    jqPathExpressions:
+    - .spec.volumeClaimTemplates[].status

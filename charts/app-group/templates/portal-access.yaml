@@ -1,0 +1,43 @@
+{{- if .Values.portalAccess.enabled }}
+{{- $serviceAccount := default .Values.platform.portal.serviceAccountName .Values.portalAccess.serviceAccountName }}
+{{- $serviceAccountNamespace := default .Values.platform.portal.namespace .Values.portalAccess.serviceAccountNamespace }}
+{{- if or (not $serviceAccount) (not $serviceAccountNamespace) }}
+{{- fail "portalAccess.enabled=true 이면 포털 ServiceAccount 이름과 Namespace 가 필요하다(platform.portal 계약값 확인)" }}
+{{- end }}
+{{- /*
+  포털은 AppGroup Namespace 의 배포 상태를 읽어 사용자에게 진행 상황을 보여 준다.
+  AppGroup 은 나중에 생기므로 포털 Chart 에 Namespace 를 미리 적을 수 없다. 그래서
+  Namespace 를 만드는 이 Chart 가 읽기 권한만 함께 만든다.
+  쓰기/삭제는 주지 않는다 — 실제 변경은 Argo CD 가 Git 을 보고 한다.
+*/}}
+apiVersion: rbac.authorization.k8s.io/v1
+kind: Role
+metadata:
+  name: portal-status-reader
+  namespace: {{ include "app-group.namespace" . }}
+  labels:
+    {{- include "app-group.labels" . | nindent 4 }}
+rules:
+  - apiGroups: ["apps"]
+    resources: ["deployments"]
+    verbs: ["get", "list"]
+  - apiGroups: [""]
+    resources: ["pods"]
+    verbs: ["get", "list"]
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: RoleBinding
+metadata:
+  name: portal-status-reader
+  namespace: {{ include "app-group.namespace" . }}
+  labels:
+    {{- include "app-group.labels" . | nindent 4 }}
+roleRef:
+  apiGroup: rbac.authorization.k8s.io
+  kind: Role
+  name: portal-status-reader
+subjects:
+  - kind: ServiceAccount
+    name: {{ $serviceAccount }}
+    namespace: {{ $serviceAccountNamespace }}
+{{- end }}

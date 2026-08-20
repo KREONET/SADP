@@ -1,0 +1,42 @@
+# Generated internal app example; copy to a new values file before editing.
+app:
+  name: sample-internal
+  group: sample-stack
+  project: research
+  environment: prod
+image:
+  repository: registry.example.invalid/example/sadp/sample-internal
+  tag: '0000000000000000000000000000000000000000'
+  digest: ''
+  pullPolicy: IfNotPresent
+imagePullSecrets:
+- forgejo-registry-pull
+service:
+  port: 5432
+  healthPath: /healthz
+exposure:
+  enabled: true
+  mode: internal
+  host: ''
+authentication:
+  mode: none
+configuration:
+  config:
+    APP_ENV: prod
+    LOG_LEVEL: info
+  externalSecrets: []
+  injection:
+    mode: envFrom
+  reload:
+    enabled: true
+    pausePeriod: 1m
+eso:
+  createSecretStore: false
+networkPolicy:
+  egressMode: blocked
+  ingress:
+    enabled: true
+    allowedApps:
+    - app: sample-public
+      protocol: TCP
+      port: 5432

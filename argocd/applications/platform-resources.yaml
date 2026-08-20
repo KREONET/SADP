@@ -1,0 +1,41 @@
+apiVersion: argoproj.io/v1alpha1
+kind: Application
+metadata:
+  name: platform-resources
+  namespace: devtroncd
+  annotations:
+    argocd.argoproj.io/sync-wave: '-10'
+spec:
+  project: platform-system
+  source:
+    repoURL: https://forgejo.example.invalid/example/sadp.git
+    targetRevision: main
+    path: platform
+    directory:
+      recurse: true
+      exclude: '{external-secrets/values-beta.yaml,openbao/values-beta.yaml,reloader/values-beta.yaml}'
+  destination:
+    namespace: sadp-platform
+    server: https://kubernetes.default.svc
+  syncPolicy:
+    automated:
+      prune: false
+      selfHeal: true
+    syncOptions:
+    - CreateNamespace=true
+    - SkipDryRunOnMissingResource=true
+    retry:
+      limit: 10
+      backoff:
+        duration: 10s
+        factor: 2
+        maxDuration: 3m
+  ignoreDifferences:
+  - group: apps
+    kind: Deployment
+    jqPathExpressions:
+    - .status.terminatingReplicas
+  - group: apps
+    kind: ReplicaSet
+    jqPathExpressions:
+    - .status.terminatingReplicas

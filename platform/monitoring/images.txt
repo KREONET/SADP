@@ -1,0 +1,25 @@
+# 모니터링 스택이 요구하는 컨테이너 이미지. scripts/cluster/sync-external-images.sh 가 읽는다.
+#
+# 워커 노드는 인터넷 egress 가 차단돼 있어 registry 에서 직접 받지 못한다. 설치 전에 이
+# 목록을 모든 노드 containerd 에 배포해야 한다.
+#
+# 차트 버전을 올리면 이 목록도 함께 갱신한다. 실제 요구 이미지는 렌더 결과에서 뽑는다:
+#   helm template p prometheus-community/prometheus --version <ver> \
+#     -f platform/monitoring/prometheus-values.yaml | grep -oP 'image:\s*"?\K[^"\s]+' | sort -u
+#
+# digest 가 붙은 참조(tag@sha256:...)는 쓰지 않는다. docker save 로 옮기면 manifest digest 가
+# 사라져 노드에서 해석되지 않는다. 값 파일에서 태그만 쓰도록 고정해 둔다.
+
+# prometheus-community/prometheus 29.21.0 (app v3.13.2)
+quay.io/prometheus/prometheus:v3.13.2
+quay.io/prometheus/node-exporter:v1.12.1
+quay.io/prometheus-operator/prometheus-config-reloader:v0.93.0
+registry.k8s.io/kube-state-metrics/kube-state-metrics:v2.19.1
+
+# grafana/loki 7.2.0 (app 3.6.11), SingleBinary
+docker.io/grafana/loki:3.6.11
+docker.io/kiwigrid/k8s-sidecar:2.5.0
+
+# grafana/alloy 1.11.1 (app v1.18.1)
+docker.io/grafana/alloy:v1.18.1
+quay.io/prometheus-operator/prometheus-config-reloader:v0.91.0

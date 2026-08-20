@@ -1,0 +1,673 @@
+{
+  "$schema": "http://json-schema.org/draft-07/schema#",
+  "title": "app-profile values",
+  "type": "object",
+  "required": [
+    "platform",
+    "app",
+    "image",
+    "service",
+    "exposure"
+  ],
+  "properties": {
+    "platform": {
+      "type": "object",
+      "required": [
+        "baseDomain",
+        "gateway"
+      ],
+      "properties": {
+        "baseDomain": {
+          "type": "string",
+          "minLength": 1
+        },
+        "appGroups": {
+          "type": "object",
+          "additionalProperties": false,
+          "properties": {
+            "namespacePrefix": {
+              "type": "string",
+              "pattern": "^$|^[a-z0-9]([-a-z0-9]*)?$",
+              "maxLength": 23
+            },
+            "maxServices": { "type": "integer", "minimum": 0, "maximum": 20 },
+            "storage": {
+              "type": "object",
+              "additionalProperties": false,
+              "properties": {
+                "storageClass": { "type": "string", "pattern": "^$|^[a-z0-9]([-a-z0-9.]*[a-z0-9])?$" },
+                "volumeSize": { "type": "string", "pattern": "^$|^[1-9][0-9]*(Mi|Gi|Ti)$" },
+                "maxClaims": { "type": "integer", "minimum": 0, "maximum": 20 },
+                "total": { "type": "string", "pattern": "^$|^[1-9][0-9]*(Mi|Gi|Ti)$" }
+              }
+            }
+          }
+        },
+        "gateway": {
+          "type": "object",
+          "required": [
+            "namespace",
+            "name",
+            "sectionName"
+          ],
+          "properties": {
+            "namespace": {
+              "type": "string",
+              "minLength": 1
+            },
+            "name": {
+              "type": "string",
+              "minLength": 1
+            },
+            "sectionName": {
+              "type": "string",
+              "minLength": 1
+            }
+          }
+        },
+        "openbao": {
+          "type": "object",
+          "properties": {
+            "roles": {
+              "type": "object",
+              "additionalProperties": false,
+              "properties": {
+                "zoneApp": { "type": "string" },
+                "groupApp": { "type": "string" },
+                "groupRegistry": { "type": "string" }
+              }
+            }
+          }
+        },
+        "keycloak": {
+          "type": "object"
+        },
+        "network": {
+          "type": "object",
+          "additionalProperties": false,
+          "comment": "networkPolicy.egressMode=web 이 0.0.0.0/0 에서 뺄 대역. 계약이 채운다.",
+          "properties": {
+            "internalCIDRs": {
+              "type": "array",
+              "uniqueItems": true,
+              "items": {
+                "type": "string",
+                "pattern": "^[0-9a-fA-F:.]+/[0-9]{1,3}$"
+              }
+            }
+          }
+        }
+      }
+    },
+    "app": {
+      "type": "object",
+      "required": [
+        "name",
+        "project",
+        "environment"
+      ],
+      "additionalProperties": false,
+      "properties": {
+        "name": {
+          "type": "string",
+          "pattern": "^[a-z]([-a-z0-9]*[a-z0-9])?$",
+          "maxLength": 40
+        },
+        "group": {
+          "type": "string",
+          "pattern": "^$|^[a-z]([-a-z0-9]*[a-z0-9])?$",
+          "maxLength": 40
+        },
+        "project": {
+          "type": "string",
+          "pattern": "^[a-z]([-a-z0-9]*[a-z0-9])?$"
+        },
+        "environment": {
+          "type": "string",
+          "enum": [
+            "dev",
+            "beta",
+            "prod"
+          ]
+        }
+      }
+    },
+    "replicaCount": {
+      "type": "integer",
+      "minimum": 0,
+      "maximum": 5
+    },
+    "image": {
+      "type": "object",
+      "required": [
+        "repository"
+      ],
+      "additionalProperties": false,
+      "properties": {
+        "repository": {
+          "type": "string",
+          "minLength": 1
+        },
+        "tag": {
+          "type": "string",
+          "not": {
+            "enum": [
+              "latest",
+              "main",
+              "master",
+              "stable"
+            ]
+          },
+          "pattern": "^[A-Za-z0-9._-]*$"
+        },
+        "digest": {
+          "type": "string",
+          "pattern": "^(sha256:[a-f0-9]{64})?$"
+        },
+        "pullPolicy": {
+          "type": "string",
+          "enum": [
+            "IfNotPresent",
+            "Always",
+            "Never"
+          ]
+        },
+        "usePullSecret": {
+          "type": ["boolean", "null"]
+        }
+      }
+    },
+    "imagePullSecrets": {
+      "type": "array",
+      "uniqueItems": true,
+      "items": {
+        "type": "string",
+        "pattern": "^[a-z0-9]([-a-z0-9.]*[a-z0-9])?$"
+      }
+    },
+    "service": {
+      "type": "object",
+      "required": [
+        "port"
+      ],
+      "additionalProperties": false,
+      "comment": "type 필드를 정의하지 않는다. NodePort/LoadBalancer 요청 자체가 불가능해야 한다.",
+      "properties": {
+        "enabled": {
+          "type": "boolean"
+        },
+        "port": {
+          "type": "integer",
+          "minimum": 0,
+          "maximum": 65535
+        },
+        "probe": {
+          "type": "object",
+          "required": ["type"],
+          "additionalProperties": false,
+          "properties": {
+            "type": {
+              "type": "string",
+              "enum": ["http", "tcp", "none"]
+            }
+          }
+        },
+        "healthPath": {
+          "type": "string",
+          "pattern": "^/"
+        }
+      }
+    },
+    "exposure": {
+      "type": "object",
+      "required": [
+        "enabled",
+        "host"
+      ],
+      "additionalProperties": false,
+      "properties": {
+        "enabled": {
+          "type": "boolean",
+          "description": "false면 외부 HTTPRoute/SecurityPolicy를 렌더하지 않는다. replicaCount=0과 함께 사용한다."
+        },
+        "mode": {
+          "type": "string",
+          "enum": [
+            "",
+            "external",
+            "internal"
+          ],
+          "description": "external=Service+HTTPRoute, internal=Service만(같은 Namespace/AppGroup 전용). 비우면 type에서 유도한다."
+        },
+        "type": {
+          "type": "string",
+          "enum": [
+            "",
+            "public",
+            "oidc"
+          ],
+          "description": "deprecated. mode가 비어 있을 때만 해석하는 하위호환 값이다."
+        },
+        "host": {
+          "type": "string",
+          "pattern": "^$|^[a-z0-9]([-a-z0-9]*[a-z0-9])?(\\.[a-z0-9]([-a-z0-9]*[a-z0-9])?)+$",
+          "description": "external 전용. internal 앱은 비워 둔다."
+        },
+        "sectionName": {
+          "type": "string",
+          "pattern": "^$|^[a-z0-9]([-a-z0-9]*[a-z0-9])?$",
+          "description": "플랫폼 Portal의 apex listener 전용. 일반 앱에서는 비워 둔다."
+        }
+      }
+    },
+    "authentication": {
+      "type": "object",
+      "additionalProperties": false,
+      "comment": "노출과 인증은 별개 축이다. oidc는 exposure.mode=external에서만 쓸 수 있다(_helpers.tpl이 거부).",
+      "properties": {
+        "mode": {
+          "type": "string",
+          "enum": [
+            "",
+            "none",
+            "oidc"
+          ]
+        }
+      }
+    },
+    "configuration": {
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "config": {
+          "type": "object",
+          "additionalProperties": {
+            "type": [
+              "string",
+              "number",
+              "boolean"
+            ]
+          },
+          "comment": "PASSWORD/TOKEN/SECRET/PRIVATE_KEY/CREDENTIAL/API_KEY 금지는 Go RE2가 lookahead를 지원하지 않으므로 scripts/ci-guard.sh 에서 검사한다.",
+          "propertyNames": {
+            "pattern": "^[A-Z][A-Z0-9_]*$"
+          }
+        },
+        "externalSecrets": {
+          "type": "array",
+          "items": {
+            "type": "object",
+            "required": [
+              "name",
+              "secretStore",
+              "remotePath",
+              "keys"
+            ],
+            "additionalProperties": false,
+            "properties": {
+              "name": {
+                "type": "string",
+                "pattern": "^[a-z]([-a-z0-9]*[a-z0-9])?$"
+              },
+              "secretStore": {
+                "type": "string",
+                "pattern": "^[a-z0-9]([-a-z0-9.]*[a-z0-9])?$"
+              },
+              "remotePath": {
+                "type": "string",
+                "pattern": "^apps/[a-z0-9-]+/(dev|beta|prod)/([a-z][a-z0-9-]*|workloads/[a-z0-9-]+/[a-z0-9-]+)$"
+              },
+              "keys": {
+                "type": "array",
+                "minItems": 1,
+                "items": {
+                  "type": "string",
+                  "pattern": "^[A-Za-z_][A-Za-z0-9_.-]*$"
+                }
+              },
+              "targetKeyMap": {
+                "type": "object",
+                "additionalProperties": {
+                  "type": "string",
+                  "pattern": "^[A-Za-z_][A-Za-z0-9_.-]*$"
+                }
+              },
+              "inject": {
+                "type": "boolean",
+                "comment": "false 면 앱 컨테이너에 주입하지 않는다(예: Envoy SecurityPolicy 전용 OIDC client secret)"
+              }
+            }
+          }
+        },
+        "injection": {
+          "type": "object",
+          "additionalProperties": false,
+          "properties": {
+            "mode": {
+              "type": "string",
+              "enum": [
+                "envFrom",
+                "env",
+                "volume"
+              ]
+            },
+            "mountPath": {
+              "type": "string",
+              "pattern": "^/"
+            }
+          }
+        },
+        "reload": {
+          "type": "object",
+          "additionalProperties": false,
+          "properties": {
+            "enabled": {
+              "type": "boolean"
+            },
+            "pausePeriod": {
+              "type": "string",
+              "pattern": "^[0-9]+[smh]$"
+            }
+          }
+        }
+      }
+    },
+    "eso": {
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "createSecretStore": {
+          "type": "boolean"
+        },
+        "serviceAccountName": {
+          "type": "string",
+          "pattern": "^$|^[a-z0-9]([-a-z0-9]*[a-z0-9])?$"
+        },
+        "role": {
+          "type": "string",
+          "pattern": "^$|^[a-z0-9]([-a-z0-9]*[a-z0-9])?$"
+        }
+      }
+    },
+    "oidc": {
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "clientSecretName": {
+          "type": "string",
+          "pattern": "^$|^[a-z0-9]([-a-z0-9.]*[a-z0-9])?$"
+        },
+        "callbackPath": {
+          "type": "string",
+          "pattern": "^/"
+        },
+        "logoutPath": {
+          "type": "string",
+          "pattern": "^/"
+        },
+        "allowedGroups": {
+          "type": "array",
+          "items": {
+            "type": "string",
+            "pattern": "^[A-Za-z0-9][A-Za-z0-9._/-]*$",
+            "minLength": 1
+          },
+          "uniqueItems": true
+        },
+        "groupsClaim": {
+          "type": "string",
+          "minLength": 1
+        },
+        "idTokenHeader": {
+          "type": "string",
+          "minLength": 1
+        },
+        "jwksPath": {
+          "type": "string",
+          "pattern": "^/"
+        }
+      }
+    },
+    "resources": {
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "requests": {
+          "type": "object",
+          "additionalProperties": false,
+          "properties": {
+            "cpu": {
+              "type": "string",
+              "pattern": "^[0-9]+(m|\\.[0-9]+)?$"
+            },
+            "memory": {
+              "type": "string",
+              "pattern": "^[0-9]+(Mi|Gi)$"
+            }
+          }
+        },
+        "limits": {
+          "type": "object",
+          "additionalProperties": false,
+          "properties": {
+            "cpu": {
+              "type": "string",
+              "pattern": "^[0-9]+(m|\\.[0-9]+)?$"
+            },
+            "memory": {
+              "type": "string",
+              "pattern": "^[0-9]+(Mi|Gi)$"
+            }
+          }
+        }
+      }
+    },
+    "podSecurity": {
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "profile": {
+          "type": "string",
+          "enum": [
+            "restricted",
+            "postgres",
+            "redis"
+          ]
+        },
+        "runAsUser": {
+          "type": "integer",
+          "minimum": 1000
+        },
+        "runAsGroup": {
+          "type": "integer",
+          "minimum": 1000
+        }
+      }
+    },
+    "persistence": {
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "enabled": { "type": "boolean" },
+        "existingClaim": { "type": "string" },
+        "accessMode": {
+          "type": "string",
+          "enum": ["ReadWriteOnce", "ReadWriteOncePod"]
+        },
+        "size": {
+          "type": "string",
+          "pattern": "^[0-9]+(Mi|Gi|Ti)$"
+        },
+        "storageClass": { "type": "string" },
+        "mountPath": {
+          "type": "string",
+          "pattern": "^/[A-Za-z0-9._/-]*$"
+        },
+        "keepOnDelete": { "type": "boolean" }
+      }
+    },
+    "rbac": {
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "enabled": { "type": "boolean" },
+        "serviceAccountName": {
+          "type": "string",
+          "pattern": "^$|^[a-z0-9]([-a-z0-9]*[a-z0-9])?$",
+          "maxLength": 63
+        },
+        "namespaces": {
+          "type": "array",
+          "items": {
+            "type": "string",
+            "pattern": "^[a-z0-9]([-a-z0-9]*[a-z0-9])?$",
+            "maxLength": 63
+          }
+        },
+        "tokenExpirationSeconds": {
+          "type": "integer",
+          "minimum": 600,
+          "maximum": 86400
+        },
+        "tokenAudience": {
+          "type": "string",
+          "minLength": 1
+        }
+      }
+    },
+    "openbaoWriter": {
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "enabled": { "type": "boolean" },
+        "audience": { "type": "string", "minLength": 1 },
+        "tokenExpirationSeconds": { "type": "integer", "minimum": 600, "maximum": 86400 },
+        "mountPath": { "type": "string", "pattern": "^/[A-Za-z0-9._/-]+$" },
+        "caConfigMap": { "type": "string", "pattern": "^[a-z0-9]([-a-z0-9]*[a-z0-9])?$" }
+      }
+    },
+    "portalPipeline": {
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "enabled": { "type": "boolean" },
+        "argoNamespace": {
+          "type": "string",
+          "pattern": "^[a-z0-9]([-a-z0-9]*[a-z0-9])?$",
+          "minLength": 1,
+          "maxLength": 63
+        }
+      }
+    },
+    "networkPolicy": {
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "enabled": { "type": "boolean" },
+        "egressMode": {
+          "type": "string",
+          "enum": ["blocked", "web", "custom"],
+          "description": "blocked=DNS와 허용한 내부 앱만, web=인터넷 TCP 80/443(사설망 제외), custom=allowedCIDRs 직접 지정."
+        },
+        "allowedApps": {
+          "type": "array",
+          "comment": "같은 Namespace(AppGroup)의 앱 이름. raw label 대신 이름만 받는다.",
+          "items": {
+            "type": "object",
+            "required": ["app", "port"],
+            "additionalProperties": false,
+            "properties": {
+              "app": {
+                "type": "string",
+                "pattern": "^[a-z]([-a-z0-9]*[a-z0-9])?$",
+                "maxLength": 40
+              },
+              "protocol": { "type": "string", "enum": ["TCP"] },
+              "port": { "type": "integer", "minimum": 1, "maximum": 65535 }
+            }
+          }
+        },
+        "ingress": {
+          "type": "object",
+          "additionalProperties": false,
+          "properties": {
+            "enabled": {
+              "type": ["boolean", "null"],
+          "description": "비우면 AppGroup 앱 또는 exposure.mode=internal인 단일 앱에서 켜진다."
+            },
+            "allowedApps": {
+              "type": "array",
+              "items": {
+                "type": "object",
+                "required": ["app"],
+                "additionalProperties": false,
+                "properties": {
+                  "app": {
+                    "type": "string",
+                    "pattern": "^[a-z]([-a-z0-9]*[a-z0-9])?$",
+                    "maxLength": 40
+                  },
+                  "protocol": { "type": "string", "enum": ["TCP"] },
+                  "port": { "type": "integer", "minimum": 1, "maximum": 65535 }
+                }
+              }
+            }
+          }
+        },
+        "dns": {
+          "type": "object",
+          "additionalProperties": false,
+          "properties": {
+            "namespace": { "type": "string", "minLength": 1 },
+            "podLabels": {
+              "type": "object",
+              "minProperties": 1,
+              "additionalProperties": { "type": "string", "minLength": 1 }
+            }
+          }
+        },
+        "allowedCIDRs": {
+          "type": "array",
+          "items": {
+            "type": "object",
+            "required": ["cidr", "port"],
+            "additionalProperties": false,
+            "properties": {
+              "cidr": { "type": "string", "pattern": "^[0-9a-fA-F:.]+/[0-9]{1,3}$" },
+              "protocol": { "type": "string", "enum": ["TCP", "UDP"] },
+              "port": { "type": "integer", "minimum": 1, "maximum": 65535 }
+            }
+          }
+        },
+        "allowedPods": {
+          "type": "array",
+          "items": {
+            "type": "object",
+            "required": ["namespace", "podLabels", "port"],
+            "additionalProperties": false,
+            "properties": {
+              "namespace": { "type": "string", "minLength": 1 },
+              "podLabels": {
+                "type": "object",
+                "minProperties": 1,
+                "additionalProperties": { "type": "string", "minLength": 1 }
+              },
+              "protocol": { "type": "string", "enum": ["TCP", "UDP"] },
+              "port": { "type": "integer", "minimum": 1, "maximum": 65535 }
+            }
+          }
+        },
+        "nms": {
+          "type": "object",
+          "additionalProperties": false,
+          "properties": {
+            "enabled": { "type": "boolean" },
+            "destinationCIDR": { "type": "string" },
+            "port": { "type": "integer", "minimum": 0, "maximum": 65535 }
+          }
+        }
+      }
+    }
+  },
+  "additionalProperties": false
+}

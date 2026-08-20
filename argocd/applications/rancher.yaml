@@ -1,0 +1,46 @@
+apiVersion: argoproj.io/v1alpha1
+kind: Application
+metadata:
+  name: rancher
+  namespace: devtroncd
+  annotations:
+    argocd.argoproj.io/sync-wave: '-20'
+spec:
+  project: platform-system
+  source:
+    chart: rancher
+    repoURL: https://releases.rancher.com/server-charts/stable
+    targetRevision: 2.14.3
+    helm:
+      valuesObject:
+        hostname: rancher.sadp.example.invalid
+        tls: external
+        ingress:
+          enabled: false
+        replicas: 1
+        antiAffinity: preferred
+  destination:
+    namespace: cattle-system
+    server: https://kubernetes.default.svc
+  syncPolicy:
+    automated:
+      prune: false
+      selfHeal: true
+    syncOptions:
+    - CreateNamespace=true
+    - ServerSideApply=true
+    retry:
+      limit: 10
+      backoff:
+        duration: 10s
+        factor: 2
+        maxDuration: 3m
+  ignoreDifferences:
+  - group: apps
+    kind: Deployment
+    jqPathExpressions:
+    - .status.terminatingReplicas
+  - group: apps
+    kind: ReplicaSet
+    jqPathExpressions:
+    - .status.terminatingReplicas

@@ -1,0 +1,33 @@
+# 1단계: self-signed root — 아무것도 참조하지 않는 시작점
+apiVersion: cert-manager.io/v1
+kind: ClusterIssuer
+metadata:
+  name: beta-selfsigned-root
+spec:
+  selfSigned: {}
+---
+# 2단계: 그 self-signed issuer로 "CA 인증서" 자체를 발급 (isCA: true가 핵심)
+apiVersion: cert-manager.io/v1
+kind: Certificate
+metadata:
+  name: beta-internal-ca
+  namespace: cert-manager
+spec:
+  isCA: true
+  commonName: beta-internal-ca
+  secretName: beta-internal-ca-keypair
+  privateKey:
+    algorithm: ECDSA
+    size: 256
+  issuerRef:
+    name: beta-selfsigned-root
+    kind: ClusterIssuer
+---
+# 3단계: 방금 만든 CA를 실제 서명자로 쓰는 ClusterIssuer
+apiVersion: cert-manager.io/v1
+kind: ClusterIssuer
+metadata:
+  name: beta-internal-ca-issuer
+spec:
+  ca:
+    secretName: beta-internal-ca-keypair

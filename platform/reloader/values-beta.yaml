@@ -1,0 +1,17 @@
+reloader:
+  watchGlobally: true
+  autoReloadAll: false
+  reloadOnCreate: false
+  reloadOnDelete: false
+  logFormat: json
+  logLevel: info
+  deployment:
+    replicas: 1
+    containerSecurityContext:
+      allowPrivilegeEscalation: false
+      readOnlyRootFilesystem: true
+      capabilities:
+        drop: [ALL]
+    resources:
+      requests: {cpu: 25m, memory: 64Mi}
+      limits: {cpu: 200m, memory: 192Mi}

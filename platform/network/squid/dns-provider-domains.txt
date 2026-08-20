@@ -1,0 +1,2 @@
+# RFC2136 is direct DNS UPDATE; DNS API hostnames through Squid are forbidden.
+

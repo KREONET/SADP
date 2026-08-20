@@ -1,0 +1,146 @@
+apiVersion: argoproj.io/v1alpha1
+kind: AppProject
+metadata:
+  name: sadp-platform
+  namespace: devtroncd
+spec:
+  description: 베타 플랫폼/파일럿 앱 전용 프로젝트
+  sourceRepos:
+  - https://forgejo.example.invalid/example/sadp.git
+  destinations:
+  - namespace: sadp-apps
+    server: https://kubernetes.default.svc
+  - namespace: sadp-platform
+    server: https://kubernetes.default.svc
+  clusterResourceWhitelist:
+  - group: ''
+    kind: Namespace
+  namespaceResourceBlacklist:
+  - group: ''
+    kind: ResourceQuota
+  - group: ''
+    kind: Secret
+  roles:
+  - name: read-only
+    policies:
+    - p, proj:platform-prod:read-only, applications, get, platform-prod/*, allow
+---
+apiVersion: argoproj.io/v1alpha1
+kind: AppProject
+metadata:
+  name: app-groups
+  namespace: devtroncd
+spec:
+  description: AppGroup(Stack) 전용 프로젝트. Namespace 는 app-* 하나로 갇힌다.
+  sourceRepos:
+  - https://forgejo.example.invalid/example/sadp.git
+  destinations:
+  - namespace: app-*
+    server: https://kubernetes.default.svc
+  clusterResourceWhitelist:
+  - group: ''
+    kind: Namespace
+  - group: external-secrets.io
+    kind: ClusterSecretStore
+  namespaceResourceBlacklist:
+  - group: ''
+    kind: Secret
+  - group: argoproj.io
+    kind: Application
+  - group: argoproj.io
+    kind: ApplicationSet
+  - group: argoproj.io
+    kind: AppProject
+  - group: rbac.authorization.k8s.io
+    kind: ClusterRole
+  - group: rbac.authorization.k8s.io
+    kind: ClusterRoleBinding
+---
+apiVersion: argoproj.io/v1alpha1
+kind: AppProject
+metadata:
+  name: portal-beta
+  namespace: devtroncd
+spec:
+  description: 포털(portal-lite) 전용 프로젝트. 사용자 앱과 권한 경계를 분리한다.
+  sourceRepos:
+  - https://forgejo.example.invalid/example/sadp.git
+  destinations:
+  - namespace: sadp-apps
+    server: https://kubernetes.default.svc
+  - namespace: cattle-system
+    server: https://kubernetes.default.svc
+  - namespace: keycloak
+    server: https://kubernetes.default.svc
+  - namespace: openbao
+    server: https://kubernetes.default.svc
+  - namespace: devtroncd
+    server: https://kubernetes.default.svc
+  clusterResourceWhitelist:
+  - group: ''
+    kind: Namespace
+  namespaceResourceBlacklist:
+  - group: ''
+    kind: ResourceQuota
+  - group: ''
+    kind: Secret
+  - group: argoproj.io
+    kind: Application
+  - group: argoproj.io
+    kind: ApplicationSet
+  - group: argoproj.io
+    kind: AppProject
+---
+apiVersion: argoproj.io/v1alpha1
+kind: AppProject
+metadata:
+  name: platform-system
+  namespace: devtroncd
+spec:
+  description: 플랫폼 controller, CRD, Gateway 인프라 전용 프로젝트
+  sourceRepos:
+  - https://forgejo.example.invalid/example/sadp.git
+  - docker.io/envoyproxy
+  - https://metallb.github.io/metallb
+  - https://charts.jetstack.io
+  - https://releases.rancher.com/server-charts/stable
+  - https://charts.external-secrets.io
+  - https://stakater.github.io/stakater-charts
+  - https://openbao.github.io/openbao-helm
+  destinations:
+  - namespace: devtroncd
+    server: https://kubernetes.default.svc
+  - namespace: sadp-platform
+    server: https://kubernetes.default.svc
+  - namespace: sadp-apps
+    server: https://kubernetes.default.svc
+  - namespace: metallb-system
+    server: https://kubernetes.default.svc
+  - namespace: envoy-gateway-system
+    server: https://kubernetes.default.svc
+  - namespace: cert-manager
+    server: https://kubernetes.default.svc
+  - namespace: kube-system
+    server: https://kubernetes.default.svc
+  - namespace: cattle-system
+    server: https://kubernetes.default.svc
+  - namespace: external-secrets
+    server: https://kubernetes.default.svc
+  - namespace: reloader
+    server: https://kubernetes.default.svc
+  - namespace: openbao
+    server: https://kubernetes.default.svc
+  - namespace: keycloak
+    server: https://kubernetes.default.svc
+  - namespace: local
+    server: https://kubernetes.default.svc
+  - namespace: proj-sadp-apps
+    server: https://kubernetes.default.svc
+  - namespace: proj-sadp-platform
+    server: https://kubernetes.default.svc
+  clusterResourceWhitelist:
+  - group: '*'
+    kind: '*'
+  namespaceResourceWhitelist:
+  - group: '*'
+    kind: '*'

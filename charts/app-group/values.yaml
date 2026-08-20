@@ -1,0 +1,99 @@
+# AppGroup(Stack) 하나가 쓸 Namespace 를 만든다.
+#
+# 이 Chart 는 "Namespace 만" 만들지 않는다. Namespace 만 생기고 quota 도 default-deny 도
+# 없으면, 새 Namespace 는 기존 워크로드 Namespace 보다 약한 경계를 갖게 된다. 그래서
+# quota / LimitRange / default-deny / Gateway route label / Rancher project 를 한 묶음으로 만든다.
+#
+# platform.* 는 contracts/values-platform-production.yaml 이 덮어쓴다(직접 수정 금지).
+platform:
+  appGroups:
+    namespacePrefix: ""
+    maxServices: 0
+    storage:
+      storageClass: ""
+      volumeSize: ""
+      maxClaims: 0
+      total: ""
+  gateway:
+    # 새 Namespace 가 HTTPRoute 를 붙이려면 Gateway allowedRoutes selector 와 같은 label 이 필요하다.
+    routeSelectorLabels: {}
+  rancher:
+    # <cluster>:<project>. 비면 기존 app-admin/developer 권한이 닿지 않는 Namespace가
+    # 생기므로 Chart가 렌더를 거부한다.
+    workloadProjectId: ""
+  registry:
+    pullSecretName: ""
+    # 비밀값이 아니라 OpenBao KV의 공통 registry credential 경로다.
+    pullSecretRemotePath: ""
+  quota:
+    cpu: ""
+    memory: ""
+    maxReplicas: 5
+  openbao:
+    kvMount: kv
+    pathPrefix: apps
+    caConfigMap: openbao-ca
+    caConfigMapNamespace: ""
+    server: ""
+    authMount: kubernetes
+    audience: vault
+    roles:
+      zoneApp: ""
+      groupApp: ""
+      groupRegistry: ""
+  portal:
+    namespace: ""
+    serviceAccountName: ""
+
+group:
+  # AppGroup 이름. Namespace 는 <namespacePrefix><name> 이 된다.
+  name: ""
+  project: ""
+  environment: beta
+  # Namespace 접두사. 사용자 앱 Namespace 와 플랫폼 Namespace 를 이름으로 구분한다.
+  # 비우면 platform.appGroups.namespacePrefix 계약값을 쓴다. 명시값은 계약과 같아야 한다.
+  namespacePrefix: ""
+  # 비우면 <namespacePrefix><name>. 계산식을 우회하려는 값이 아니라 이관용이다.
+  namespace: ""
+
+# Namespace 총량. 기본은 플랫폼 계약의 사용자당 상한을 그대로 쓴다.
+# AppGroup 은 앱이 여러 개이므로 pods 는 maxReplicas 로 잡는다.
+quota:
+  enabled: true
+  cpu: ""
+  memory: ""
+  pods: 0
+
+limitRange:
+  enabled: true
+  defaultRequest:
+    cpu: 100m
+    memory: 128Mi
+  default:
+    cpu: 500m
+    memory: 512Mi
+  min:
+    cpu: 10m
+    memory: 16Mi
+
+# Namespace 전체를 먼저 닫는다. 앱은 charts/app-profile 의 networkPolicy 로 필요한 것만 연다.
+# 이걸 끄면 같은 Namespace 의 앱들이 서로 자유롭게 통신하게 되므로 기본은 항상 켜 둔다.
+defaultDeny:
+  ingress: true
+  egress: true
+
+# 포털이 이 Namespace 의 배포 상태를 읽을 수 있게 한다(읽기 전용).
+# 끄면 사용자 화면에서 이 AppGroup 의 배포 진행 상황이 "알 수 없음"으로 남는다.
+portalAccess:
+  enabled: true
+  serviceAccountName: ""
+  serviceAccountNamespace: ""
+
+# 앱 Pod 가 private registry 에서 이미지를 받으려면 Namespace 마다 pull Secret 이 필요하다.
+# Chart 는 Secret 을 직접 만들지 않는다(ci-guard 가 막는다). OpenBao -> ESO 경로만 쓴다.
+# remotePath 가 비어 있으면 아무것도 만들지 않는다 — 로컬 import 이미지를 쓰는 사이트용.
+registryPullSecret:
+  # OpenBao KV 안에서 dockerconfigjson 문서를 담은 key 이름.
+  remoteKey: dockerconfigjson
+  serviceAccountName: ""
+  role: ""

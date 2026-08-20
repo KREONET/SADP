@@ -1,0 +1,12 @@
+installCRDs: true
+crds:
+  unsafeServeV1Beta1: false
+leaderElect: true
+replicaCount: 1
+resources:
+  requests: {cpu: 50m, memory: 96Mi}
+  limits: {cpu: 300m, memory: 256Mi}
+webhook:
+  replicaCount: 1
+certController:
+  replicaCount: 1

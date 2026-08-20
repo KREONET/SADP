@@ -1,0 +1,73 @@
+{{- if and .Values.networkPolicy.enabled (or (not .Values.service.enabled) (eq (include "app-profile.ingressPolicyEnabled" .) "true")) }}
+{{- /*
+  AppGroup Namespace 는 default-deny-ingress 를 깔기 때문에, 받을 트래픽을 앱마다 적는다.
+  Namespace 가 같다는 이유만으로 서로 열리지 않는다 — 여기 적힌 앱과 (외부 노출인 경우)
+  Gateway 만 이 앱의 Service 포트에 닿는다.
+
+  단일 external 앱은 ingress.enabled 를 명시적으로 켜지 않는 한 기존 동작을 유지한다.
+  단일 internal 앱은 아래처럼 같은 Namespace만 허용해야 "내부 앱 전용" 경계가 생긴다.
+*/}}
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: {{ include "app-profile.ingressPolicyName" . }}
+  namespace: {{ .Release.Namespace }}
+  annotations:
+    # Namespace bootstrap과 child Application의 동기화 순서가 겹쳐도 Pod보다 먼저
+    # ingress 경계를 만든다. AppGroup에서 이 정책은 validation상 끌 수 없다.
+    argocd.argoproj.io/sync-wave: "-10"
+  labels:
+    {{- include "app-profile.labels" . | nindent 4 }}
+spec:
+  podSelector:
+    matchLabels:
+      {{- include "app-profile.selectorLabels" . | nindent 6 }}
+  policyTypes:
+    - Ingress
+  {{- if not .Values.service.enabled }}
+  # 포트 없는 worker도 앱별 deny를 즉시 가져야 bootstrap/app 병렬 sync 순간에 Pod IP로
+  # 들어오는 창이 없다. Namespace baseline만 믿지 않고 빈 ingress 규칙을 명시한다.
+  ingress: []
+  {{- else }}
+  ingress:
+    {{- if and (not .Values.app.group) (eq (include "app-profile.exposureMode" .) "internal") }}
+    {{- /*
+      단일 internal 앱은 기존 Zone Namespace를 쓰므로 같은 Namespace의 Pod에는 열되,
+      다른 Namespace에서 ClusterIP를 직접 호출하는 경로는 닫는다. AppGroup에는 이
+      포괄 규칙을 절대 넣지 않고 아래 allowedApps selector만 사용한다.
+    */}}
+    - from:
+        - namespaceSelector:
+            matchLabels:
+              kubernetes.io/metadata.name: {{ .Release.Namespace | quote }}
+          podSelector: {}
+      ports:
+        - protocol: TCP
+          port: {{ .Values.service.port }}
+    {{- end }}
+    {{- if eq (include "app-profile.routeEnabled" .) "true" }}
+    - from:
+        - namespaceSelector:
+            matchLabels:
+              kubernetes.io/metadata.name: {{ .Values.platform.gateway.namespace | quote }}
+          podSelector:
+            matchLabels:
+              app.kubernetes.io/name: envoy
+              app.kubernetes.io/component: proxy
+              gateway.envoyproxy.io/owning-gateway-name: {{ .Values.platform.gateway.name }}
+      ports:
+        - protocol: TCP
+          port: {{ .Values.service.port }}
+    {{- end }}
+    {{- range .Values.networkPolicy.ingress.allowedApps }}
+    {{- if eq .app $.Values.app.name }}
+    {{- fail (printf "networkPolicy.ingress.allowedApps 에 자기 자신(%s)을 적을 수 없다" .app) }}
+    {{- end }}
+    - from:
+        {{- include "app-profile.appPeerSelector" . | nindent 8 }}
+      ports:
+        - protocol: {{ default "TCP" .protocol }}
+          port: {{ default $.Values.service.port .port }}
+    {{- end }}
+  {{- end }}
+{{- end }}

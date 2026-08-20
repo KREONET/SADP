@@ -1,0 +1,44 @@
+apiVersion: argoproj.io/v1alpha1
+kind: Application
+metadata:
+  name: reloader
+  namespace: devtroncd
+  annotations:
+    argocd.argoproj.io/sync-wave: '-20'
+spec:
+  project: platform-system
+  sources:
+  - chart: reloader
+    repoURL: https://stakater.github.io/stakater-charts
+    targetRevision: 1.2.0
+    helm:
+      releaseName: reloader
+      valueFiles:
+      - $values/platform/reloader/values-beta.yaml
+  - repoURL: https://forgejo.example.invalid/example/sadp.git
+    targetRevision: main
+    ref: values
+  destination:
+    namespace: reloader
+    server: https://kubernetes.default.svc
+  syncPolicy:
+    automated:
+      prune: false
+      selfHeal: true
+    syncOptions:
+    - CreateNamespace=true
+    retry:
+      limit: 10
+      backoff:
+        duration: 10s
+        factor: 2
+        maxDuration: 3m
+  ignoreDifferences:
+  - group: apps
+    kind: Deployment
+    jqPathExpressions:
+    - .status.terminatingReplicas
+  - group: apps
+    kind: ReplicaSet
+    jqPathExpressions:
+    - .status.terminatingReplicas

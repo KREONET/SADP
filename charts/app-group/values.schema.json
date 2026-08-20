@@ -1,0 +1,126 @@
+{
+  "$schema": "http://json-schema.org/draft-07/schema#",
+  "title": "app-group values",
+  "type": "object",
+  "required": [
+    "platform",
+    "group"
+  ],
+  "additionalProperties": false,
+  "properties": {
+    "platform": {
+      "type": "object",
+      "properties": {
+        "appGroups": {
+          "type": "object",
+          "additionalProperties": false,
+          "properties": {
+            "namespacePrefix": {
+              "type": "string",
+              "pattern": "^$|^[a-z0-9]([-a-z0-9]*)?$",
+              "maxLength": 23
+            },
+            "maxServices": { "type": "integer", "minimum": 0, "maximum": 20 },
+            "storage": {
+              "type": "object",
+              "additionalProperties": false,
+              "properties": {
+                "storageClass": { "type": "string", "pattern": "^$|^[a-z0-9]([-a-z0-9.]*[a-z0-9])?$" },
+                "volumeSize": { "type": "string", "pattern": "^$|^[1-9][0-9]*(Mi|Gi|Ti)$" },
+                "maxClaims": { "type": "integer", "minimum": 0, "maximum": 20 },
+                "total": { "type": "string", "pattern": "^$|^[1-9][0-9]*(Mi|Gi|Ti)$" }
+              }
+            }
+          }
+        },
+        "gateway": { "type": "object" },
+        "rancher": { "type": "object" },
+        "registry": { "type": "object" },
+        "quota": { "type": "object" },
+        "openbao": { "type": "object" },
+        "baseDomain": { "type": "string" },
+        "keycloak": { "type": "object" },
+        "network": { "type": "object" }
+      }
+    },
+    "group": {
+      "type": "object",
+      "required": ["name", "project", "environment"],
+      "additionalProperties": false,
+      "properties": {
+        "name": {
+          "type": "string",
+          "pattern": "^[a-z]([-a-z0-9]*[a-z0-9])?$",
+          "maxLength": 40
+        },
+        "project": {
+          "type": "string",
+          "pattern": "^[a-z]([-a-z0-9]*[a-z0-9])?$"
+        },
+        "environment": {
+          "type": "string",
+          "enum": ["dev", "beta", "prod"]
+        },
+        "namespacePrefix": {
+          "type": "string",
+          "pattern": "^$|^[a-z0-9]([-a-z0-9]*)?$"
+        },
+        "namespace": {
+          "type": "string",
+          "pattern": "^$|^[a-z0-9]([-a-z0-9]*[a-z0-9])?$",
+          "maxLength": 63
+        }
+      }
+    },
+    "quota": {
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "enabled": { "type": "boolean" },
+        "cpu": { "type": "string", "pattern": "^$|^[0-9]+(m|\\.[0-9]+)?$" },
+        "memory": { "type": "string", "pattern": "^$|^[0-9]+(Mi|Gi)$" },
+        "pods": { "type": "integer", "minimum": 0, "maximum": 100 }
+      }
+    },
+    "limitRange": {
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "enabled": { "type": "boolean" },
+        "default": { "type": "object" },
+        "defaultRequest": { "type": "object" },
+        "min": { "type": "object" }
+      }
+    },
+    "defaultDeny": {
+      "type": "object",
+      "additionalProperties": false,
+      "comment": "false 로 두면 AppGroup Namespace 안의 앱들이 서로 자유롭게 통신한다. 기본은 둘 다 true.",
+      "properties": {
+        "ingress": { "type": "boolean" },
+        "egress": { "type": "boolean" }
+      }
+    },
+    "portalAccess": {
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "enabled": { "type": "boolean" },
+        "serviceAccountName": { "type": "string" },
+        "serviceAccountNamespace": { "type": "string" }
+      }
+    },
+    "registryPullSecret": {
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "remoteKey": {
+          "type": "string",
+          "pattern": "^[A-Za-z_][A-Za-z0-9_.-]*$"
+        },
+        "serviceAccountName": { "type": "string" },
+        "role": { "type": "string" }
+      }
+    }
+  }
+}

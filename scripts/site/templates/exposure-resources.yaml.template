@@ -1,0 +1,90 @@
+# 자동 생성 파일. contracts/platform-production.yaml을 수정한 뒤 scripts/site/render-exposure.py를 실행한다.
+apiVersion: metallb.io/v1beta1
+kind: IPAddressPool
+metadata:
+  name: __ADDRESS_POOL_NAME__
+  namespace: metallb-system
+spec:
+  addresses:
+    - __ADDRESS_POOL_RANGE__
+  autoAssign: false
+---
+apiVersion: metallb.io/v1beta1
+kind: L2Advertisement
+metadata:
+  name: envoy-gateway-l2
+  namespace: metallb-system
+spec:
+  ipAddressPools:
+    - __ADDRESS_POOL_NAME__
+---
+__ROUTE_NAMESPACES__
+---
+apiVersion: gateway.envoyproxy.io/v1alpha1
+kind: EnvoyProxy
+metadata:
+  name: __PROXY_CONFIG_NAME__
+  namespace: __GATEWAY_NAMESPACE__
+spec:
+  provider:
+    type: Kubernetes
+    kubernetes:
+      envoyService:
+        annotations:
+          metallb.io/address-pool: __ADDRESS_POOL_NAME__
+          metallb.io/loadBalancerIPs: __METALLB_VIP__
+__PUBLIC_SERVICE_CONFIG__
+---
+apiVersion: gateway.networking.k8s.io/v1
+kind: GatewayClass
+metadata:
+  name: __GATEWAY_CLASS_NAME__
+spec:
+  controllerName: gateway.envoyproxy.io/gatewayclass-controller
+---
+# HTTPS listener 와 HTTP->HTTPS redirect HTTPRoute 는 TLS 입력이 확정되면 이 Gateway 뒤에 붙는다.
+# scripts/site/templates/exposure-https.yaml.template 참고. Gateway 는 이 파일의 마지막 문서여야 한다.
+apiVersion: gateway.networking.k8s.io/v1
+kind: Gateway
+metadata:
+  name: __GATEWAY_NAME__
+  namespace: __GATEWAY_NAMESPACE__
+spec:
+  gatewayClassName: __GATEWAY_CLASS_NAME__
+  addresses:
+    - type: IPAddress
+      value: __METALLB_VIP__
+  infrastructure:
+    parametersRef:
+      group: gateway.envoyproxy.io
+      kind: EnvoyProxy
+      name: __PROXY_CONFIG_NAME__
+  listeners:
+    - name: __HTTP_LISTENER_NAME__
+      hostname: "*.__BASE_DOMAIN__"
+      protocol: HTTP
+      port: 80
+      allowedRoutes:
+        namespaces:
+          from: Selector
+          selector:
+            matchLabels:
+              __ROUTE_LABEL_KEY__: __ROUTE_LABEL_VALUE__
+        kinds:
+          - group: gateway.networking.k8s.io
+            kind: HTTPRoute
+    # wildcard 인증서는 apex도 포함하지만 "*.example" listener 자체는 apex와 일치하지
+    # 않는다. Portal을 baseDomain에 둘 수 있도록 정확한 hostname listener를 따로 둔다.
+    - name: apex-__HTTP_LISTENER_NAME__
+      hostname: "__BASE_DOMAIN__"
+      protocol: HTTP
+      port: 80
+      allowedRoutes:
+        namespaces:
+          from: Selector
+          selector:
+            matchLabels:
+              __ROUTE_LABEL_KEY__: __ROUTE_LABEL_VALUE__
+        kinds:
+          - group: gateway.networking.k8s.io
+            kind: HTTPRoute

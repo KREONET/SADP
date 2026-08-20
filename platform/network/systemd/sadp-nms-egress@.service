@@ -1,0 +1,12 @@
+[Unit]
+Description=SADP NMS egress routing (%i)
+After=network-online.target rke2-server.service rke2-agent.service
+Wants=network-online.target
+
+[Service]
+Type=oneshot
+ExecStart=/usr/local/sbin/configure-nms-egress.sh %i /etc/sadp/nms-egress.env
+RemainAfterExit=yes
+
+[Install]
+WantedBy=multi-user.target

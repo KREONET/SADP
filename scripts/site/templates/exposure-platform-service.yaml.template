@@ -1,0 +1,43 @@
+apiVersion: gateway.networking.k8s.io/v1
+kind: HTTPRoute
+metadata:
+  name: __SERVICE_NAME__
+  namespace: __REDIRECT_ROUTE_NAMESPACE__
+spec:
+  parentRefs:
+    - group: gateway.networking.k8s.io
+      kind: Gateway
+      namespace: __GATEWAY_NAMESPACE__
+      name: __GATEWAY_NAME__
+      sectionName: __ROUTE_LISTENER_NAME__
+  hostnames:
+    - __SERVICE_HOST__
+  rules:
+    - matches:
+        - path:
+            type: PathPrefix
+            value: /
+      backendRefs:
+        - group: ""
+          kind: Service
+          namespace: __SERVICE_NAMESPACE__
+          name: __BACKEND_SERVICE_NAME__
+          port: __SERVICE_PORT__
+---
+# HTTPRoute 가 다른 Namespace 의 Service 를 backendRef 로 쓰려면 대상 Namespace 의 허가가 필요하다.
+# 이 방식이면 Gateway 의 allowedRouteNamespaces 를 늘리지 않고, 컴포넌트 Application 의
+# CreateNamespace 소유권과도 충돌하지 않는다.
+apiVersion: gateway.networking.k8s.io/v1beta1
+kind: ReferenceGrant
+metadata:
+  name: __SERVICE_NAME__-from-platform-routes
+  namespace: __SERVICE_NAMESPACE__
+spec:
+  from:
+    - group: gateway.networking.k8s.io
+      kind: HTTPRoute
+      namespace: __REDIRECT_ROUTE_NAMESPACE__
+  to:
+    - group: ""
+      kind: Service
+      name: __BACKEND_SERVICE_NAME__

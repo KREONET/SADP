@@ -1,0 +1,69 @@
+# grafana/loki 값. 외부 Grafana 가 읽어갈 로그 백엔드다.
+#
+# 3노드 테스트베드이므로 SingleBinary 모드로 둔다. 분산 모드(read/write/backend)는
+# 이 규모에서 이득 없이 자원만 쓴다. gateway 는 Envoy Gateway 가 이미 진입점이라 쓰지 않는다.
+#
+# 인증은 Loki 자체가 아니라 Envoy SecurityPolicy 가 담당한다(docs/external-observability.md).
+# loki.auth_enabled=false 는 Loki 의 멀티테넌트 헤더 요구를 끄는 것이고, 외부 노출 인증과는
+# 다른 축이다. Envoy 를 우회해 이 Service 에 직접 붙지 못하도록 Namespace 밖 접근을 막는다.
+
+deploymentMode: SingleBinary
+
+loki:
+  auth_enabled: false
+  commonConfig:
+    replication_factor: 1
+  storage:
+    type: filesystem
+  # 테스트베드 스키마. 운영 전환 시 보관 기간과 함께 재검토한다.
+  useTestSchema: true
+  image:
+    pullPolicy: IfNotPresent
+  limits_config:
+    retention_period: 168h
+
+singleBinary:
+  replicas: 1
+  persistence:
+    enabled: true
+    size: 20Gi
+    storageClass: local-path
+  resources:
+    requests:
+      cpu: 200m
+      memory: 512Mi
+    limits:
+      cpu: "2"
+      memory: 2Gi
+  # 서버 노드 메모리 여유가 없으므로 워커에만 배치한다.
+  affinity:
+    nodeAffinity:
+      requiredDuringSchedulingIgnoredDuringExecution:
+        nodeSelectorTerms:
+          - matchExpressions:
+              - key: node-role.kubernetes.io/control-plane
+                operator: DoesNotExist
+
+# 분산 모드 구성요소는 모두 끈다. SingleBinary 와 동시에 켜면 chart 가 렌더를 거부한다.
+read:
+  replicas: 0
+write:
+  replicas: 0
+backend:
+  replicas: 0
+
+# 테스트베드에서 쓰지 않는 부가 구성요소.
+gateway:
+  enabled: false
+chunksCache:
+  enabled: false
+resultsCache:
+  enabled: false
+lokiCanary:
+  enabled: false
+test:
+  enabled: false
+
+sidecar:
+  image:
+    pullPolicy: IfNotPresent

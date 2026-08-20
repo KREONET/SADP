@@ -1,0 +1,6 @@
+apiVersion: v2
+name: app-group
+description: AppGroup(Stack) Namespace bootstrap Chart (Namespace/ResourceQuota/LimitRange/default-deny NetworkPolicy/registry pull ExternalSecret)
+type: application
+version: 0.1.0
+appVersion: "0.1.0"

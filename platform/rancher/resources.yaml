@@ -1,0 +1,25 @@
+# 자동 생성 파일. contracts/platform-production.yaml을 수정한 뒤 scripts/site/render-rancher.py를 실행한다.
+# Rancher 내장 GlobalRole/RoleTemplate 만 참조한다. 사용자 계정은 여기에 기록하지 않는다.
+# Rancher Project. metadata.name 을 명시하지 않으면 p-xxxxx 로 생성되어 Git 에 기록할 수 없다.
+# Project 객체는 클러스터 ID 와 같은 이름의 Namespace 에 존재한다(local 클러스터 -> local).
+apiVersion: management.cattle.io/v3
+kind: Project
+metadata:
+  name: proj-sadp-apps
+  namespace: local
+spec:
+  clusterName: local
+  displayName: sadp-apps
+  description: 사용자 파일럿 앱
+---
+# Rancher Project. metadata.name 을 명시하지 않으면 p-xxxxx 로 생성되어 Git 에 기록할 수 없다.
+# Project 객체는 클러스터 ID 와 같은 이름의 Namespace 에 존재한다(local 클러스터 -> local).
+apiVersion: management.cattle.io/v3
+kind: Project
+metadata:
+  name: proj-sadp-platform
+  namespace: local
+spec:
+  clusterName: local
+  displayName: sadp-platform
+  description: 플랫폼 리소스와 공개 경로

@@ -1,0 +1,29 @@
+apiVersion: argoproj.io/v1alpha1
+kind: Application
+metadata:
+  name: sample-app-beta
+  namespace: devtroncd
+spec:
+  project: sadp-platform
+  sources:
+  - repoURL: https://forgejo.example.invalid/group/sadp.git
+    targetRevision: main
+    path: charts/app-profile
+    helm:
+      releaseName: sample-app
+      valueFiles:
+      - $values/contracts/values-platform-production.yaml
+      - $values/apps/sample-app/values-beta.yaml
+  - repoURL: https://forgejo.example.invalid/group/sadp.git
+    targetRevision: main
+    ref: values
+  destination:
+    server: https://kubernetes.default.svc
+    namespace: sadp-apps
+  syncPolicy:
+    automated:
+      prune: false
+      selfHeal: true
+    syncOptions:
+    - CreateNamespace=true
+    - SkipDryRunOnMissingResource=true

@@ -1,0 +1,188 @@
+/*
+ * SADP — 신규 화면 전용 스타일 진입점.
+ * 레거시 app/globals.css 와 의도적으로 분리되어 있다.
+ * (paas) route group 에서만 로드되므로 Tailwind preflight 가
+ * 기존 /portal · /account · /login 화면을 오염시키지 않는다.
+ */
+@import "tailwindcss" source(none);
+@source "../../app";
+@source "../../components";
+
+/*
+ * Progress/QuotaBar 채움 너비용 0~100% 클래스.
+ * 플랫폼 CSP(style-src 'self' 'nonce-…')가 inline style 속성을 차단하므로
+ * 비율을 style 로 주입할 수 없어 정적 클래스를 미리 생성해 둔다.
+ */
+@source inline("w-[{0..100}%]");
+
+@custom-variant dark (&:is(.dark *));
+
+:root {
+  --radius: 12px;
+
+  /* ── 브랜드 ─────────────────────────────── */
+  --brand-900: hsl(164 69% 14%); /* #0B3B2E */
+  --brand-accent: hsl(150 94% 21%); /* #036635 */
+  --nav-active: hsl(66 70% 54%); /* 상단 네비 활성 옐로-그린 */
+
+  /* ── 표면 ──────────────────────────────── */
+  --background: hsl(48 71% 97%); /* #FDFBF3 아이보리 캔버스 */
+  --foreground: hsl(215 28% 17%);
+  --card: hsl(0 0% 100%); /* #FFFFFF */
+  --card-foreground: hsl(215 28% 17%);
+  --popover: hsl(0 0% 100%);
+  --popover-foreground: hsl(215 28% 17%);
+
+  --primary: hsl(164 69% 14%);
+  --primary-foreground: hsl(0 0% 100%);
+  --secondary: hsl(214 100% 97%); /* #EFF6FF 코드/정보 박스 */
+  --secondary-foreground: hsl(164 69% 14%);
+  --accent: hsl(150 94% 21%);
+  --accent-foreground: hsl(0 0% 100%);
+  --muted: hsl(220 14% 96%);
+  --muted-foreground: hsl(220 9% 46%);
+  --destructive: hsl(0 72% 51%);
+  --destructive-foreground: hsl(0 0% 100%);
+
+  --border: hsl(220 13% 91%); /* #E5E7EB */
+  --input: hsl(220 13% 91%);
+  --ring: hsl(150 94% 21%);
+
+  /* ── 상태 (Running/Available/Success 등) ── */
+  --status-ok: hsl(142 71% 45%);
+  --status-ok-soft: hsl(138 76% 94%);
+  --status-ok-strong: hsl(142 72% 29%);
+  --status-warn: hsl(66 70% 54%); /* Beta / Pending */
+  --status-warn-soft: hsl(66 82% 88%);
+  --status-warn-strong: hsl(63 40% 22%);
+  --status-error: hsl(0 72% 51%); /* Stopped / Degraded / Failed */
+  --status-error-soft: hsl(0 93% 94%);
+  --status-error-strong: hsl(0 70% 42%);
+  --status-idle: hsl(220 9% 46%); /* 정지·비활성 */
+  --status-idle-soft: hsl(220 14% 96%);
+
+  /*
+   * OpenBao Secrets 카드(화면 6)는 다크모드가 아니라
+   * "의도적으로 검은 카드"이므로 테마와 무관하게 고정한다.
+   */
+  --vault: hsl(0 0% 4%);
+  --vault-foreground: hsl(0 0% 98%);
+  --vault-muted: hsl(0 0% 63%);
+  --vault-border: hsl(0 0% 16%);
+}
+
+/*
+ * 다크 팔레트는 확정 스크린샷이 없어 라이트 토큰에서 파생한 추정치다.
+ * 다크 시안이 나오면 이 블록만 교체하면 된다.
+ */
+.dark {
+  --brand-900: hsl(164 40% 22%);
+  --brand-accent: hsl(150 60% 42%);
+  --nav-active: hsl(66 70% 60%);
+
+  --background: hsl(160 18% 8%);
+  --foreground: hsl(48 20% 94%);
+  --card: hsl(162 15% 12%);
+  --card-foreground: hsl(48 20% 94%);
+  --popover: hsl(162 15% 12%);
+  --popover-foreground: hsl(48 20% 94%);
+
+  --primary: hsl(150 60% 42%);
+  --primary-foreground: hsl(160 30% 6%);
+  --secondary: hsl(210 30% 18%);
+  --secondary-foreground: hsl(48 20% 94%);
+  --accent: hsl(150 60% 42%);
+  --accent-foreground: hsl(160 30% 6%);
+  --muted: hsl(162 12% 18%);
+  --muted-foreground: hsl(150 6% 66%);
+  --destructive: hsl(0 72% 58%);
+  --destructive-foreground: hsl(0 0% 100%);
+
+  --border: hsl(162 10% 22%);
+  --input: hsl(162 10% 22%);
+  --ring: hsl(150 60% 42%);
+
+  --status-ok: hsl(142 65% 52%);
+  --status-ok-soft: hsl(142 40% 18%);
+  --status-ok-strong: hsl(138 70% 76%);
+  --status-warn: hsl(66 70% 58%);
+  --status-warn-soft: hsl(66 35% 18%);
+  --status-warn-strong: hsl(66 75% 78%);
+  --status-error: hsl(0 72% 58%);
+  --status-error-soft: hsl(0 40% 20%);
+  --status-error-strong: hsl(0 85% 80%);
+  --status-idle: hsl(150 6% 60%);
+  --status-idle-soft: hsl(162 12% 18%);
+}
+
+@theme inline {
+  --color-background: var(--background);
+  --color-foreground: var(--foreground);
+  --color-card: var(--card);
+  --color-card-foreground: var(--card-foreground);
+  --color-popover: var(--popover);
+  --color-popover-foreground: var(--popover-foreground);
+  --color-primary: var(--primary);
+  --color-primary-foreground: var(--primary-foreground);
+  --color-secondary: var(--secondary);
+  --color-secondary-foreground: var(--secondary-foreground);
+  --color-accent: var(--accent);
+  --color-accent-foreground: var(--accent-foreground);
+  --color-muted: var(--muted);
+  --color-muted-foreground: var(--muted-foreground);
+  --color-destructive: var(--destructive);
+  --color-destructive-foreground: var(--destructive-foreground);
+  --color-border: var(--border);
+  --color-input: var(--input);
+  --color-ring: var(--ring);
+
+  --color-brand-900: var(--brand-900);
+  --color-brand-accent: var(--brand-accent);
+  --color-nav-active: var(--nav-active);
+
+  --color-status-ok: var(--status-ok);
+  --color-status-ok-soft: var(--status-ok-soft);
+  --color-status-ok-strong: var(--status-ok-strong);
+  --color-status-warn: var(--status-warn);
+  --color-status-warn-soft: var(--status-warn-soft);
+  --color-status-warn-strong: var(--status-warn-strong);
+  --color-status-error: var(--status-error);
+  --color-status-error-soft: var(--status-error-soft);
+  --color-status-error-strong: var(--status-error-strong);
+  --color-status-idle: var(--status-idle);
+  --color-status-idle-soft: var(--status-idle-soft);
+
+  --color-vault: var(--vault);
+  --color-vault-foreground: var(--vault-foreground);
+  --color-vault-muted: var(--vault-muted);
+  --color-vault-border: var(--vault-border);
+
+  --radius-sm: calc(var(--radius) - 6px);
+  --radius-md: calc(var(--radius) - 4px);
+  --radius-lg: var(--radius);
+  --radius-xl: calc(var(--radius) + 4px);
+
+  --font-sans: var(--font-sans);
+  --font-mono: var(--font-mono);
+}
+
+@layer base {
+  :root {
+    --font-sans:
+      Pretendard, Inter, "Noto Sans KR", ui-sans-serif, system-ui,
+      -apple-system, "Segoe UI", Roboto, sans-serif;
+    --font-mono:
+      "JetBrains Mono", ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
+  }
+
+  * {
+    border-color: var(--border);
+  }
+
+  body {
+    background-color: var(--background);
+    color: var(--foreground);
+    font-family: var(--font-sans);
+    -webkit-font-smoothing: antialiased;
+  }
+}

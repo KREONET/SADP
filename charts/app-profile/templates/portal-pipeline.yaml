@@ -1,0 +1,118 @@
+{{- if .Values.portalPipeline.enabled }}
+{{- if not .Values.rbac.enabled }}
+{{- fail "portalPipeline.enabled=true이면 수명 제한 ServiceAccount 토큰을 위해 rbac.enabled=true여야 한다" }}
+{{- end }}
+{{- $sa := include "app-profile.serviceAccountName" . -}}
+{{- if not .Values.portalPipeline.argoNamespace }}
+{{- fail "portalPipeline.argoNamespace가 필요하다" }}
+{{- end }}
+{{- if not .Values.configuration.config.PORTAL_BUILD_DOCKER_CONFIG_NAME }}
+{{- fail "portalPipeline.enabled=true이면 PORTAL_BUILD_DOCKER_CONFIG_NAME이 필요하다" }}
+{{- end }}
+apiVersion: rbac.authorization.k8s.io/v1
+kind: Role
+metadata:
+  name: {{ include "app-profile.fullname" . }}-pipeline
+  namespace: {{ .Release.Namespace }}
+  labels:
+    {{- include "app-profile.labels" . | nindent 4 }}
+rules:
+  - apiGroups: ["batch"]
+    resources: ["jobs"]
+    verbs: ["create", "get", "list", "delete"]
+  - apiGroups: ["apps"]
+    resources: ["deployments"]
+    verbs: ["get", "list"]
+  # Job condition은 ImagePullBackOff를 실패로 바꾸지 않아 deadline까지 숨긴다.
+  # 빌더/앱 Pod의 확정 waiting reason을 조기에 판정할 수 있게 읽기만 허용한다.
+  - apiGroups: [""]
+    resources: ["pods"]
+    verbs: ["get", "list"]
+  # 신청을 durable하게 받기 전에 kaniko push credential/key 존재 여부만 확인한다.
+  # build Job이 이미 이 exact Secret을 mount하므로 권한 경계를 넓히지 않는다.
+  - apiGroups: [""]
+    resources: ["secrets"]
+    resourceNames: [{{ .Values.configuration.config.PORTAL_BUILD_DOCKER_CONFIG_NAME | quote }}]
+    verbs: ["get"]
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: RoleBinding
+metadata:
+  name: {{ include "app-profile.fullname" . }}-pipeline
+  namespace: {{ .Release.Namespace }}
+  labels:
+    {{- include "app-profile.labels" . | nindent 4 }}
+roleRef:
+  apiGroup: rbac.authorization.k8s.io
+  kind: Role
+  name: {{ include "app-profile.fullname" . }}-pipeline
+subjects:
+  - kind: ServiceAccount
+    name: {{ $sa }}
+    namespace: {{ .Release.Namespace }}
+---
+# 사용자 소유권은 Portal API가 검사한다. SA는 동적 app 이름 때문에 resourceNames로
+# 좁힐 수 없지만 Application 외 리소스와 다른 Namespace에는 권한이 없다.
+apiVersion: rbac.authorization.k8s.io/v1
+kind: Role
+metadata:
+  name: {{ include "app-profile.fullname" . }}-application-deleter
+  namespace: {{ .Values.portalPipeline.argoNamespace }}
+  labels:
+    {{- include "app-profile.labels" . | nindent 4 }}
+rules:
+  - apiGroups: ["argoproj.io"]
+    resources: ["applications"]
+    verbs: ["get", "patch", "delete"]
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: RoleBinding
+metadata:
+  name: {{ include "app-profile.fullname" . }}-application-deleter
+  namespace: {{ .Values.portalPipeline.argoNamespace }}
+  labels:
+    {{- include "app-profile.labels" . | nindent 4 }}
+roleRef:
+  apiGroup: rbac.authorization.k8s.io
+  kind: Role
+  name: {{ include "app-profile.fullname" . }}-application-deleter
+subjects:
+  - kind: ServiceAccount
+    name: {{ $sa }}
+    namespace: {{ .Release.Namespace }}
+{{- if .Values.networkPolicy.enabled }}
+---
+# research Zone은 default-deny egress다. kaniko도 portal-lite와 같은 승인 목적지만 쓴다.
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: {{ include "app-profile.fullname" . }}-build-egress
+  namespace: {{ .Release.Namespace }}
+  labels:
+    {{- include "app-profile.labels" . | nindent 4 }}
+spec:
+  podSelector:
+    matchLabels:
+      app.kubernetes.io/name: portal-build
+  policyTypes: [Egress]
+  egress:
+    - to:
+        - namespaceSelector:
+            matchLabels:
+              kubernetes.io/metadata.name: {{ .Values.networkPolicy.dns.namespace | quote }}
+          podSelector:
+            matchLabels:
+              {{- toYaml .Values.networkPolicy.dns.podLabels | nindent 14 }}
+      ports:
+        - {protocol: UDP, port: 53}
+        - {protocol: TCP, port: 53}
+    {{- range .Values.networkPolicy.allowedCIDRs }}
+    - to:
+        - ipBlock:
+            cidr: {{ .cidr | quote }}
+      ports:
+        - protocol: {{ default "TCP" .protocol }}
+          port: {{ .port }}
+    {{- end }}
+{{- end }}
+{{- end }}

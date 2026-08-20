@@ -1,0 +1,48 @@
+apiVersion: argoproj.io/v1alpha1
+kind: Application
+metadata:
+  name: hello-beta
+  namespace: devtroncd
+spec:
+  project: sadp-platform
+  sources:
+  - repoURL: https://forgejo.example.invalid/example/sadp.git
+    targetRevision: main
+    path: charts/app-profile
+    helm:
+      releaseName: hello
+      valueFiles:
+      - $values/contracts/values-platform-production.yaml
+      - $values/apps/hello/values-beta.yaml
+  - repoURL: https://forgejo.example.invalid/example/sadp.git
+    targetRevision: main
+    ref: values
+  destination:
+    server: https://kubernetes.default.svc
+    namespace: sadp-apps
+  syncPolicy:
+    automated:
+      prune: false
+      selfHeal: true
+    syncOptions:
+    - CreateNamespace=true
+    - SkipDryRunOnMissingResource=true
+    retry:
+      limit: 10
+      backoff:
+        duration: 10s
+        factor: 2
+        maxDuration: 3m
+  ignoreDifferences:
+  - group: apps
+    kind: Deployment
+    jqPathExpressions:
+    - .status.terminatingReplicas
+  - group: apps
+    kind: ReplicaSet
+    jqPathExpressions:
+    - .status.terminatingReplicas
+  - group: apps
+    kind: Deployment
+    jsonPointers:
+    - /spec/template/metadata/annotations/reloader.stakater.com~1last-reloaded-from

@@ -1,0 +1,85 @@
+    - name: __HTTPS_LISTENER_NAME__
+      hostname: "*.__BASE_DOMAIN__"
+      protocol: HTTPS
+      port: 443
+      tls:
+        mode: Terminate
+        certificateRefs:
+          - group: ""
+            kind: Secret
+            name: __WILDCARD_TLS_SECRET__
+      allowedRoutes:
+        namespaces:
+          from: Selector
+          selector:
+            matchLabels:
+              __ROUTE_LABEL_KEY__: __ROUTE_LABEL_VALUE__
+        kinds:
+          - group: gateway.networking.k8s.io
+            kind: HTTPRoute
+    - name: apex-__HTTPS_LISTENER_NAME__
+      hostname: "__BASE_DOMAIN__"
+      protocol: HTTPS
+      port: 443
+      tls:
+        mode: Terminate
+        certificateRefs:
+          - group: ""
+            kind: Secret
+            name: __WILDCARD_TLS_SECRET__
+      allowedRoutes:
+        namespaces:
+          from: Selector
+          selector:
+            matchLabels:
+              __ROUTE_LABEL_KEY__: __ROUTE_LABEL_VALUE__
+        kinds:
+          - group: gateway.networking.k8s.io
+            kind: HTTPRoute
+---
+# HTTP listener 는 redirect 전용이 된다. 앱 HTTPRoute 는 routeListener 를 https 로 바꿔 이동한다.
+# hostname 이 wildcard 이므로, 전환 중 남아 있는 앱의 정확한 hostname HTTPRoute 가 우선한다.
+apiVersion: gateway.networking.k8s.io/v1
+kind: HTTPRoute
+metadata:
+  name: http-to-https-redirect
+  namespace: __REDIRECT_ROUTE_NAMESPACE__
+spec:
+  parentRefs:
+    - group: gateway.networking.k8s.io
+      kind: Gateway
+      namespace: __GATEWAY_NAMESPACE__
+      name: __GATEWAY_NAME__
+      sectionName: __HTTP_LISTENER_NAME__
+  hostnames:
+    - "*.__BASE_DOMAIN__"
+  rules:
+    - filters:
+        - type: RequestRedirect
+          requestRedirect:
+            scheme: https
+            port: 443
+            statusCode: 301
+---
+# wildcard redirect도 apex에는 적용되지 않으므로 루트 도메인 전용 redirect를 함께 둔다.
+apiVersion: gateway.networking.k8s.io/v1
+kind: HTTPRoute
+metadata:
+  name: apex-http-to-https-redirect
+  namespace: __REDIRECT_ROUTE_NAMESPACE__
+spec:
+  parentRefs:
+    - group: gateway.networking.k8s.io
+      kind: Gateway
+      namespace: __GATEWAY_NAMESPACE__
+      name: __GATEWAY_NAME__
+      sectionName: apex-__HTTP_LISTENER_NAME__
+  hostnames:
+    - "__BASE_DOMAIN__"
+  rules:
+    - filters:
+        - type: RequestRedirect
+          requestRedirect:
+            scheme: https
+            port: 443
+            statusCode: 301

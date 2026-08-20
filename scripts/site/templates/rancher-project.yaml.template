@@ -1,0 +1,11 @@
+# Rancher Project. metadata.name 을 명시하지 않으면 p-xxxxx 로 생성되어 Git 에 기록할 수 없다.
+# Project 객체는 클러스터 ID 와 같은 이름의 Namespace 에 존재한다(local 클러스터 -> local).
+apiVersion: management.cattle.io/v3
+kind: Project
+metadata:
+  name: __PROJECT_NAME__
+  namespace: __CLUSTER_ID__
+spec:
+  clusterName: __CLUSTER_ID__
+  displayName: __PROJECT_DISPLAY_NAME__
+  description: __PROJECT_DESCRIPTION__

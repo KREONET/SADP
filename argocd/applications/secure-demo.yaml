@@ -1,0 +1,38 @@
+apiVersion: argoproj.io/v1alpha1
+kind: Application
+metadata:
+  name: secure-demo-beta
+  namespace: devtroncd
+spec:
+  project: sadp-platform
+  sources:
+  - repoURL: https://forgejo.example.invalid/example/sadp.git
+    targetRevision: main
+    path: charts/app-profile
+    helm:
+      releaseName: secure-demo
+      valueFiles:
+      - $values/contracts/values-platform-production.yaml
+      - $values/apps/secure-demo/values-beta.yaml
+  - repoURL: https://forgejo.example.invalid/example/sadp.git
+    targetRevision: main
+    ref: values
+  destination:
+    server: https://kubernetes.default.svc
+    namespace: sadp-apps
+  syncPolicy:
+    automated:
+      prune: false
+      selfHeal: true
+    syncOptions:
+    - CreateNamespace=true
+    - SkipDryRunOnMissingResource=true
+  ignoreDifferences:
+  - group: apps
+    kind: Deployment
+    jqPathExpressions:
+    - .status.terminatingReplicas
+  - group: apps
+    kind: ReplicaSet
+    jqPathExpressions:
+    - .status.terminatingReplicas

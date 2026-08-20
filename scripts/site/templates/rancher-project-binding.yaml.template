@@ -1,0 +1,11 @@
+# ProjectRoleTemplateBinding 은 Project 의 backing Namespace 에 존재한다.
+# Rancher 가 Project 를 만든 뒤에야 그 Namespace 가 생기므로 첫 sync 는 실패할 수 있고,
+# platform-resources Application 의 재시도가 수렴을 담당한다.
+apiVersion: management.cattle.io/v3
+kind: ProjectRoleTemplateBinding
+metadata:
+  name: __BINDING_NAME__
+  namespace: __PROJECT_NAME__
+projectName: __CLUSTER_ID__:__PROJECT_NAME__
+roleTemplateName: __ROLE_TEMPLATE__
+groupPrincipalName: __GROUP_PRINCIPAL__

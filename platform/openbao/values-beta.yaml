@@ -1,0 +1,67 @@
+global:
+  tlsDisable: false
+injector:
+  enabled: false
+server:
+  image:
+    tag: 2.6.1
+    pullPolicy: IfNotPresent
+  authDelegator:
+    enabled: true
+  resources:
+    requests:
+      cpu: 150m
+      memory: 256Mi
+    limits:
+      cpu: '1'
+      memory: 1Gi
+  extraEnvironmentVars:
+    BAO_CACERT: /openbao/tls/ca.crt
+    VAULT_CACERT: /openbao/tls/ca.crt
+  volumes:
+  - name: server-tls
+    secret:
+      secretName: openbao-server-tls
+  volumeMounts:
+  - name: server-tls
+    mountPath: /openbao/tls
+    readOnly: true
+  dataStorage:
+    enabled: true
+    size: 10Gi
+    storageClass: local-path
+    accessMode: ReadWriteOnce
+  auditStorage:
+    enabled: true
+    size: 5Gi
+    storageClass: local-path
+    accessMode: ReadWriteOnce
+  persistentVolumeClaimRetentionPolicy:
+    whenDeleted: Retain
+    whenScaled: Retain
+  standalone:
+    enabled: false
+  ha:
+    enabled: true
+    replicas: 1
+    disruptionBudget:
+      enabled: false
+    raft:
+      enabled: true
+      setNodeId: true
+      config: "ui = true\nlistener \"tcp\" {\n  address = \"[::]:8200\"\n  cluster_address\
+        \ = \"[::]:8201\"\n  tls_disable = 0\n  tls_cert_file = \"/openbao/tls/tls.crt\"\
+        \n  tls_key_file = \"/openbao/tls/tls.key\"\n  tls_client_ca_file = \"/openbao/tls/ca.crt\"\
+        \n}\nstorage \"raft\" {\n  path = \"/openbao/data\"\n}\naudit \"file\" \"\
+        file\" {\n  description = \"Persistent JSON audit log\"\n  options {\n   \
+        \ file_path = \"/openbao/audit/audit.log\"\n  }\n}\nservice_registration \"\
+        kubernetes\" {}\n"
+  readinessProbe:
+    enabled: true
+  livenessProbe:
+    enabled: false
+  affinity: ''
+ui:
+  enabled: true
+  activeOpenbaoPodOnly: true
+  serviceType: ClusterIP

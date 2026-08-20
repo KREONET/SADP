@@ -1,0 +1,78 @@
+{{- if and (eq (include "app-profile.routeEnabled" .) "true") (eq (include "app-profile.authMode" .) "oidc") }}
+{{- if not .Values.platform.keycloak.issuer }}
+{{ fail "authentication.mode=oidc 인데 platform.keycloak.issuer 계약값이 비어 있다" }}
+{{- end }}
+{{- if not .Values.oidc.allowedGroups }}
+{{ fail "authentication.mode=oidc 인데 oidc.allowedGroups 가 비어 있다. 한 realm을 여러 시스템이 공유하므로 시스템마다 허용 그룹을 지정해야 한다" }}
+{{- end }}
+{{- range .Values.oidc.allowedGroups }}
+{{- if not (regexMatch "^[A-Za-z0-9][A-Za-z0-9._/-]*$" .) }}
+{{ fail (printf "oidc.allowedGroups 에 사용할 수 없는 그룹 이름이 있다: %s" .) }}
+{{- end }}
+{{- end }}
+{{- /*
+  SecurityPolicy 는 대상 HTTPRoute 와 같은 Namespace 에 있어야 한다.
+  clientSecret 로 참조하는 Secret 의 key 이름은 Envoy Gateway 규약상 'client-secret' 이어야 한다.
+  -> ExternalSecret 에서 targetKeyMap 으로 OIDC_CLIENT_SECRET -> client-secret 으로 변환한다.
+
+  그룹 인가는 세 조각이 함께 있어야 동작한다.
+  1) oidc.forwardIDToken 으로 로그인 결과 ID token 을 헤더에 싣는다.
+  2) jwt provider 가 그 헤더에서 토큰을 꺼내 issuer 의 JWKS 로 검증한다.
+  3) authorization 이 group claim 을 보고 허용 그룹만 통과시킨다.
+  CRD 주석대로 claim 인가는 같은 SecurityPolicy 안의 JWT 인증을 전제로 한다.
+*/}}
+apiVersion: gateway.envoyproxy.io/v1alpha1
+kind: SecurityPolicy
+metadata:
+  name: {{ include "app-profile.fullname" . }}-oidc
+  namespace: {{ .Release.Namespace }}
+  labels:
+    {{- include "app-profile.labels" . | nindent 4 }}
+spec:
+  targetRefs:
+    - group: gateway.networking.k8s.io
+      kind: HTTPRoute
+      name: {{ include "app-profile.fullname" . }}
+  oidc:
+    provider:
+      issuer: {{ .Values.platform.keycloak.issuer | quote }}
+    clientID: {{ include "app-profile.oidcClientID" . | quote }}
+    clientSecret:
+      group: ""
+      kind: Secret
+      name: {{ include "app-profile.oidcSecretName" . }}
+    redirectURL: {{ printf "https://%s%s" (include "app-profile.host" .) .Values.oidc.callbackPath | quote }}
+    logoutPath: {{ .Values.oidc.logoutPath | quote }}
+    scopes:
+      - openid
+    forwardIDToken:
+      header: {{ .Values.oidc.idTokenHeader | quote }}
+  jwt:
+    providers:
+      - name: keycloak
+        issuer: {{ .Values.platform.keycloak.issuer | quote }}
+        remoteJWKS:
+          uri: {{ printf "%s%s" .Values.platform.keycloak.issuer .Values.oidc.jwksPath | quote }}
+        extractFrom:
+          headers:
+            - name: {{ .Values.oidc.idTokenHeader | quote }}
+              {{- if eq .Values.oidc.idTokenHeader "Authorization" }}
+              valuePrefix: "Bearer "
+              {{- end }}
+  authorization:
+    # 허용 그룹에 없으면 막는다. 시스템마다 독립적으로 판단한다.
+    defaultAction: Deny
+    rules:
+      - name: allowed-groups
+        action: Allow
+        principal:
+          jwt:
+            provider: keycloak
+            claims:
+              - name: {{ .Values.oidc.groupsClaim | quote }}
+                valueType: StringArray
+                values:
+                  {{- range .Values.oidc.allowedGroups }}
+                  - {{ . | quote }}
+                  {{- end }}
+{{- end }}

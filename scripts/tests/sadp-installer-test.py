@@ -1,0 +1,108 @@
+#!/usr/bin/env python3
+"""SADP 통합 설치기의 읽기 전용 계획과 예제값 apply 차단 회귀."""
+
+from __future__ import annotations
+
+import pathlib
+import subprocess
+
+
+ROOT = pathlib.Path(__file__).resolve().parents[2]
+ENV_FILE = ROOT / "environments" / "site.env.example"
+PASSED = 0
+FAILED = 0
+
+
+def check(label: str, command: list[str], expected: int, contains: tuple[str, ...]) -> None:
+    global PASSED, FAILED
+    result = subprocess.run(command, cwd=ROOT, capture_output=True, text=True, check=False)
+    output = result.stdout + result.stderr
+    if result.returncode == expected and all(item in output for item in contains):
+        PASSED += 1
+        print(f"[OK]   {label}")
+        return
+    FAILED += 1
+    print(f"[FAIL] {label}: exit={result.returncode}, expected={expected}")
+    for line in output.splitlines()[-20:]:
+        print(f"       {line}")
+
+
+check(
+    "SI-01 example site.env render plan is read-only",
+    ["bash", "./sadp", "--install", "--env-file", str(ENV_FILE), "--phase", "render"],
+    0,
+    ("site=sadp", "검사만 완료"),
+)
+check(
+    "SI-02 worker role/IP and node steps are inferred from env",
+    [
+        "bash",
+        "./sadp",
+        "--install",
+        "--env-file",
+        str(ENV_FILE),
+        "--phase",
+        "node",
+        "--node-name",
+        "sadp-worker-1",
+    ],
+    0,
+    (
+        "role=agent internal-ip=10.20.30.21",
+        "--server-url https://10.20.30.11:9345",
+        "RKE2 embedded containerd proxy",
+    ),
+)
+check(
+    "SI-03 documentation endpoints cannot be applied",
+    [
+        "bash",
+        "./sadp",
+        "--install",
+        "--env-file",
+        str(ENV_FILE),
+        "--phase",
+        "render",
+        "--apply",
+    ],
+    1,
+    ("예제 BASE_DOMAIN을 실제 설치에 사용할 수 없음",),
+)
+check(
+    "SI-04 all apply cannot cross the manual restart boundary",
+    [
+        "bash",
+        "./sadp",
+        "--install",
+        "--env-file",
+        str(ENV_FILE),
+        "--phase",
+        "all",
+        "--apply",
+    ],
+    1,
+    ("수동 재시작/Ready 확인 후 cluster를 별도로 적용",),
+)
+check(
+    "SI-05 cluster phase plans automatic Devtron/Argo bootstrap",
+    [
+        "bash",
+        "./sadp",
+        "--install",
+        "--env-file",
+        str(ENV_FILE),
+        "--phase",
+        "cluster",
+        "--node-name",
+        "sadp-control-plane-1",
+    ],
+    0,
+    (
+        "기존 RKE2 클러스터 선행 조건 검사",
+        "Devtron과 번들 Argo CD 자동 준비",
+        "scripts/cluster/install-devtron.sh",
+    ),
+)
+
+print(f"통과 {PASSED} / 실패 {FAILED}")
+raise SystemExit(1 if FAILED else 0)

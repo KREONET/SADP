@@ -1,0 +1,95 @@
+{{- if .Values.networkPolicy.enabled }}
+{{- if and .Values.networkPolicy.nms.enabled (or (empty .Values.networkPolicy.nms.destinationCIDR) (lt (int .Values.networkPolicy.nms.port) 1)) }}
+{{- fail "networkPolicy.nms.enabled=true이면 destinationCIDR와 port가 필요하다" }}
+{{- end }}
+{{- $egressMode := include "app-profile.egressMode" . }}
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: {{ include "app-profile.egressPolicyName" . }}
+  namespace: {{ .Release.Namespace }}
+  labels:
+    {{- include "app-profile.labels" . | nindent 4 }}
+  annotations:
+    # App-of-apps의 Application health customization 유무와 관계없이, Pod를 만드는
+    # Deployment보다 먼저 이 앱을 선택하는 egress 경계를 API server에 기록한다.
+    argocd.argoproj.io/sync-wave: "-10"
+    # 어떤 프로파일로 만들어졌는지 남긴다. 규칙만 보고는 blocked 와 custom 을 구분할 수 없다.
+    platform.example.io/egress-mode: {{ $egressMode | quote }}
+spec:
+  podSelector:
+    matchLabels:
+      {{- include "app-profile.selectorLabels" . | nindent 6 }}
+  policyTypes:
+    - Egress
+  egress:
+    - to:
+        - namespaceSelector:
+            matchLabels:
+              kubernetes.io/metadata.name: {{ .Values.networkPolicy.dns.namespace | quote }}
+          podSelector:
+            matchLabels:
+              {{- toYaml .Values.networkPolicy.dns.podLabels | nindent 14 }}
+      ports:
+        - {protocol: UDP, port: 53}
+        - {protocol: TCP, port: 53}
+    {{- /*
+      같은 AppGroup(Namespace) 안의 앱 연결. 이름만 받아 표준 label selector 로 바꾸므로
+      사용자가 raw label 을 적을 필요가 없고, namespaceSelector 가 없으니 다른
+      AppGroup 으로는 나갈 수 없다.
+    */}}
+    {{- range .Values.networkPolicy.allowedApps }}
+    {{- if eq .app $.Values.app.name }}
+    {{- fail (printf "networkPolicy.allowedApps 에 자기 자신(%s)을 적을 수 없다" .app) }}
+    {{- end }}
+    - to:
+        {{- include "app-profile.appPeerSelector" . | nindent 8 }}
+      ports:
+        - protocol: {{ default "TCP" .protocol }}
+          port: {{ .port }}
+    {{- end }}
+    {{- range .Values.networkPolicy.allowedPods }}
+    - to:
+        - namespaceSelector:
+            matchLabels:
+              kubernetes.io/metadata.name: {{ .namespace | quote }}
+          podSelector:
+            matchLabels:
+              {{- toYaml .podLabels | nindent 14 }}
+      ports:
+        - protocol: {{ default "TCP" .protocol }}
+          port: {{ .port }}
+    {{- end }}
+    {{- if eq $egressMode "web" }}
+    {{- /*
+      "인터넷 TCP 80/443만" 이다. URL/FQDN 필터가 아니다 — 기본 NetworkPolicy 는
+      도메인을 볼 수 없다. 사설망과 클러스터 대역은 계약값으로 except 처리한다.
+    */}}
+    - to:
+        - ipBlock:
+            cidr: 0.0.0.0/0
+            except:
+              {{- include "app-profile.internetExcept" . | nindent 14 }}
+      ports:
+        - protocol: TCP
+          port: 80
+        - protocol: TCP
+          port: 443
+    {{- end }}
+    {{- range .Values.networkPolicy.allowedCIDRs }}
+    - to:
+        - ipBlock:
+            cidr: {{ .cidr | quote }}
+      ports:
+        - protocol: {{ default "TCP" .protocol }}
+          port: {{ .port }}
+    {{- end }}
+    {{- if .Values.networkPolicy.nms.enabled }}
+    - to:
+        - ipBlock:
+            cidr: {{ .Values.networkPolicy.nms.destinationCIDR | quote }}
+      ports:
+        - protocol: TCP
+          port: {{ .Values.networkPolicy.nms.port }}
+    {{- end }}
+{{- end }}

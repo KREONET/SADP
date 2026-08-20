@@ -1,0 +1,48 @@
+# 자동 생성 파일. contracts/platform-production.yaml을 수정한 뒤 scripts/site/render-quota.py를 실행한다.
+# 사용자당 상한은 policy.userQuota 하나로 정한다. UI(위저드)와 서버 검증
+# (apps/portal-lite/quota.go)이 같은 값을 쓰는지는 render-quota.py가 대조한다.
+apiVersion: v1
+kind: ResourceQuota
+metadata:
+  name: user-workload-quota
+  namespace: sadp-apps
+  annotations:
+    # 사용자 4명 x 1인 3 CPU / 5Gi
+    sadp.example.io/source: contracts/platform-production.yaml spec.policy.userQuota
+spec:
+  hard:
+    requests.cpu: "12"
+    requests.memory: "20Gi"
+    limits.cpu: "12"
+    limits.memory: "20Gi"
+    pods: "20"
+---
+apiVersion: v1
+kind: LimitRange
+metadata:
+  name: user-workload-limits
+  namespace: sadp-apps
+  annotations:
+    # Namespace 총량과 별개로 Pod 하나가 1인 상한을 넘지 못하게 한다.
+    sadp.example.io/source: contracts/platform-production.yaml spec.policy.userQuota
+spec:
+  limits:
+    - type: Pod
+      max:
+        cpu: "3"
+        memory: "5Gi"
+    - type: Container
+      max:
+        cpu: "3"
+        memory: "5Gi"
+      min:
+        cpu: "10m"
+        memory: "16Mi"
+      # ResourceQuota 가 limits.* 를 걸면 값이 없는 Pod 는 생성 자체가 거부된다.
+      # charts/app-profile 는 항상 채우지만, 직접 넣은 Pod 를 위해 기본값을 준다.
+      default:
+        cpu: "500m"
+        memory: "512Mi"
+      defaultRequest:
+        cpu: "100m"
+        memory: "128Mi"

@@ -1,0 +1,5 @@
+# Generated site RKE2 agent template; token stays empty.
+server: https://10.20.30.11:9345
+token: ''
+node-label:
+- node.kubernetes.io/worker=true

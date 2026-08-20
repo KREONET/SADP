@@ -1,0 +1,192 @@
+#!/usr/bin/env bash
+# SADP 공개 단일 진입점 dispatcher.
+#
+# scripts/ 아래 40개가 넘는 파일 이름을 외우지 않아도 되게 하는 얇은 dispatcher다.
+# 여기서 하는 일은 "명령 -> 실제 스크립트" 매핑과 인자 전달뿐이고, 로직은 전부 대상
+# 스크립트에 있다. 그래서 진입점에 문제가 생겨도 대상 스크립트를 직접 부르면 된다.
+#
+#   bash ./sadp --list
+#   bash ./sadp --render-network
+#   sudo bash ./sadp --install --env-file /etc/sadp/site.env --phase cluster --apply
+#
+# root 승격은 하지 않는다. sudo가 필요한 명령은 대상 스크립트의 require_root가
+# 판단하게 두고, 이 파일이 몰래 권한을 올리지 않는다.
+set -euo pipefail
+
+ROOT=$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)
+cd "${ROOT}"
+
+# 명령|실행기|경로|설명 (그룹은 GROUP: 줄로 나눈다)
+COMMANDS=$(
+  cat <<'TABLE'
+GROUP:install — site.env 기반 통합 설치
+install|bash|scripts/install/sadp-install.sh|render/node/cluster phase를 검증된 env 값으로 자동 실행
+GROUP:site — 계약과 생성물 (워크스테이션, 클러스터 불필요)
+configure-site|python3|scripts/site/configure-site.py|site.env -> 계약. 기본 read-only, --write 필요
+render-network|python3|scripts/site/render-network.py|계약 -> Squid/방화벽/CoreDNS/NMS/cert-manager egress
+render-exposure|python3|scripts/site/render-exposure.py|계약 -> D4 노출과 D5 TLS
+render-rancher|python3|scripts/site/render-rancher.py|계약 -> Rancher Project와 RBAC
+render-quota|python3|scripts/site/render-quota.py|계약 -> ResourceQuota/LimitRange
+render-all|special|render-all|위 render-* 4개를 순서대로
+promote-image|python3|scripts/site/promote-image.py|GitOps values의 image 필드만 교체
+portal-ui-env|python3|scripts/site/portal-ui-build-env.py|루트 .env에서 허용된 NEXT_PUBLIC_* 만 추출
+GROUP:node — 각 노드에서 root. --apply 없이 먼저 계획을 읽어라
+install-node-config|bash|scripts/node/install-rke2-node-config.sh|생성된 RKE2 config를 /etc/rancher/rke2에 반영
+install-network-identity|bash|scripts/node/install-rke2-network-identity.sh|내부망 NIC에 RKE2 고정
+install-interface-guard|bash|scripts/node/install-rke2-interface-guard.sh|공인/NMS NIC의 관리 포트 차단
+install-containerd-proxy|bash|scripts/node/install-rke2-containerd-proxy.sh|containerd image pull만 Squid 경유
+install-squid|bash|scripts/node/install-squid-egress.sh|allowlist Squid proxy 설치
+install-nms-egress|bash|scripts/node/install-nms-egress.sh|고정 출발지 NMS 경로를 systemd unit으로
+configure-nms-egress|bash|scripts/node/configure-nms-egress.sh|렌더된 host route/rp_filter 적용
+GROUP:cluster — control-plane에서 root. 클러스터 전체
+bootstrap|bash|scripts/cluster/bootstrap-testbed.sh|전체 설치 진입점(아래 단계를 순서대로)
+preflight|bash|scripts/cluster/preflight.sh|3노드 RKE2와 기본 StorageClass 실검증
+install-devtron|bash|scripts/cluster/install-devtron.sh|Devtron/번들 Argo CD 계획 또는 부재 시 설치
+install-platform|bash|scripts/cluster/install-testbed-platform.sh|인증서/3노드/OpenBao/ESO/Reloader/Keycloak
+configure-openbao-app-access|bash|scripts/ops/configure-openbao-app-access.sh|앱별 OpenBao OIDC 권한 구성(관리자 전용)
+build-images|bash|scripts/cluster/build-local-images.sh|이미지 빌드(워커 Pod) + 세 노드 import
+bootstrap-services|bash|scripts/cluster/bootstrap-testbed-services.sh|Keycloak realm/client, OpenBao auth/KV
+deploy-apps|bash|scripts/cluster/deploy-testbed-apps.sh|hello/secure-demo/portal-lite 배포와 rollout
+install-portal-backend|bash|scripts/cluster/install-portal-backend.sh|Portal Lite 백엔드
+configure-argocd-repo|bash|scripts/cluster/configure-argocd-repo.sh|Argo CD repository Secret
+configure-external-keycloak|bash|scripts/cluster/configure-external-keycloak.sh|외부 Keycloak VM에 realm/IdP/Portal client 정책 원격 수렴
+sync-images|bash|scripts/cluster/sync-external-images.sh|서드파티 이미지를 모든 노드에 동기화
+GROUP:verify — 검수
+verify-testbed|bash|scripts/verify/verify-testbed.sh|핵심 acceptance. control-plane 노드 위에서
+verify-d5|bash|scripts/verify/verify-d5.sh|cert-manager, wildcard TLS, HTTP->HTTPS
+verify-d6|bash|scripts/verify/verify-d6.sh|Rancher 설치와 기본 RBAC
+verify-portal-auth|bash|scripts/verify/verify-portal-auth.sh|Auth.js -> Keycloak 인증 흐름
+verify-saml-federation|bash|scripts/verify/verify-saml-federation.sh|외부 SSO/Keycloak 시간·Assertion 재사용·신규 오류 검증
+verify-squid|bash|scripts/verify/verify-squid-egress.sh|렌더된 allowlist 검증(host 변경 없음)
+verify-backups|bash|scripts/verify/verify-backups.sh|백업 checksum/포맷과 복원 시험
+GROUP:ops — 운영
+backup|bash|scripts/ops/backup-testbed.sh|etcd, OpenBao Raft, Keycloak PostgreSQL
+toggle-portal|bash|scripts/ops/toggle-portal.sh|Portal 테스트 페이지 on/off/status
+rotate-forgejo-token|bash|scripts/ops/rotate-forgejo-token.sh|Forgejo 봇 토큰 회전
+export-credentials|bash|scripts/ops/export-test-credentials.sh|자격증명을 Git 밖 root-only 경로로
+configure-authentik-saml|bash|scripts/ops/configure-authentik-saml.sh|Authentik Assertion 유효시간 공식 기본값 수렴
+GROUP:check — 커밋 전에 통과시킬 것
+guard|bash|scripts/ci-guard.sh|금지 입력 차단. pre-commit과 CI가 같은 것을 쓴다
+render-test|bash|scripts/tests/render-test.sh|helm template 회귀
+test|special|test|회귀 시험 전부 + guard + render-test
+TABLE
+)
+
+usage() {
+  cat <<'EOF'
+SADP 설치 명령어
+
+  bash ./sadp --<명령> [옵션...]
+
+옵션은 그대로 대상 스크립트에 전달됩니다.
+  bash ./sadp --install --env-file /etc/sadp/site.env --phase render
+  sudo bash ./sadp --install --env-file /etc/sadp/site.env --phase node --apply
+  sudo bash ./sadp --install --env-file /etc/sadp/site.env --phase cluster --apply
+
+root 승격은 하지 않습니다. 필요한 명령은 sudo를 직접 넣어야 합니다.
+옮긴 스크립트를 직접 부르는 것도 계속 동작합니다(python3 scripts/site/render-network.py).
+
+EOF
+  list_commands
+  cat <<'EOF'
+EOF
+}
+
+list_commands() {
+  local line group command runner path description
+  while IFS= read -r line; do
+    [[ -n ${line} ]] || continue
+    if [[ ${line} == GROUP:* ]]; then
+      printf '\n  \033[1m%s\033[0m\n' "${line#GROUP:}"
+      continue
+    fi
+    IFS='|' read -r command runner path description <<<"${line}"
+    printf '    --%-26s %s\n' "${command}" "${description}"
+  done <<<"${COMMANDS}"
+}
+
+# 회귀 시험 묶음. AGENTS.md 3절의 목록과 같은 것을 돌린다.
+run_test_suite() {
+  local failed=0 script
+  for script in scripts/tests/*-test.py; do
+    printf '\n=== %s ===\n' "${script}"
+    python3 "${script}" || failed=1
+  done
+  printf '\n=== scripts/tests/render-test.sh ===\n'
+  bash scripts/tests/render-test.sh || failed=1
+  printf '\n=== scripts/ci-guard.sh ===\n'
+  bash scripts/ci-guard.sh || failed=1
+  printf '\n=== git diff --check ===\n'
+  git diff --check || failed=1
+  if ((failed)); then
+    printf '\n[FAIL] 회귀 시험 실패\n' >&2
+    return 1
+  fi
+  printf '\n[OK]   회귀 시험 전부 통과\n'
+}
+
+# 계약을 고친 뒤 하위 생성물을 다시 만드는 순서.
+run_render_all() {
+  local script
+  for script in render-network render-exposure render-rancher render-quota; do
+    printf '=== %s ===\n' "${script}"
+    python3 "scripts/site/${script}.py" "$@"
+  done
+}
+
+resolve() {
+  local want=$1 line command runner path description
+  while IFS= read -r line; do
+    [[ -n ${line} && ${line} != GROUP:* ]] || continue
+    IFS='|' read -r command runner path description <<<"${line}"
+    if [[ ${command} == "${want}" ]]; then
+      printf '%s\t%s' "${runner}" "${path}"
+      return 0
+    fi
+  done <<<"${COMMANDS}"
+  return 1
+}
+
+if (($# == 0)); then
+  usage
+  exit 0
+fi
+
+case "$1" in
+  -h|--help) usage; exit 0 ;;
+  --list) list_commands; exit 0 ;;
+esac
+
+if [[ $1 != --* ]]; then
+  printf '[FAIL] 명령은 --로 시작해야 한다: %s\n' "$1" >&2
+  printf '       사용 가능한 명령은 bash ./sadp --list\n' >&2
+  exit 2
+fi
+
+requested=${1#--}
+shift
+
+if ! resolved=$(resolve "${requested}"); then
+  printf '[FAIL] 알 수 없는 명령: --%s\n' "${requested}" >&2
+  printf '       사용 가능한 명령은 bash ./sadp --list\n' >&2
+  exit 2
+fi
+IFS=$'\t' read -r runner target <<<"${resolved}"
+
+case "${runner}" in
+  special)
+    case "${target}" in
+      test) run_test_suite ;;
+      render-all) run_render_all "$@" ;;
+      *) printf '[FAIL] 내부 오류: 알 수 없는 special %s\n' "${target}" >&2; exit 2 ;;
+    esac
+    ;;
+  python3|bash)
+    [[ -f ${target} ]] || { printf '[FAIL] 대상 스크립트가 없다: %s\n' "${target}" >&2; exit 2; }
+    exec "${runner}" "${target}" "$@"
+    ;;
+  *)
+    printf '[FAIL] 내부 오류: 알 수 없는 실행기 %s\n' "${runner}" >&2
+    exit 2
+    ;;
+esac

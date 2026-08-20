@@ -1,0 +1,1185 @@
+#!/usr/bin/env python3
+"""Regression tests for scripts/site/configure-site.py (SC-01..SC-08)."""
+
+from __future__ import annotations
+
+import pathlib
+import shutil
+import subprocess
+import sys
+import tempfile
+
+import yaml
+
+
+ROOT = pathlib.Path(__file__).resolve().parents[2]
+PASSED = 0
+FAILED = 0
+
+VALID = """\
+SITE_NAME=production
+APP_ENVIRONMENT=prod
+CLUSTER_NAME=production
+BASE_DOMAIN=prod.company.kr
+WORKLOAD_NAMESPACE=research-prod
+PLATFORM_ROUTE_NAMESPACE=platform-prod
+GATEWAY_NAMESPACE=envoy-gateway-system
+GATEWAY_NAME=prod-gateway
+GATEWAY_PROXY_CONFIG_NAME=prod-envoy-proxy
+GATEWAY_ADDRESS_POOL_NAME=prod-envoy-vip
+WILDCARD_TLS_SECRET=prod-wildcard-tls
+ACME_CLUSTER_ISSUER_NAME=prod-dns01
+ACME_ACCOUNT_SECRET_NAME=prod-acme-account-key
+PORTAL_HOST=
+HELLO_HOST=
+SECURE_DEMO_HOST=
+SSO_HOST=
+RANCHER_HOST=
+OPENBAO_HOST=
+EXTERNAL_SERVICES=
+MACHINE_AUTH_SERVICES=
+MACHINE_AUTH_CLIENTS=
+MACHINE_AUTH_ALLOWED_CIDRS=
+KEYCLOAK_REALM=platform
+PORTAL_KEYCLOAK_CLIENT_ID=portal-prod
+KEYCLOAK_DEPLOYMENT=in-cluster
+KEYCLOAK_EXTERNAL_ADDRESS=
+KEYCLOAK_EXTERNAL_PORT=8080
+KEYCLOAK_SAML_SP_ENTITY_ID=
+STORAGE_CLASS=local-path
+APP_GROUP_VOLUME_SIZE=5Gi
+APP_GROUP_MAX_SERVICES=5
+FORGEJO_REPO_URL=https://forgejo.company.kr/platform/SADP.git
+FORGEJO_REVISION=production
+OCI_REGISTRY=registry.company.kr
+OCI_PROJECT=platform/sadp
+REGISTRY_PULL_SECRET=forgejo-registry-pull
+TEST_APP_IMAGE_TAG=1111111111111111111111111111111111111111
+PORTAL_IMAGE_TAG=2222222222222222222222222222222222222222
+IMAGE_PULL_POLICY=IfNotPresent
+CONTROL_PLANE_HOSTNAME=prod-control-plane-1
+CONTROL_PLANE_IP=10.20.30.11
+WORKER_NODES=prod-worker-1=10.20.30.21,prod-worker-2=10.20.30.22
+INTERNAL_INTERFACE=ens192
+EXTERNAL_INTERFACE=ens224
+NODE_INTERNAL_CIDRS=10.20.30.0/24
+POD_CIDRS=10.52.0.0/16
+SERVICE_CIDRS=10.53.0.0/16
+CLUSTER_DNS_IP=10.53.0.10
+KUBERNETES_API_ADDRESSES=10.53.0.1,10.20.30.11
+RKE2_SERVER_ENDPOINT=10.20.30.11
+INTERNAL_ALLOWED_TCP_PORTS=2379,2380,3128,6443,9345,10250
+INTERNAL_ALLOWED_UDP_PORTS=8472
+KUBERNETES_API_PORT=6443
+RKE2_SUPERVISOR_PORT=9345
+ETCD_CLIENT_PORT=2379
+ETCD_PEER_PORT=2380
+KUBELET_PORT=10250
+CANAL_VXLAN_UDP_PORT=8472
+PUBLIC_IP=203.0.113.10
+PUBLIC_EXPOSURE_MODE=nat
+GATEWAY_VIP=10.20.30.200
+GATEWAY_ADDRESS_POOL=10.20.30.200-10.20.30.220
+PUBLIC_HTTP_PORT=80
+PUBLIC_HTTPS_PORT=443
+EXTERNAL_ALLOWED_TCP_PORTS=80,443
+EXTERNAL_ALLOWED_UDP_PORTS=
+ENVOY_HTTPS_TARGET_PORT=10443
+SQUID_INTERNAL_IP=10.20.30.11
+SQUID_PORT=3128
+SQUID_CLIENT_CIDRS=10.20.30.0/24,10.52.0.0/16
+EXTRA_PACKAGE_DOMAINS=packages.company.kr
+TLS_SOURCE=acme
+TLS_ISSUER_MODE=staging
+ACME_STAGING_VERIFIED=false
+EXISTING_GATEWAY_TLS_READY=false
+ACME_EMAIL=platform-ops@company.kr
+DNS_PROVIDER=rfc2136
+RFC2136_NAMESERVER=192.0.2.53:53
+RFC2136_TSIG_KEY_NAME=acme-key.prod.company.kr.
+RFC2136_TSIG_ALGORITHM=HMACSHA256
+DNS_CREDENTIAL_SECRET_NAME=dns01-rfc2136-tsig
+DNS_CREDENTIAL_SECRET_KEY=tsig-secret
+DNS_RECURSIVE_NAMESERVERS=10.53.0.10:53
+PROVIDED_CERTIFICATE_PATH=wildcard/fullchain.pem
+PROVIDED_PRIVATE_KEY_PATH=wildcard/privkey.pem
+NMS_MODE=disabled
+NMS_ALLOWED_APPS=
+NMS_DESTINATION_CIDR=
+NMS_PORT=
+NMS_GATEWAY_INTERNAL_IP=
+NMS_INTERFACE=
+NMS_GATEWAY_IP=
+NMS_NEXT_HOP=
+NMS_INTERNAL_DOMAIN=
+NMS_DNS_SERVERS=
+NMS_API_BASE_URL=
+NMS_API_STATUS_PATH=/status
+NMS_REQUIRED_ROLE=nms:read
+NMS_API_TOKEN_REQUIRED=false
+NMS_API_TOKEN_SECRET_KEY=NMS_API_TOKEN
+"""
+
+
+def run_env(text: str, *, write: bool = False) -> tuple[subprocess.CompletedProcess, pathlib.Path]:
+    workspace = pathlib.Path(tempfile.mkdtemp(prefix="configure-site-test-"))
+    if write:
+        shutil.copytree(
+            ROOT,
+            workspace,
+            dirs_exist_ok=True,
+            ignore=shutil.ignore_patterns(
+                ".git", ".agents", ".codex", "ADR", "node_modules", ".next", "wildcard", "__pycache__"
+            ),
+        )
+    else:
+        (workspace / "scripts" / "site").mkdir(parents=True)
+        (workspace / "contracts").mkdir(parents=True)
+        shutil.copy2(ROOT / "scripts/site/configure-site.py", workspace / "scripts/site/configure-site.py")
+        shutil.copy2(ROOT / "contracts/platform-production.yaml", workspace / "contracts/platform-production.yaml")
+        # --check still prepares every target in memory, so copy the read dependencies.
+        # scripts/site/templates 도 읽기 의존성이다. in-cluster Keycloak 계약은 --check 에서도
+        # keycloak-in-cluster.yaml.template 을 열기 때문에, 빠지면 그 case 만 파일 없음으로 죽는다.
+        for relative in ("apps", "argocd", "rke", "platform", "scripts/site/templates"):
+            shutil.copytree(
+                ROOT / relative,
+                workspace / relative,
+                ignore=shutil.ignore_patterns("node_modules", ".next", "__pycache__"),
+            )
+
+    # 이 테스트는 prod.company.kr라는 합성 사이트를 렌더한다. 운영 Portal이 현재 사이트
+    # 도메인으로 만든 AppGroup values/Application까지 복사하면 configure-site 소유 파일은
+    # 정상이어도 ci-guard가 타 사이트 host로 판정한다. Portal 런타임 산출물은 합성 입력의
+    # 일부가 아니므로 /tmp 복사본에서만 제외하고 빈 생성 위치는 유지한다.
+    shutil.rmtree(workspace / "apps/_groups", ignore_errors=True)
+    (workspace / "apps/_groups").mkdir(parents=True, exist_ok=True)
+    for pattern in ("aa-*.yaml", "ag-*.yaml"):
+        for generated_application in (workspace / "argocd/applications").glob(pattern):
+            generated_application.unlink()
+
+    env_file = workspace / "site.env"
+    env_file.write_text(text, encoding="utf-8")
+    command = [sys.executable, "scripts/site/configure-site.py", "--env-file", str(env_file)]
+    command.append("--write" if write else "--check")
+    result = subprocess.run(command, cwd=workspace, capture_output=True, text=True, check=False)
+    return result, workspace
+
+
+def mutate(text: str, old: str, new: str) -> str:
+    if old not in text:
+        raise AssertionError(f"test seed not found: {old}")
+    return text.replace(old, new, 1)
+
+
+def case(label: str, text: str, expect_success: bool, verify=None, *, write: bool = False) -> None:
+    global PASSED, FAILED
+    result, workspace = run_env(text, write=write)
+    detail = ""
+    try:
+        if (result.returncode == 0) != expect_success:
+            detail = f"exit={result.returncode}, expected_success={expect_success}"
+        elif verify:
+            detail = verify(workspace, result) or ""
+        if detail:
+            FAILED += 1
+            print(f"[FAIL] {label}: {detail}")
+            output = (result.stdout + result.stderr).strip()
+            if output:
+                print("       " + output.replace("\n", "\n       "))
+        else:
+            PASSED += 1
+            print(f"[OK]   {label}")
+    finally:
+        shutil.rmtree(workspace, ignore_errors=True)
+
+
+# 파생 함수 하나만 확인하면 되는 경우. site.env 를 통째로 돌리면 관련 없는 검증이
+# 함께 걸려서 무엇이 깨졌는지 흐려진다.
+def load_configure_site():
+    import importlib.util
+
+    path = ROOT / "scripts/site/configure-site.py"
+    spec = importlib.util.spec_from_file_location("configure_site", path)
+    module = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(module)
+    return module
+
+
+def direct_case(label: str, check) -> None:
+    global PASSED, FAILED
+    try:
+        detail = check() or ""
+    except Exception as error:  # noqa: BLE001 - 실패 원인을 그대로 보여 준다
+        detail = f"{type(error).__name__}: {error}"
+    if detail:
+        FAILED += 1
+        print(f"[FAIL] {label}: {detail}")
+    else:
+        PASSED += 1
+        print(f"[OK]   {label}")
+
+
+def verify_generated(workspace: pathlib.Path, *, expect_nms: bool, expected_mode: str) -> str:
+    contract = yaml.safe_load((workspace / "contracts/platform-production.yaml").read_text(encoding="utf-8"))
+    spec = contract["spec"]
+    if spec["baseDomain"] != "prod.company.kr":
+        return "base domain was not generated"
+    if spec["gateway"]["name"] != "prod-gateway":
+        return "Gateway name was not generated"
+    if spec["gateway"]["allowedRouteNamespaces"] != ["research-prod", "platform-prod"]:
+        return "route Namespaces were not generated"
+    if spec["gateway"]["wildcardTlsSecret"] != "prod-wildcard-tls":
+        return "wildcard Secret name was not generated"
+    if spec["tls"]["clusterIssuerName"] != "prod-dns01":
+        return "ACME ClusterIssuer name was not generated"
+    if spec["tls"]["solver"]["provider"] != "rfc2136":
+        return "RFC2136 solver was not selected"
+    if spec["tls"]["solver"]["rfc2136"] != {
+        "nameserver": "192.0.2.53:53",
+        "tsigKeyName": "acme-key.prod.company.kr.",
+        "tsigAlgorithm": "HMACSHA256",
+    }:
+        return "RFC2136 contract mismatch"
+    if spec["network"]["defaultDenyNamespaces"] != ["research-prod"]:
+        return "default-deny Namespace was not generated"
+    interfaces = spec["network"]["interfaces"]
+    if (
+        interfaces.get("internal") != "ens192"
+        or interfaces.get("external") != "ens224"
+        or interfaces.get("guarded") != []
+    ):
+        return "site interface names were not generated into the contract"
+    if spec["network"]["nms"]["mode"] != expected_mode:
+        return f"NMS mode mismatch: {spec['network']['nms']['mode']}"
+    if spec["policy"]["userQuota"]["namespaces"] != ["research-prod"]:
+        return "user quota workload Namespace was not generated"
+    if spec["public"]["mode"] != "nat" or spec["public"]["ports"] != [80, 443]:
+        return "public NAT mode contract mismatch"
+    if spec["delivery"] != {
+        "provider": "forgejo",
+        "repoURL": "https://forgejo.company.kr/platform/SADP.git",
+        "revision": "production",
+    }:
+        return f"Forgejo delivery contract mismatch: {spec.get('delivery')}"
+    if spec.get("openbao", {}).get("namespace") != "openbao":
+        return "OpenBao CA ConfigMap namespace contract missing"
+    if spec.get("registry", {}).get("pullSecretRemotePath") != (
+        "platform/registry/forgejo-registry-pull"
+    ):
+        return "registry pull OpenBao remote path contract mismatch"
+    if spec.get("appGroups", {}).get("namespacePrefix") != "app-":
+        return "AppGroup Namespace prefix contract mismatch"
+    if spec.get("appGroups", {}).get("storage") != {
+        "storageClass": "local-path",
+        "volumeSize": "5Gi",
+        "maxClaims": 5,
+        "total": "25Gi",
+    }:
+        return "AppGroup storage contract mismatch"
+    chart_contract = yaml.safe_load(
+        (workspace / "contracts/values-platform-production.yaml").read_text(encoding="utf-8")
+    )
+    if chart_contract.get("platform", {}).get("appGroups", {}).get("namespacePrefix") != "app-":
+        return "AppGroup Namespace prefix chart contract mismatch"
+    if chart_contract.get("platform", {}).get("appGroups", {}).get("storage", {}).get("total") != "25Gi":
+        return "AppGroup storage chart contract mismatch"
+    if chart_contract.get("platform", {}).get("rancher", {}).get("workloadProjectId") != (
+        "local:proj-research-prod"
+    ):
+        return "AppGroup Rancher project chart contract mismatch"
+    portal = yaml.safe_load((workspace / "apps/portal-lite/values-beta.yaml").read_text(encoding="utf-8"))
+    if portal["image"]["repository"] != "registry.company.kr/platform/sadp/portal-lite":
+        return "Portal OCI repository mismatch"
+    if portal["configuration"]["config"]["PLATFORM_BASE_DOMAIN"] != "prod.company.kr":
+        return "Portal runtime base domain missing"
+    if portal["configuration"]["config"].get("PORTAL_ARGO_NAMESPACE") != "devtroncd":
+        return "Portal Argo namespace config missing"
+    if portal["configuration"]["config"].get("PORTAL_REGISTRY_PULL_REMOTE_PATH") != (
+        "platform/registry/forgejo-registry-pull"
+    ):
+        return "Portal registry pull OpenBao path config missing"
+    if portal["configuration"]["config"].get("PORTAL_APP_GROUP_NAMESPACE_PREFIX") != "app-":
+        return "Portal AppGroup Namespace prefix config missing"
+    if portal["configuration"]["config"].get("PORTAL_APP_GROUP_VOLUME_SIZE") != "5Gi":
+        return "Portal AppGroup volume size config missing"
+    if portal["configuration"]["config"].get("PORTAL_APP_GROUP_VOLUME_STORAGE_CLASS") != "local-path":
+        return "Portal AppGroup StorageClass config missing"
+    if portal["configuration"]["config"].get("PORTAL_APP_GROUP_ARGO_PROJECT") != "app-groups":
+        return "Portal AppGroup Argo project config missing"
+    if portal.get("portalPipeline", {}).get("argoNamespace") != "devtroncd":
+        return "Portal pipeline Argo RBAC namespace missing"
+    if bool(portal["networkPolicy"]["nms"]["enabled"]) != expect_nms:
+        return f"NMS label/policy state mismatch: expected {expect_nms}"
+    server = yaml.safe_load((workspace / "rke/control-node/config.yaml").read_text(encoding="utf-8"))
+    if "rke2-ingress-nginx" not in (server.get("disable") or []):
+        return "RKE2 ingress-nginx disable guard missing"
+    if server.get("cluster-cidr") != "10.52.0.0/16":
+        return "RKE2 Pod CIDR was not generated from POD_CIDRS"
+    if server.get("service-cidr") != "10.53.0.0/16":
+        return "RKE2 Service CIDR was not generated from SERVICE_CIDRS"
+    if server.get("cluster-dns") != "10.53.0.10":
+        return "RKE2 cluster DNS was not generated from CLUSTER_DNS_IP"
+    worker = yaml.safe_load((workspace / "rke/worker-node/config.yaml").read_text(encoding="utf-8"))
+    if any(key in worker for key in ("cluster-cidr", "service-cidr", "cluster-dns")):
+        return "RKE2 server-only network keys leaked into the agent config"
+    bootstrap = yaml.safe_load((workspace / "argocd/bootstrap-application.yaml").read_text(encoding="utf-8"))
+    if bootstrap["spec"]["source"]["repoURL"] != spec["delivery"]["repoURL"]:
+        return "Argo bootstrap repository mismatch"
+    if bootstrap["spec"]["source"]["targetRevision"] != "production":
+        return "Argo bootstrap revision mismatch"
+    portal_application = yaml.safe_load(
+        (workspace / "argocd/applications/portal-lite.yaml").read_text(encoding="utf-8")
+    )
+    if portal_application["spec"]["destination"]["namespace"] != "research-prod":
+        return "Argo workload Namespace mismatch"
+    squid = (workspace / "platform/network/squid/squid.conf").read_text(encoding="utf-8")
+    provider_domains = (workspace / "platform/network/squid/dns-provider-domains.txt").read_text(encoding="utf-8")
+    if any(line.strip() and not line.lstrip().startswith("#") for line in provider_domains.splitlines()):
+        return "RFC2136 must not add a DNS API hostname to Squid"
+    if "dns_provider_domains" in squid:
+        return "RFC2136 must not create a Squid DNS provider ACL"
+    if "packages.company.kr" not in squid:
+        return "extra package hostname missing"
+    policies = (workspace / "platform/network/egress-policies.yaml").read_text(encoding="utf-8")
+    if "192.0.2.53/32" not in policies:
+        return "RFC2136 authoritative DNS egress policy missing"
+    tls = workspace / "platform/cert-manager/resources.yaml"
+    if not tls.exists() or "prod-wildcard-tls-staging" not in tls.read_text(encoding="utf-8"):
+        return "staging wildcard Certificate was not rendered"
+    if not (workspace / "platform/network/firewall.env").exists():
+        return "firewall contract was not rendered"
+    firewall = (workspace / "platform/network/firewall.env").read_text(encoding="utf-8")
+    if "EXTERNAL_INTERFACE=ens224" not in firewall:
+        return "external interface was not generated into firewall.env"
+    install_env = (workspace / "platform/network/site-install.env").read_text(encoding="utf-8")
+    if "INTERNAL_INTERFACE=ens192" not in install_env or "EXTERNAL_INTERFACE=ens224" not in install_env:
+        return "site interfaces were not generated into site-install.env"
+    canal = yaml.safe_load(
+        (workspace / "platform/network/rke2-canal-config.yaml").read_text(encoding="utf-8")
+    )
+    if "iface: ens192" not in canal.get("spec", {}).get("valuesContent", ""):
+        return "internal interface was not generated into the RKE2 Canal config"
+    keycloak = (workspace / "platform/keycloak/resources.yaml").read_text(encoding="utf-8")
+    if "https://sso.prod.company.kr" not in keycloak:
+        return "Keycloak public hostname mismatch"
+    quota_documents = [
+        item
+        for item in yaml.safe_load_all(
+            (workspace / "platform/quota/resources.yaml").read_text(encoding="utf-8")
+        )
+        if item
+    ]
+    if {item["metadata"]["namespace"] for item in quota_documents} != {"research-prod"}:
+        return "quota resources were not rendered into the workload Namespace"
+    return ""
+
+
+def generated(workspace: pathlib.Path, _result: subprocess.CompletedProcess) -> str:
+    return verify_generated(workspace, expect_nms=False, expected_mode="disabled")
+
+
+def generated_custom_workload_namespace(
+    workspace: pathlib.Path, _result: subprocess.CompletedProcess
+) -> str:
+    expected = "team-workloads"
+    contract = yaml.safe_load(
+        (workspace / "contracts/platform-production.yaml").read_text(encoding="utf-8")
+    )["spec"]
+    values_contract = yaml.safe_load(
+        (workspace / "contracts/values-platform-production.yaml").read_text(encoding="utf-8")
+    )["platform"]
+    portal = yaml.safe_load(
+        (workspace / "apps/portal-lite/values-beta.yaml").read_text(encoding="utf-8")
+    )
+    application = yaml.safe_load(
+        (workspace / "argocd/applications/portal-lite.yaml").read_text(encoding="utf-8")
+    )
+    reader_docs = [
+        item
+        for item in yaml.safe_load_all(
+            (workspace / "platform/portal/app-group-namespace-reader.yaml").read_text(
+                encoding="utf-8"
+            )
+        )
+        if item
+    ]
+    if contract["network"]["defaultDenyNamespaces"] != [expected]:
+        return "custom workload Namespace contract mismatch"
+    if values_contract["portal"]["namespace"] != expected:
+        return "custom workload Namespace chart contract mismatch"
+    if values_contract.get("rancher", {}).get("workloadProjectId") != "local:proj-team-workloads":
+        return "custom workload Namespace Rancher project chart contract mismatch"
+    remote_path = portal["configuration"]["externalSecrets"][0]["remotePath"]
+    expected_path = (
+        f"apps/{portal['app']['project']}/{portal['app']['environment']}/portal-lite"
+    )
+    if remote_path != expected_path:
+        return f"Portal legacy OpenBao path mismatch: {remote_path}"
+    expected_role = (
+        f"eso-{portal['app']['project']}-{portal['app']['environment']}-portal-lite"
+    )
+    if (portal.get("eso") or {}).get("role") != expected_role:
+        return "Portal legacy OpenBao role did not preserve the old project/env formula"
+    if application["spec"]["destination"]["namespace"] != expected:
+        return "Portal Application custom Namespace mismatch"
+    binding = next(item for item in reader_docs if item["kind"] == "ClusterRoleBinding")
+    if (binding["subjects"][0].get("namespace") or "") != expected:
+        return "Namespace reader Portal subject mismatch"
+    return ""
+
+
+def generated_network_nms(workspace: pathlib.Path, result: subprocess.CompletedProcess) -> str:
+    detail = verify_generated(workspace, expect_nms=True, expected_mode="network")
+    if detail:
+        return detail
+    portal = yaml.safe_load((workspace / "apps/portal-lite/values-beta.yaml").read_text(encoding="utf-8"))
+    if not portal["networkPolicy"]["nms"]["enabled"]:
+        return "NMS-enabled Portal policy was not generated"
+    if portal["networkPolicy"]["nms"]["destinationCIDR"] != "172.20.0.0/24":
+        return "NMS destination CIDR mismatch"
+    if portal["networkPolicy"]["nms"]["port"] != 9443:
+        return "NMS port mismatch"
+    if portal["configuration"]["config"].get("NMS_API_BASE_URL"):
+        return "network 모드가 Portal API endpoint를 주입함"
+    nms_env = (workspace / "platform/network/nms-egress.env").read_text(encoding="utf-8")
+    if "NMS_MODE=network" not in nms_env or "NMS_PORT=9443" not in nms_env:
+        return "NMS gateway environment was not rendered"
+    return ""
+
+
+def generated_api_nms(workspace: pathlib.Path, result: subprocess.CompletedProcess) -> str:
+    detail = verify_generated(workspace, expect_nms=True, expected_mode="api")
+    if detail:
+        return detail
+    portal = yaml.safe_load((workspace / "apps/portal-lite/values-beta.yaml").read_text(encoding="utf-8"))
+    if portal["configuration"]["config"].get("NMS_API_BASE_URL") != "https://172.20.0.20:9443":
+        return "API mode endpoint mismatch"
+    if portal["networkPolicy"]["nms"] != {
+        "enabled": True,
+        "destinationCIDR": "172.20.0.0/24",
+        "port": 9443,
+    }:
+        return "API mode app NetworkPolicy does not allow the configured NMS port"
+    nms_env = (workspace / "platform/network/nms-egress.env").read_text(encoding="utf-8")
+    if "NMS_MODE=api" not in nms_env or "NMS_INTERFACE=''" not in nms_env:
+        return "API mode rendered a dedicated NMS interface"
+    return ""
+
+
+def generated_direct_public(workspace: pathlib.Path, result: subprocess.CompletedProcess) -> str:
+    contract = yaml.safe_load((workspace / "contracts/platform-production.yaml").read_text(encoding="utf-8"))
+    if contract["spec"]["public"]["mode"] != "direct":
+        return "direct public mode was not written to the contract"
+    documents = [
+        item
+        for item in yaml.safe_load_all(
+            (workspace / "platform/exposure/resources.yaml").read_text(encoding="utf-8")
+        )
+        if item
+    ]
+    envoy_proxy = next(item for item in documents if item["kind"] == "EnvoyProxy")
+    service = envoy_proxy["spec"]["provider"]["kubernetes"]["envoyService"]
+    external_ips = service.get("patch", {}).get("value", {}).get("spec", {}).get("externalIPs")
+    if external_ips != ["10.20.30.200", "203.0.113.10"]:
+        return f"direct public externalIPs mismatch: {external_ips}"
+    return ""
+
+
+def generated_portal_apex(workspace: pathlib.Path, _result: subprocess.CompletedProcess) -> str:
+    portal = yaml.safe_load(
+        (workspace / "apps/portal-lite/values-beta.yaml").read_text(encoding="utf-8")
+    )
+    exposure = portal["exposure"]
+    if exposure.get("host") != "prod.company.kr":
+        return f"Portal apex host 불일치: {exposure.get('host')}"
+    if exposure.get("sectionName") != "apex-http":
+        return f"TLS 전 Portal apex listener 불일치: {exposure.get('sectionName')}"
+    if portal["configuration"]["config"].get("AUTH_URL") != "https://prod.company.kr":
+        return "Portal AUTH_URL이 apex host를 따르지 않는다"
+    return ""
+
+
+NMS_NETWORK_VALID = VALID
+for old, new in (
+    ("NMS_MODE=disabled", "NMS_MODE=network"),
+    ("NMS_ALLOWED_APPS=", "NMS_ALLOWED_APPS=portal-lite"),
+    ("NMS_DESTINATION_CIDR=", "NMS_DESTINATION_CIDR=172.20.0.0/24"),
+    ("NMS_PORT=", "NMS_PORT=9443"),
+    ("NMS_GATEWAY_INTERNAL_IP=", "NMS_GATEWAY_INTERNAL_IP=10.20.30.30"),
+    ("NMS_INTERFACE=", "NMS_INTERFACE=eth2"),
+    ("NMS_GATEWAY_IP=", "NMS_GATEWAY_IP=172.20.0.10"),
+    ("NMS_NEXT_HOP=", "NMS_NEXT_HOP=172.20.0.1"),
+    ("NMS_INTERNAL_DOMAIN=", "NMS_INTERNAL_DOMAIN=nms.internal.company.kr"),
+    ("NMS_DNS_SERVERS=", "NMS_DNS_SERVERS=172.20.0.53:53"),
+):
+    NMS_NETWORK_VALID = mutate(NMS_NETWORK_VALID, old, new)
+
+NMS_API_VALID = VALID
+for old, new in (
+    ("NMS_MODE=disabled", "NMS_MODE=api"),
+    ("NMS_ALLOWED_APPS=", "NMS_ALLOWED_APPS=portal-lite"),
+    ("NMS_DESTINATION_CIDR=", "NMS_DESTINATION_CIDR=172.20.0.0/24"),
+    ("NMS_PORT=", "NMS_PORT=9443"),
+    ("NMS_API_BASE_URL=", "NMS_API_BASE_URL=https://172.20.0.20:9443"),
+):
+    NMS_API_VALID = mutate(NMS_API_VALID, old, new)
+
+
+case("SC-01 valid Forgejo/OCI site.env check", VALID, True)
+case(
+    "SC-02 external port expansion rejected",
+    mutate(VALID, "EXTERNAL_ALLOWED_TCP_PORTS=80,443", "EXTERNAL_ALLOWED_TCP_PORTS=22,80,443"),
+    False,
+)
+case(
+    "SC-03 RKE2 fixed port change rejected",
+    mutate(VALID, "RKE2_SUPERVISOR_PORT=9345", "RKE2_SUPERVISOR_PORT=19345"),
+    False,
+)
+case(
+    "SC-03b AppGroup services cannot exceed Namespace pod quota",
+    mutate(VALID, "APP_GROUP_MAX_SERVICES=5", "APP_GROUP_MAX_SERVICES=6"),
+    False,
+)
+case(
+    "SC-04 half-configured NMS rejected",
+    mutate(VALID, "NMS_MODE=disabled", "NMS_MODE=network"),
+    False,
+)
+case("SC-05 complete NMS network selection accepted", NMS_NETWORK_VALID, True)
+case(
+    "SC-06 credential-like env key rejected",
+    VALID + "FORGEJO_TOKEN=do-not-store-this-here\n",
+    False,
+)
+case("SC-07 write renders contract/apps/Argo/DNS-01", VALID, True, generated, write=True)
+case(
+    "SC-07b custom workload Namespace projects through GitOps/OpenBao/RBAC",
+    mutate(VALID, "WORKLOAD_NAMESPACE=research-prod", "WORKLOAD_NAMESPACE=team-workloads"),
+    True,
+    generated_custom_workload_namespace,
+    write=True,
+)
+case(
+    "SC-08 production write renders NMS network mode",
+    NMS_NETWORK_VALID,
+    True,
+    generated_network_nms,
+    write=True,
+)
+case(
+    "SC-09 Cloudflare provider is rejected",
+    mutate(VALID, "DNS_PROVIDER=rfc2136", "DNS_PROVIDER=cloudflare"),
+    False,
+)
+case("SC-10 complete NMS API selection accepted", NMS_API_VALID, True)
+case(
+    "SC-11 production write renders NMS API mode",
+    NMS_API_VALID,
+    True,
+    generated_api_nms,
+    write=True,
+)
+case(
+    "SC-12 direct public IP renders Envoy Service externalIPs",
+    mutate(VALID, "PUBLIC_EXPOSURE_MODE=nat", "PUBLIC_EXPOSURE_MODE=direct"),
+    True,
+    generated_direct_public,
+    write=True,
+)
+case(
+    "SC-13 Portal만 baseDomain apex listener를 선택",
+    mutate(VALID, "PORTAL_HOST=", "PORTAL_HOST=prod.company.kr"),
+    True,
+    generated_portal_apex,
+    write=True,
+)
+
+KEYCLOAK_EXTERNAL = mutate(
+    mutate(VALID, "KEYCLOAK_DEPLOYMENT=in-cluster", "KEYCLOAK_DEPLOYMENT=external"),
+    "KEYCLOAK_EXTERNAL_ADDRESS=",
+    "KEYCLOAK_EXTERNAL_ADDRESS=10.20.30.60",
+)
+
+
+def generated_external_keycloak(workspace: pathlib.Path, _result) -> str:
+    contract = yaml.safe_load(
+        (workspace / "contracts/platform-production.yaml").read_text(encoding="utf-8")
+    )["spec"]
+    keycloak = contract.get("keycloak") or {}
+    if keycloak.get("deployment") != "external":
+        return "external keycloak deployment was not written to the contract"
+    if (keycloak.get("external") or {}).get("address") != "10.20.30.60":
+        return f"external keycloak address mismatch: {keycloak.get('external')}"
+    if keycloak.get("samlSpEntityId") != "https://sso.prod.company.kr/realms/platform":
+        return f"external keycloak SAML SP EntityID mismatch: {keycloak.get('samlSpEntityId')}"
+    documents = [
+        item
+        for item in yaml.safe_load_all(
+            (workspace / "platform/keycloak/resources.yaml").read_text(encoding="utf-8")
+        )
+        if item
+    ]
+    kinds = [item["kind"] for item in documents]
+    if "Deployment" in kinds or "StatefulSet" in kinds:
+        return f"external mode still renders in-cluster workloads: {kinds}"
+    if "EndpointSlice" not in kinds:
+        return f"external mode did not render an EndpointSlice: {kinds}"
+    service = next(item for item in documents if item["kind"] == "Service")
+    if service["metadata"]["name"] != "keycloak":
+        return "external Service name changed; HTTPRoute backend would break"
+    if service["spec"].get("selector"):
+        return "external Service must not carry a selector"
+    endpoint_slice = next(item for item in documents if item["kind"] == "EndpointSlice")
+    addresses = [
+        value
+        for endpoint in endpoint_slice.get("endpoints") or []
+        for value in endpoint.get("addresses") or []
+    ]
+    if addresses != ["10.20.30.60"]:
+        return f"EndpointSlice address mismatch: {addresses}"
+    return ""
+
+
+case(
+    "SC-13 external Keycloak renders Service/EndpointSlice without workloads",
+    KEYCLOAK_EXTERNAL,
+    True,
+    generated_external_keycloak,
+    write=True,
+)
+case(
+    "SC-14 external Keycloak without an address is rejected",
+    mutate(VALID, "KEYCLOAK_DEPLOYMENT=in-cluster", "KEYCLOAK_DEPLOYMENT=external"),
+    False,
+)
+case(
+    "SC-15 in-cluster Keycloak with an external address is rejected",
+    mutate(VALID, "KEYCLOAK_EXTERNAL_ADDRESS=", "KEYCLOAK_EXTERNAL_ADDRESS=10.20.30.60"),
+    False,
+)
+case(
+    "SC-15b SAML SP EntityID의 IdP 호환 끝 슬래시를 보존",
+    mutate(
+        VALID,
+        "KEYCLOAK_SAML_SP_ENTITY_ID=",
+        "KEYCLOAK_SAML_SP_ENTITY_ID=https://sso.prod.company.kr/realms/platform/",
+    ),
+    True,
+    lambda workspace, _result: "" if (
+        yaml.safe_load(
+            (workspace / "contracts/platform-production.yaml").read_text(encoding="utf-8")
+        )["spec"]["keycloak"]["samlSpEntityId"]
+        == "https://sso.prod.company.kr/realms/platform/"
+    ) else "SAML SP EntityID 끝 슬래시가 계약에 보존되지 않음",
+    write=True,
+)
+case(
+    "SC-15c SAML SP EntityID가 issuer와 다른 URI면 거부",
+    mutate(
+        VALID,
+        "KEYCLOAK_SAML_SP_ENTITY_ID=",
+        "KEYCLOAK_SAML_SP_ENTITY_ID=https://wrong.prod.company.kr/realms/platform",
+    ),
+    False,
+)
+
+SYSTEMS_ENTRY = (
+    "\nSYSTEMS=analytics=analytics.prod.company.kr\n"
+    "SYSTEM_ANALYTICS_KEYCLOAK_DEPLOYMENT=external\n"
+    "SYSTEM_ANALYTICS_KEYCLOAK_REALM=analytics\n"
+    "SYSTEM_ANALYTICS_PORTAL_CLIENT_ID=analytics-portal\n"
+    "SYSTEM_ANALYTICS_KEYCLOAK_EXTERNAL_ADDRESS=10.20.30.60\n"
+    "SYSTEM_ANALYTICS_KEYCLOAK_EXTERNAL_PORT=8080\n"
+)
+SYSTEMS_VALID = VALID + SYSTEMS_ENTRY
+
+
+def generated_system(workspace: pathlib.Path, _result) -> str:
+    contract = yaml.safe_load(
+        (workspace / "contracts/platform-production.yaml").read_text(encoding="utf-8")
+    )["spec"]
+    systems = contract.get("systems") or []
+    if len(systems) != 1 or systems[0]["name"] != "analytics":
+        return f"spec.systems 이 기대와 다르다: {systems}"
+    system = systems[0]
+    if system["domain"] != "analytics.prod.company.kr":
+        return f"system domain 불일치: {system['domain']}"
+    if system["keycloak"]["issuer"] != "https://sso.analytics.prod.company.kr/realms/analytics":
+        return f"system keycloak issuer 불일치: {system['keycloak']['issuer']}"
+    if system["workloadNamespace"] not in (contract["gateway"]["allowedRouteNamespaces"] or []):
+        return "system workloadNamespace 가 allowedRouteNamespaces 에 없다"
+    system_path = workspace / "platform/systems/analytics/keycloak.yaml"
+    if not system_path.exists():
+        return "platform/systems/analytics/keycloak.yaml 이 생성되지 않았다"
+    documents = [item for item in yaml.safe_load_all(system_path.read_text(encoding="utf-8")) if item]
+    kinds = [item["kind"] for item in documents]
+    if "Deployment" in kinds or "StatefulSet" in kinds:
+        return f"external 시스템 Keycloak에 워크로드가 렌더됨: {kinds}"
+    if "EndpointSlice" not in kinds:
+        return f"external 시스템 Keycloak에 EndpointSlice 가 없다: {kinds}"
+    if "Namespace" in kinds:
+        return "시스템 Keycloak 파일에 중복 Namespace 문서가 있다(exposure 렌더러가 이미 생성함)"
+    gateway_doc = None
+    for item in yaml.safe_load_all(
+        (workspace / "platform/exposure/resources.yaml").read_text(encoding="utf-8")
+    ):
+        if item and item.get("kind") == "Gateway":
+            gateway_doc = item
+    if gateway_doc is None:
+        return "Gateway 문서를 찾지 못함"
+    listener_names = {item["name"] for item in gateway_doc["spec"]["listeners"]}
+    if "http-analytics" not in listener_names:
+        return f"http-analytics listener 가 없다: {listener_names}"
+    return ""
+
+
+case(
+    "SC-16 SYSTEMS 선언 시 시스템별 Namespace/Keycloak/Gateway listener 생성",
+    SYSTEMS_VALID,
+    True,
+    generated_system,
+    write=True,
+)
+case(
+    "SC-17 baseDomain 밖의 SYSTEMS 도메인 거부",
+    mutate(SYSTEMS_VALID, "analytics.prod.company.kr", "analytics.other.example.com"),
+    False,
+)
+case(
+    "SC-18 provided TLS_SOURCE 와 SYSTEMS 동시 선언 거부",
+    mutate(SYSTEMS_VALID, "TLS_SOURCE=acme", "TLS_SOURCE=provided"),
+    False,
+)
+
+EXTERNAL_SERVICES_VALID = mutate(
+    VALID, "EXTERNAL_SERVICES=", "EXTERNAL_SERVICES=forgejo=10.20.30.25:3000,grafana=10.20.30.26:3000"
+)
+
+
+def generated_external_services(workspace: pathlib.Path, _result) -> str:
+    contract = yaml.safe_load(
+        (workspace / "contracts/platform-production.yaml").read_text(encoding="utf-8")
+    )["spec"]
+    entries = {
+        str(item.get("name")): item
+        for item in contract.get("platformServices") or []
+        if (item or {}).get("external")
+    }
+    if set(entries) != {"forgejo", "grafana"}:
+        return f"external platformServices 가 기대와 다르다: {sorted(entries)}"
+    forgejo = entries["forgejo"]
+    if forgejo["host"] != f"forgejo.{contract['baseDomain']}":
+        return f"forgejo host 불일치: {forgejo['host']}"
+    if forgejo["external"]["address"] != "10.20.30.25":
+        return f"forgejo external address 불일치: {forgejo['external']}"
+    documents = [
+        item
+        for item in yaml.safe_load_all(
+            (workspace / "platform/exposure/resources.yaml").read_text(encoding="utf-8")
+        )
+        if item
+    ]
+
+    def find(kind: str, namespace: str):
+        return next(
+            (
+                item
+                for item in documents
+                if item.get("kind") == kind
+                and (item.get("metadata") or {}).get("namespace") == namespace
+            ),
+            None,
+        )
+
+    if find("Service", "grafana") is None:
+        return "grafana Service 가 렌더되지 않았다"
+    if find("EndpointSlice", "grafana") is None:
+        return "grafana EndpointSlice 가 렌더되지 않았다"
+    service = find("Service", "grafana")
+    if service["spec"].get("selector"):
+        return "외부 백엔드 Service 에 selector 가 있으면 안 된다"
+    route = next(
+        (
+            item
+            for item in documents
+            if item.get("kind") == "HTTPRoute"
+            and (item.get("metadata") or {}).get("name") == "grafana"
+        ),
+        None,
+    )
+    if route is None:
+        return "grafana HTTPRoute 가 렌더되지 않았다"
+    return ""
+
+
+case(
+    "SC-19 EXTERNAL_SERVICES 는 Namespace/Service/EndpointSlice/HTTPRoute 를 생성한다",
+    EXTERNAL_SERVICES_VALID,
+    True,
+    generated_external_services,
+    write=True,
+)
+case(
+    "SC-20 EXTERNAL_SERVICES 형식 오류 거부",
+    mutate(VALID, "EXTERNAL_SERVICES=", "EXTERNAL_SERVICES=forgejo=10.20.30.25"),
+    False,
+)
+case(
+    "SC-21 EXTERNAL_SERVICES 가 기존 Namespace 와 충돌하면 거부",
+    mutate(VALID, "EXTERNAL_SERVICES=", "EXTERNAL_SERVICES=research-prod=10.20.30.25:3000"),
+    False,
+)
+
+MACHINE_AUTH_VALID = mutate(
+    mutate(
+        mutate(VALID, "MACHINE_AUTH_SERVICES=", "MACHINE_AUTH_SERVICES=metrics=monitoring/prometheus:9090"),
+        "MACHINE_AUTH_CLIENTS=",
+        "MACHINE_AUTH_CLIENTS=grafana-central",
+    ),
+    "MACHINE_AUTH_ALLOWED_CIDRS=",
+    "MACHINE_AUTH_ALLOWED_CIDRS=203.0.113.10/32",
+)
+
+
+def generated_machine_auth(workspace: pathlib.Path, _result) -> str:
+    contract = yaml.safe_load(
+        (workspace / "contracts/platform-production.yaml").read_text(encoding="utf-8")
+    )["spec"]
+    entry = next(
+        (
+            item
+            for item in contract.get("platformServices") or []
+            if (item or {}).get("machineAuth")
+        ),
+        None,
+    )
+    if entry is None:
+        return "machineAuth platformServices 가 계약에 없다"
+    auth = entry["machineAuth"]
+    if auth["allowedClients"] != ["grafana-central"]:
+        return f"allowedClients 불일치: {auth['allowedClients']}"
+    if auth["allowedCIDRs"] != ["203.0.113.10/32"]:
+        return f"allowedCIDRs 불일치: {auth['allowedCIDRs']}"
+    # 계약에 토큰/비밀이 들어가면 안 된다. issuer 와 이름만 남아야 한다.
+    serialized = str(auth)
+    for forbidden in ("secret", "token", "password"):
+        if forbidden in serialized.lower():
+            return f"machineAuth 에 '{forbidden}' 이 들어 있다"
+    policy = next(
+        (
+            item
+            for item in yaml.safe_load_all(
+                (workspace / "platform/exposure/resources.yaml").read_text(encoding="utf-8")
+            )
+            if item and item.get("kind") == "SecurityPolicy"
+        ),
+        None,
+    )
+    if policy is None:
+        return "SecurityPolicy 가 렌더되지 않았다"
+    authorization = policy["spec"]["authorization"]
+    if authorization["defaultAction"] != "Deny":
+        return "defaultAction 이 Deny 가 아니다"
+    principal = authorization["rules"][0]["principal"]
+    if principal["clientCIDRs"] != ["203.0.113.10/32"]:
+        return f"clientCIDRs 불일치: {principal['clientCIDRs']}"
+    if principal["jwt"]["claims"][0]["name"] != "azp":
+        return "azp claim 매칭이 없다"
+    if not policy["spec"]["jwt"]["providers"][0]["remoteJWKS"]["uri"].startswith("https://"):
+        return "JWKS URI 가 https 가 아니다"
+    return ""
+
+
+case(
+    "SC-22 MACHINE_AUTH_SERVICES 는 JWT+CIDR SecurityPolicy 를 생성한다",
+    MACHINE_AUTH_VALID,
+    True,
+    generated_machine_auth,
+    write=True,
+)
+case(
+    "SC-23 MACHINE_AUTH 에 0.0.0.0/0 거부",
+    mutate(MACHINE_AUTH_VALID, "MACHINE_AUTH_ALLOWED_CIDRS=203.0.113.10/32", "MACHINE_AUTH_ALLOWED_CIDRS=0.0.0.0/0"),
+    False,
+)
+case(
+    "SC-24 MACHINE_AUTH client 목록 없이 서비스 선언 거부",
+    mutate(MACHINE_AUTH_VALID, "MACHINE_AUTH_CLIENTS=grafana-central", "MACHINE_AUTH_CLIENTS="),
+    False,
+)
+
+DELEGATED_VALID = mutate(
+    mutate(
+        VALID,
+        "DNS_PROVIDER=rfc2136",
+        "DNS_PROVIDER=rfc2136\n"
+        "DNS01_MODE=delegated-rfc2136\n"
+        "ACME_DELEGATION_TYPE=cname\n"
+        "ACME_DELEGATED_ZONE=acme.example.net",
+    ),
+    # 위임 모드에서는 사업자 권한 DNS 가 아니라 우리 ACME DNS 가 UPDATE 대상이다.
+    "RFC2136_NAMESERVER=192.0.2.53:53",
+    "RFC2136_NAMESERVER=198.51.100.53:53",
+)
+
+
+def delegated_contract(expected_type: str, expected_zone: str):
+    def verify(workspace: pathlib.Path, _result) -> str:
+        contract = yaml.safe_load(
+            (workspace / "contracts/platform-production.yaml").read_text(encoding="utf-8")
+        )
+        solver = contract["spec"]["tls"]["solver"]
+        if solver.get("dns01Mode") != "delegated-rfc2136":
+            return f"dns01Mode 미반영: {solver.get('dns01Mode')!r}"
+        delegation = solver.get("delegation") or {}
+        if delegation.get("type") != expected_type:
+            return f"delegation.type 불일치: {delegation.get('type')!r}"
+        if delegation.get("zone") != expected_zone:
+            return f"delegation.zone 불일치: {delegation.get('zone')!r}"
+        if solver["rfc2136"]["nameserver"] != "198.51.100.53:53":
+            return "위임 DNS 가 UPDATE 대상으로 반영되지 않았다"
+        return ""
+
+    return verify
+
+
+case(
+    "SC-25 DNS01_MODE 없으면 direct-rfc2136 으로 하위 호환된다",
+    VALID,
+    True,
+    lambda workspace, _result: (
+        ""
+        if yaml.safe_load(
+            (workspace / "contracts/platform-production.yaml").read_text(encoding="utf-8")
+        )["spec"]["tls"]["solver"].get("dns01Mode")
+        in ("direct-rfc2136", None)
+        else "기본값이 direct-rfc2136 이 아니다"
+    ),
+    write=True,
+)
+case(
+    "SC-26 delegated-rfc2136/cname 은 위임 zone 을 계약으로 렌더한다",
+    DELEGATED_VALID,
+    True,
+    delegated_contract("cname", "acme.example.net"),
+    write=True,
+)
+case(
+    "SC-27 delegated-rfc2136/ns 는 _acme-challenge.<BASE_DOMAIN> 만 허용한다",
+    mutate(
+        mutate(DELEGATED_VALID, "ACME_DELEGATION_TYPE=cname", "ACME_DELEGATION_TYPE=ns"),
+        "ACME_DELEGATED_ZONE=acme.example.net",
+        "ACME_DELEGATED_ZONE=_acme-challenge.prod.company.kr",
+    ),
+    True,
+    delegated_contract("ns", "_acme-challenge.prod.company.kr"),
+    write=True,
+)
+case(
+    "SC-28 delegated-rfc2136/ns 에 임의 zone 을 주면 거부한다",
+    mutate(DELEGATED_VALID, "ACME_DELEGATION_TYPE=cname", "ACME_DELEGATION_TYPE=ns"),
+    False,
+)
+case(
+    "SC-29 direct-rfc2136 에 위임 값이 남아 있으면 거부한다",
+    mutate(DELEGATED_VALID, "DNS01_MODE=delegated-rfc2136", "DNS01_MODE=direct-rfc2136"),
+    False,
+)
+case(
+    "SC-30 delegated-rfc2136 인데 위임 zone 이 없으면 거부한다",
+    mutate(DELEGATED_VALID, "ACME_DELEGATED_ZONE=acme.example.net", "ACME_DELEGATED_ZONE="),
+    False,
+)
+case(
+    "SC-31 위임 zone 이 BASE_DOMAIN 과 같으면 거부한다",
+    mutate(
+        DELEGATED_VALID,
+        "ACME_DELEGATED_ZONE=acme.example.net",
+        "ACME_DELEGATED_ZONE=prod.company.kr",
+    ),
+    False,
+)
+case(
+    "SC-32 알 수 없는 DNS01_MODE 는 거부한다",
+    mutate(DELEGATED_VALID, "DNS01_MODE=delegated-rfc2136", "DNS01_MODE=acme-dns"),
+    False,
+)
+# self-check 는 공개 권위 응답을 봐야 하므로 recursive resolver 만 공인 IP 를 허용한다.
+case(
+    "SC-33 DNS_RECURSIVE_NAMESERVERS 는 권위 서버(공인 IP)를 허용한다",
+    mutate(
+        VALID,
+        "DNS_RECURSIVE_NAMESERVERS=10.53.0.10:53",
+        "DNS_RECURSIVE_NAMESERVERS=198.51.100.53:53",
+    ),
+    True,
+)
+case(
+    "SC-34 CERT_MANAGER_NODE_PLACEMENT 는 계약으로 넘어간다",
+    mutate(
+        VALID,
+        "DNS_RECURSIVE_NAMESERVERS=10.53.0.10:53",
+        "DNS_RECURSIVE_NAMESERVERS=10.53.0.10:53\nCERT_MANAGER_NODE_PLACEMENT=control-plane",
+    ),
+    True,
+    lambda workspace, _result: (
+        ""
+        if yaml.safe_load(
+            (workspace / "contracts/platform-production.yaml").read_text(encoding="utf-8")
+        )["spec"]["tls"]["certManagerPlacement"]
+        == "control-plane"
+        else "certManagerPlacement 가 계약에 반영되지 않았다"
+    ),
+    write=True,
+)
+case(
+    "SC-35 알 수 없는 CERT_MANAGER_NODE_PLACEMENT 는 거부한다",
+    mutate(
+        VALID,
+        "DNS_RECURSIVE_NAMESERVERS=10.53.0.10:53",
+        "DNS_RECURSIVE_NAMESERVERS=10.53.0.10:53\nCERT_MANAGER_NODE_PLACEMENT=worker",
+    ),
+    False,
+)
+# 반대로 CoreDNS upstream 은 egress 호스트의 내부 주소여야 한다.
+case(
+    "SC-36 CLUSTER_UPSTREAM_DNS 는 계약으로 넘어간다",
+    mutate(
+        VALID,
+        "CLUSTER_DNS_IP=10.53.0.10",
+        "CLUSTER_DNS_IP=10.53.0.10\nCLUSTER_UPSTREAM_DNS=10.20.30.11:53",
+    ),
+    True,
+    lambda workspace, _result: (
+        ""
+        if yaml.safe_load(
+            (workspace / "contracts/platform-production.yaml").read_text(encoding="utf-8")
+        )["spec"]["network"]["clusterUpstreamDNS"]
+        == "10.20.30.11:53"
+        else "clusterUpstreamDNS 가 계약에 반영되지 않았다"
+    ),
+    write=True,
+)
+case(
+    "SC-37 NODE_INTERNAL_CIDRS 밖의 CLUSTER_UPSTREAM_DNS 는 거부한다",
+    mutate(
+        VALID,
+        "CLUSTER_DNS_IP=10.53.0.10",
+        "CLUSTER_DNS_IP=10.53.0.10\nCLUSTER_UPSTREAM_DNS=8.8.8.8:53",
+    ),
+    False,
+)
+case(
+    "SC-38 CLUSTER_UPSTREAM_DNS 에 port 가 없으면 거부한다",
+    mutate(
+        VALID,
+        "CLUSTER_DNS_IP=10.53.0.10",
+        "CLUSTER_DNS_IP=10.53.0.10\nCLUSTER_UPSTREAM_DNS=10.20.30.11",
+    ),
+    False,
+)
+
+
+
+
+# egressMode=web 이 "인터넷"을 뜻하려면 0.0.0.0/0 에서 뺄 대역이 계약에 있어야 한다.
+# 상수 목록(RFC1918 등)만 넣으면 노드망이 공인 대역인 사이트에서 관리망이 함께 열린다.
+def internal_cidrs_cover_cluster(workspace, _result):
+    network = yaml.safe_load(
+        (workspace / "contracts/platform-production.yaml").read_text(encoding="utf-8")
+    )["spec"]["network"]
+    internal = set(network.get("internalCIDRs") or [])
+    if not internal:
+        return "network.internalCIDRs 가 비어 있다"
+    for reserved in ("10.0.0.0/8", "127.0.0.0/8", "169.254.0.0/16", "192.168.0.0/16"):
+        if reserved not in internal:
+            return f"예약 대역 {reserved} 가 빠졌다"
+    # pod/service/node 는 10.0.0.0/8 안에 있으므로 상위 대역으로 덮인 것이 정상이다.
+    for cluster in (*network["podCIDRs"], *network["serviceCIDRs"], *network["nodeInternalCIDRs"]):
+        first = cluster.split(".")[0]
+        if cluster not in internal and first != "10":
+            return f"클러스터 대역 {cluster} 가 빠졌다"
+    return ""
+
+
+case(
+    "SC-39 network.internalCIDRs 가 예약 대역과 클러스터 대역을 덮는다",
+    VALID,
+    True,
+    internal_cidrs_cover_cluster,
+    write=True,
+)
+# 노드망이 공인 대역인 사이트(이 테스트베드의 192.42.0.0/28 같은)에서도 그 대역이
+# 반드시 제외 목록에 들어가야 한다. env 하나만 바꾸면 다른 검증이 줄줄이 걸리므로
+# 파생 함수를 직접 호출해 확인한다.
+def check_public_node_range() -> str:
+    module = load_configure_site()
+    derived = module.internal_egress_cidrs(
+        {
+            "network": {
+                "podCIDRs": ["10.42.0.0/16"],
+                "serviceCIDRs": ["10.43.0.0/16"],
+                "nodeCIDRs": ["192.42.0.0/28"],
+            }
+        }
+    )
+    if "192.42.0.0/28" not in derived:
+        return f"공인 노드 대역이 internalCIDRs 에 없다: {derived}"
+    # 상위 대역에 이미 포함된 항목은 중복으로 남기지 않는다.
+    if "10.42.0.0/16" in derived or "10.43.0.0/16" in derived:
+        return f"10.0.0.0/8 에 포함된 대역이 중복으로 남았다: {derived}"
+    return ""
+
+
+direct_case("SC-40 공인 노드 대역도 internalCIDRs 에 들어간다", check_public_node_range)
+
+
+def check_missing_rancher_project_fails_closed() -> str:
+    import copy
+    import importlib.util
+
+    path = ROOT / "scripts/lib/contract-values.py"
+    spec = importlib.util.spec_from_file_location("contract_values", path)
+    module = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(module)
+    contract = yaml.safe_load(
+        (ROOT / "contracts/platform-production.yaml").read_text(encoding="utf-8")
+    )["spec"]
+    broken = copy.deepcopy(contract)
+    broken["rancher"]["projects"] = []
+    try:
+        module.build(broken)
+    except ValueError as error:
+        if "Rancher project" not in str(error):
+            return f"예상하지 못한 오류: {error}"
+        return ""
+    return "workload Namespace를 소유한 Rancher project 없이 contract values가 생성됨"
+
+
+direct_case(
+    "SC-41 AppGroup Rancher project 매핑 누락은 contract values 생성에서 거부한다",
+    check_missing_rancher_project_fails_closed,
+)
+
+case(
+    "SC-42 SQUID_CLIENT_CIDRS 에 Pod CIDR이 빠지면 거부한다",
+    mutate(
+        VALID,
+        "SQUID_CLIENT_CIDRS=10.20.30.0/24,10.52.0.0/16",
+        "SQUID_CLIENT_CIDRS=10.20.30.0/24",
+    ),
+    False,
+)
+case(
+    "SC-43 SQUID_CLIENT_CIDRS 에 Node CIDR이 빠지면 거부한다",
+    mutate(
+        VALID,
+        "SQUID_CLIENT_CIDRS=10.20.30.0/24,10.52.0.0/16",
+        "SQUID_CLIENT_CIDRS=10.52.0.0/16",
+    ),
+    False,
+)
+
+print(f"통과 {PASSED} / 실패 {FAILED}")
+raise SystemExit(FAILED != 0)

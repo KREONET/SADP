@@ -1,0 +1,32 @@
+# Generated site RKE2 server template; token stays empty.
+token: ''
+etcd-snapshot-schedule-cron: 0 */6 * * *
+etcd-snapshot-retention: 10
+node-ip: 10.20.30.11
+advertise-address: 10.20.30.11
+bind-address: 10.20.30.11
+disable:
+- rke2-ingress-nginx
+write-kubeconfig-mode: '0600'
+secrets-encryption: true
+tls-san:
+- sadp-control-plane-1
+- 10.20.30.11
+- 127.0.0.1
+kube-apiserver-arg:
+- audit-policy-file=/etc/rancher/rke2/audit-policy.yaml
+- audit-log-path=/var/lib/rancher/rke2/server/logs/audit.log
+- audit-log-maxage=30
+- audit-log-maxbackup=10
+- audit-log-maxsize=100
+- service-account-extend-token-expiration=false
+- tls-min-version=VersionTLS12
+kubelet-arg:
+- streaming-connection-idle-timeout=5m
+- event-qps=0
+node-taint:
+- CriticalAddonsOnly=true:NoExecute
+- node-role.kubernetes.io/control-plane=true:NoSchedule
+cluster-cidr: 10.52.0.0/16
+service-cidr: 10.53.0.0/16
+cluster-dns: 10.53.0.10

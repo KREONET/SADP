@@ -1,0 +1,308 @@
+{{- $fullname := include "app-profile.fullname" . -}}
+{{- $hasConfig := gt (len .Values.configuration.config) 0 -}}
+{{- $hasSecret := gt (len .Values.configuration.externalSecrets) 0 -}}
+{{- $mode := .Values.configuration.injection.mode -}}
+{{- $probeType := default "http" .Values.service.probe.type -}}
+{{- $securityProfile := default "restricted" .Values.podSecurity.profile -}}
+{{- $runAsUser := int .Values.podSecurity.runAsUser -}}
+{{- $runAsGroup := int .Values.podSecurity.runAsGroup -}}
+{{- $usePullSecret := true -}}
+{{- if kindIs "bool" .Values.image.usePullSecret -}}
+{{- $usePullSecret = .Values.image.usePullSecret -}}
+{{- else -}}
+{{- /*
+  usePullSecret 필드가 생기기 전에 생성된 values도 즉시 복구해야 한다. repository 첫
+  segment가 registry가 아니거나 docker.io이면 Docker Hub public pull로 보고, 잘못된
+  플랫폼 전용 Secret이 nginx 같은 공개 image까지 막지 않게 한다.
+*/ -}}
+{{- $segments := splitList "/" (lower .Values.image.repository) -}}
+{{- $first := first $segments -}}
+{{- if or (eq $first "docker.io") (eq $first "registry-1.docker.io") (and (not (contains "." $first)) (not (contains ":" $first)) (ne $first "localhost")) -}}
+{{- $usePullSecret = false -}}
+{{- end -}}
+{{- end -}}
+{{- if has $securityProfile (list "postgres" "redis") -}}
+{{- $runAsUser = 999 -}}
+{{- $runAsGroup = 999 -}}
+{{- end -}}
+{{- if and (eq $probeType "http") (not .Values.service.healthPath) -}}
+{{- fail "service.probe.type=http 이면 service.healthPath가 필요하다" -}}
+{{- end -}}
+{{- if and .Values.openbaoWriter.enabled (not .Values.rbac.enabled) -}}
+{{- fail "openbaoWriter.enabled=true이면 전용 ServiceAccount를 만드는 rbac.enabled=true가 필요함" -}}
+{{- end -}}
+{{- /*
+  ConfigMap과 OpenBao/ESO Secret은 Pod에서 함께 보이지만 같은 env 이름을 두 소스가
+  소유하면 적용 순서에 기대게 된다. 환경별 결과가 달라지지 않도록 렌더 단계에서 거부한다.
+*/ -}}
+{{- if or (eq $mode "envFrom") (eq $mode "env") -}}
+{{- $envOwners := dict -}}
+{{- range $key, $_ := .Values.configuration.config -}}
+{{- $_ := set $envOwners $key "ConfigMap" -}}
+{{- end -}}
+{{- range $es := .Values.configuration.externalSecrets -}}
+{{- if dig "inject" true $es -}}
+{{- range $key := $es.keys -}}
+{{- $targetKey := get (default (dict) $es.targetKeyMap) $key | default $key -}}
+{{- if or (hasKey $envOwners $key) (hasKey $envOwners $targetKey) -}}
+{{- fail (printf "환경변수 %s가 ConfigMap/ExternalSecret 또는 여러 ExternalSecret에 중복됨" $key) -}}
+{{- end -}}
+{{- $_ := set $envOwners $key (printf "ExternalSecret/%s" $es.name) -}}
+{{- $_ := set $envOwners $targetKey (printf "ExternalSecret/%s" $es.name) -}}
+{{- end -}}
+{{- end -}}
+{{- end -}}
+{{- end -}}
+{{- /*
+  RWO 볼륨은 한 노드에만 붙는다. replica가 2 이상이면 두 번째 Pod가 영원히
+  Pending이 되거나(다른 노드) 같은 파일에 두 프로세스가 append하게 된다.
+  append-only store는 후자를 견디지 못하므로 렌더 단계에서 막는다.
+*/ -}}
+{{- if and .Values.persistence.enabled (eq .Values.persistence.accessMode "ReadWriteOnce") (gt (int .Values.replicaCount) 1) -}}
+{{- fail (printf "persistence.accessMode=ReadWriteOnce 에서는 replicaCount가 1이어야 한다(현재 %v)" .Values.replicaCount) -}}
+{{- end -}}
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: {{ $fullname }}
+  namespace: {{ .Release.Namespace }}
+  labels:
+    {{- include "app-profile.labels" . | nindent 4 }}
+  annotations:
+    {{- /*
+      중요: Reloader는 Pod template이 아니라 workload(Deployment) 자신의 annotation을 읽는다.
+      기준 문서 v0.5 5.6절 예시(template.metadata.annotations)로 작성하면 재시작이 발생하지 않는다.
+    */}}
+    {{- if .Values.configuration.reload.enabled }}
+    reloader.stakater.com/auto: "true"
+    deployment.reloader.stakater.com/pause-period: {{ .Values.configuration.reload.pausePeriod | quote }}
+    {{- end }}
+spec:
+  replicas: {{ .Values.replicaCount }}
+  revisionHistoryLimit: 5
+  {{- if .Values.persistence.enabled }}
+  {{- /* RollingUpdate면 신구 Pod가 겹치는 순간 같은 RWO PVC를 두 번 붙이려다 멈춘다 */}}
+  strategy:
+    type: Recreate
+  {{- end }}
+  selector:
+    matchLabels:
+      {{- include "app-profile.selectorLabels" . | nindent 6 }}
+  template:
+    metadata:
+      labels:
+        {{- include "app-profile.labels" . | nindent 8 }}
+        platform.example.io/network-policy: managed
+        {{- if .Values.networkPolicy.nms.enabled }}
+        nms-access: "true"
+        {{- end }}
+    spec:
+      {{- if .Values.rbac.enabled }}
+      serviceAccountName: {{ include "app-profile.serviceAccountName" . }}
+      {{- end }}
+      {{- /*
+        자동 마운트는 항상 끈다. API 접근이 필요한 경우에도 아래 projected volume으로
+        수명이 제한된 토큰만 내려보낸다(무기한 Secret 토큰을 만들지 않는다).
+      */}}
+      automountServiceAccountToken: false
+      {{- if and $usePullSecret .Values.imagePullSecrets }}
+      imagePullSecrets:
+        {{- range .Values.imagePullSecrets }}
+        - name: {{ . | quote }}
+        {{- end }}
+      {{- end }}
+      securityContext:
+        runAsNonRoot: true
+        runAsUser: {{ $runAsUser }}
+        runAsGroup: {{ $runAsGroup }}
+        fsGroup: {{ $runAsGroup }}
+        seccompProfile:
+          type: RuntimeDefault
+      containers:
+        - name: app
+          image: {{ include "app-profile.image" . | quote }}
+          imagePullPolicy: {{ .Values.image.pullPolicy }}
+          {{- if .Values.service.enabled }}
+          ports:
+            - name: http
+              containerPort: {{ .Values.service.port }}
+              protocol: TCP
+          {{- end }}
+          {{- if eq $mode "envFrom" }}
+          envFrom:
+            {{- if $hasConfig }}
+            - configMapRef:
+                name: {{ $fullname }}-config
+            {{- end }}
+            {{- range .Values.configuration.externalSecrets }}
+            {{- if dig "inject" true . }}
+            - secretRef:
+                name: {{ $fullname }}-{{ .name }}
+            {{- end }}
+            {{- end }}
+          {{- else if eq $mode "env" }}
+          env:
+            {{- range $key, $value := .Values.configuration.config }}
+            - name: {{ $key }}
+              valueFrom:
+                configMapKeyRef:
+                  name: {{ $fullname }}-config
+                  key: {{ $key }}
+            {{- end }}
+            {{- range $es := .Values.configuration.externalSecrets }}
+            {{- if dig "inject" true $es }}
+            {{- range $key := $es.keys }}
+            - name: {{ $key }}
+              valueFrom:
+                secretKeyRef:
+                  name: {{ $fullname }}-{{ $es.name }}
+                  key: {{ $key }}
+            {{- end }}
+            {{- end }}
+            {{- end }}
+          {{- end }}
+          {{- if and .Values.service.enabled (ne $probeType "none") }}
+          readinessProbe:
+            {{- if eq $probeType "http" }}
+            httpGet:
+              path: {{ .Values.service.healthPath }}
+              port: http
+            {{- else }}
+            tcpSocket:
+              port: http
+            {{- end }}
+            initialDelaySeconds: 5
+            periodSeconds: 5
+            failureThreshold: 3
+          livenessProbe:
+            {{- if eq $probeType "http" }}
+            httpGet:
+              path: {{ .Values.service.healthPath }}
+              port: http
+            {{- else }}
+            tcpSocket:
+              port: http
+            {{- end }}
+            initialDelaySeconds: 15
+            periodSeconds: 20
+            failureThreshold: 3
+          {{- end }}
+          resources:
+            {{- toYaml .Values.resources | nindent 12 }}
+          securityContext:
+            allowPrivilegeEscalation: false
+            readOnlyRootFilesystem: true
+            capabilities:
+              drop: ["ALL"]
+          volumeMounts:
+          {{- if eq $mode "volume" }}
+            {{- if $hasConfig }}
+            - name: config
+              mountPath: {{ .Values.configuration.injection.mountPath }}/config
+              readOnly: true
+            {{- end }}
+            {{- range .Values.configuration.externalSecrets }}
+            {{- if dig "inject" true . }}
+            - name: secret-{{ .name }}
+              mountPath: {{ $.Values.configuration.injection.mountPath }}/{{ .name }}
+              readOnly: true
+            {{- end }}
+            {{- end }}
+          {{- end }}
+            - name: tmp
+              mountPath: /tmp
+          {{- if and (eq $securityProfile "postgres") (not .Values.persistence.enabled) }}
+            - name: postgres-data
+              mountPath: /var/lib/postgresql/data
+            - name: postgres-run
+              mountPath: /var/run/postgresql
+          {{- else if and (eq $securityProfile "postgres") .Values.persistence.enabled }}
+            - name: postgres-run
+              mountPath: /var/run/postgresql
+          {{- else if and (eq $securityProfile "redis") (not .Values.persistence.enabled) }}
+            - name: redis-data
+              mountPath: /data
+          {{- end }}
+          {{- if .Values.persistence.enabled }}
+            - name: data
+              mountPath: {{ .Values.persistence.mountPath }}
+          {{- end }}
+          {{- if .Values.rbac.enabled }}
+            - name: kube-api-access
+              mountPath: /var/run/secrets/kubernetes.io/serviceaccount
+              readOnly: true
+          {{- end }}
+          {{- if .Values.openbaoWriter.enabled }}
+            - name: openbao-access
+              mountPath: {{ .Values.openbaoWriter.mountPath }}
+              readOnly: true
+          {{- end }}
+      volumes:
+        - name: tmp
+          emptyDir: {}
+        {{- if and (eq $securityProfile "postgres") (not .Values.persistence.enabled) }}
+        - name: postgres-data
+          emptyDir: {}
+        - name: postgres-run
+          emptyDir: {}
+        {{- else if and (eq $securityProfile "postgres") .Values.persistence.enabled }}
+        - name: postgres-run
+          emptyDir: {}
+        {{- else if and (eq $securityProfile "redis") (not .Values.persistence.enabled) }}
+        - name: redis-data
+          emptyDir: {}
+        {{- end }}
+        {{- if .Values.persistence.enabled }}
+        - name: data
+          persistentVolumeClaim:
+            claimName: {{ include "app-profile.pvcName" . }}
+        {{- end }}
+        {{- if .Values.rbac.enabled }}
+        {{- /*
+          kubelet이 expirationSeconds마다 갱신해 파일에 다시 써준다. 앱은 호출마다
+          토큰 파일을 다시 읽으므로 갱신이 그대로 반영된다.
+        */}}
+        - name: kube-api-access
+          projected:
+            defaultMode: 0400
+            sources:
+              - serviceAccountToken:
+                  path: token
+                  expirationSeconds: {{ .Values.rbac.tokenExpirationSeconds }}
+                  audience: {{ .Values.rbac.tokenAudience | quote }}
+              - configMap:
+                  name: kube-root-ca.crt
+                  items:
+                    - key: ca.crt
+                      path: ca.crt
+        {{- end }}
+        {{- if .Values.openbaoWriter.enabled }}
+        - name: openbao-access
+          projected:
+            defaultMode: 0400
+            sources:
+              - serviceAccountToken:
+                  path: token
+                  expirationSeconds: {{ .Values.openbaoWriter.tokenExpirationSeconds }}
+                  audience: {{ .Values.openbaoWriter.audience | quote }}
+              - configMap:
+                  name: {{ .Values.openbaoWriter.caConfigMap }}
+                  items:
+                    - key: ca.crt
+                      path: ca.crt
+        {{- end }}
+        {{- if eq $mode "volume" }}
+        {{- if $hasConfig }}
+        - name: config
+          configMap:
+            name: {{ $fullname }}-config
+        {{- end }}
+        {{- range .Values.configuration.externalSecrets }}
+        {{- if dig "inject" true . }}
+        - name: secret-{{ .name }}
+          secret:
+            secretName: {{ $fullname }}-{{ .name }}
+            defaultMode: 0400
+        {{- end }}
+        {{- end }}
+        {{- end }}

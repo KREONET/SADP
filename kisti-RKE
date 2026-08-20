@@ -1,0 +1,6 @@
+#!/usr/bin/env bash
+# 이전 자동화의 파일명만 호환한다. 새 설치와 문서는 sadp를 단일 진입점으로 사용한다.
+set -euo pipefail
+
+ROOT=$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)
+exec bash "${ROOT}/sadp" "$@"

@@ -1,0 +1,76 @@
+# 자동 생성 파일. contracts/platform-production.yaml을 수정한 뒤 scripts/site/render-exposure.py를 실행한다.
+# DNS-01 자격증명 Secret(dns01-rfc2136-tsig)은 이 파일에 포함되지 않는다.
+# 부트스트랩 Secret 이므로 cert-manager Namespace 에 별도로 생성한다(platform/README.md 참고).
+apiVersion: cert-manager.io/v1
+kind: ClusterIssuer
+metadata:
+  name: sadp-dns01-staging
+spec:
+  acme:
+    server: https://acme-staging-v02.api.letsencrypt.org/directory
+    email: admin@example.invalid
+    privateKeySecretRef:
+      name: sadp-acme-account-key-staging
+    solvers:
+      - selector:
+          dnsZones:
+            - sadp.example.invalid
+        dns01:
+          rfc2136:
+            nameserver: "192.0.2.53:53"
+            tsigKeyName: acme-key.sadp.example.invalid.
+            tsigAlgorithm: HMACSHA256
+            tsigSecretSecretRef:
+              name: dns01-rfc2136-tsig
+              key: tsig-secret
+---
+apiVersion: cert-manager.io/v1
+kind: ClusterIssuer
+metadata:
+  name: sadp-dns01
+spec:
+  acme:
+    server: https://acme-v02.api.letsencrypt.org/directory
+    email: admin@example.invalid
+    privateKeySecretRef:
+      name: sadp-acme-account-key
+    solvers:
+      - selector:
+          dnsZones:
+            - sadp.example.invalid
+        dns01:
+          rfc2136:
+            nameserver: "192.0.2.53:53"
+            tsigKeyName: acme-key.sadp.example.invalid.
+            tsigAlgorithm: HMACSHA256
+            tsigSecretSecretRef:
+              name: dns01-rfc2136-tsig
+              key: tsig-secret
+---
+# wildcard 는 한 단계만 덮으므로 apex(sadp.example.invalid)를 dnsNames 에 함께 넣는다.
+# Secret 은 Gateway 와 같은 Namespace 에 생성되어야 ReferenceGrant 없이 참조할 수 있다.
+apiVersion: cert-manager.io/v1
+kind: Certificate
+metadata:
+  name: sadp-wildcard-tls-staging
+  namespace: envoy-gateway-system
+spec:
+  secretName: sadp-wildcard-tls-staging
+  commonName: "*.sadp.example.invalid"
+  dnsNames:
+    - "*.sadp.example.invalid"
+    - "sadp.example.invalid"
+  issuerRef:
+    group: cert-manager.io
+    kind: ClusterIssuer
+    name: sadp-dns01-staging
+  privateKey:
+    algorithm: RSA
+    size: 2048
+    encoding: PKCS1
+    rotationPolicy: Always
+  usages:
+    - digital signature
+    - key encipherment
+    - server auth
+  revisionHistoryLimit: 3

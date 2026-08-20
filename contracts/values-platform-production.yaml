@@ -1,0 +1,52 @@
+# 자동 생성 파일 - 직접 수정 금지.
+# 원본: contracts/platform-production.yaml / 생성: scripts/lib/contract-values.py
+platform:
+  baseDomain: sadp.example.invalid
+  gateway:
+    namespace: envoy-gateway-system
+    name: sadp-gateway
+    sectionName: http
+    routeSelectorLabels:
+      platform.example.io/route: allowed
+  network:
+    internalCIDRs:
+    - 10.0.0.0/8
+    - 100.64.0.0/10
+    - 127.0.0.0/8
+    - 169.254.0.0/16
+    - 172.16.0.0/12
+    - 192.168.0.0/16
+  rancher:
+    workloadProjectId: local:proj-sadp-apps
+  portal:
+    namespace: sadp-apps
+    serviceAccountName: portal-lite
+  appGroups:
+    namespacePrefix: app-
+    maxServices: 5
+    storage:
+      storageClass: local-path
+      volumeSize: 5Gi
+      maxClaims: 5
+      total: 25Gi
+  registry:
+    pullSecretName: forgejo-registry-pull
+    pullSecretRemotePath: platform/registry/forgejo-registry-pull
+  quota:
+    cpu: '3'
+    memory: 5Gi
+    maxReplicas: 5
+  openbao:
+    server: https://openbao.openbao.svc.cluster.local:8200
+    kvMount: kv
+    pathPrefix: apps
+    authMount: kubernetes
+    audience: vault
+    caConfigMap: openbao-ca
+    caConfigMapNamespace: openbao
+    roles:
+      zoneApp: portal-zone-app-eso
+      groupApp: portal-group-app-eso
+      groupRegistry: portal-group-registry-eso
+  keycloak:
+    issuer: https://sso.sadp.example.invalid/realms/sadp

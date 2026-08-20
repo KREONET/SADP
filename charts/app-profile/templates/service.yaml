@@ -1,0 +1,25 @@
+{{- /*
+  포트를 듣는 앱의 Service 는 노출 방식과 무관하게 만든다. 같은 AppGroup 의 다른 앱은
+  이 이름으로 Kubernetes Service DNS(<app>.<namespace>.svc / 같은 Namespace 면 <app>)
+  를 써서 접근한다. 포트 없는 worker는 연결할 endpoint 계약이 없어 Service를 만들지 않는다.
+  값 조합 검증은 조건 밖에서 실행해 worker values도 빠짐없이 검사한다.
+*/}}
+{{- include "app-profile.validate" . -}}
+{{- if .Values.service.enabled }}
+apiVersion: v1
+kind: Service
+metadata:
+  name: {{ include "app-profile.fullname" . }}
+  namespace: {{ .Release.Namespace }}
+  labels:
+    {{- include "app-profile.labels" . | nindent 4 }}
+spec:
+  type: ClusterIP        # 고정. 사용자 입력을 받지 않는다.
+  selector:
+    {{- include "app-profile.selectorLabels" . | nindent 4 }}
+  ports:
+    - name: http
+      port: {{ .Values.service.port }}
+      targetPort: http
+      protocol: TCP
+{{- end }}

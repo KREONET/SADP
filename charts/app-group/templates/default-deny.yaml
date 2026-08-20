@@ -1,0 +1,35 @@
+{{- /*
+  같은 Namespace 라는 이유만으로 앱끼리 통신하지 못하게 한다.
+  여기서 전부 닫고, charts/app-profile 의 networkPolicy.allowedApps / ingress.allowedApps 가
+  필요한 연결만 다시 연다. 다른 AppGroup 은 Namespace 가 다르므로 애초에 선택되지 않는다.
+
+  egress 를 닫으면 DNS 도 막힌다. app-profile 의 egress 정책이 DNS 를 항상 열지만,
+  Chart 없이 넣은 Pod 는 이름 해석부터 실패한다 — 의도한 동작이다.
+*/}}
+{{- if .Values.defaultDeny.ingress }}
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: default-deny-ingress
+  namespace: {{ include "app-group.namespace" . }}
+  labels:
+    {{- include "app-group.labels" . | nindent 4 }}
+spec:
+  podSelector: {}
+  policyTypes:
+    - Ingress
+{{- end }}
+{{- if .Values.defaultDeny.egress }}
+---
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: default-deny-egress
+  namespace: {{ include "app-group.namespace" . }}
+  labels:
+    {{- include "app-group.labels" . | nindent 4 }}
+spec:
+  podSelector: {}
+  policyTypes:
+    - Egress
+{{- end }}

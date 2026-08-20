@@ -1,0 +1,35 @@
+# Generated public app example; copy to a new values file before editing.
+app:
+  name: sample-public
+  project: research
+  environment: prod
+image:
+  repository: registry.example.invalid/example/sadp/sample-public
+  tag: '0000000000000000000000000000000000000000'
+  digest: ''
+  pullPolicy: IfNotPresent
+imagePullSecrets:
+- forgejo-registry-pull
+service:
+  port: 8080
+  healthPath: /healthz
+exposure:
+  enabled: true
+  mode: external
+  host: sample-public.sadp.example.invalid
+authentication:
+  mode: none
+configuration:
+  config:
+    APP_ENV: prod
+    LOG_LEVEL: info
+  externalSecrets: []
+  injection:
+    mode: envFrom
+  reload:
+    enabled: true
+    pausePeriod: 1m
+eso:
+  createSecretStore: false
+networkPolicy:
+  egressMode: blocked

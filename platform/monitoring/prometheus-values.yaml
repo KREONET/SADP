@@ -1,0 +1,54 @@
+# prometheus-community/prometheus 값. 외부 Grafana 가 읽어갈 메트릭 백엔드다.
+#
+# Grafana 는 클러스터 밖에 있으므로 여기서는 대시보드를 띄우지 않는다.
+# Alertmanager 와 pushgateway 도 쓰지 않는다. 알림은 외부 통합 운영 쪽이 담당한다.
+#
+# 서버 노드는 메모리 여유가 없으므로(설치 시점 73% 사용) 워커에만 배치한다.
+# 모든 이미지는 scripts/cluster/sync-external-images.sh 로 미리 배포하고 IfNotPresent 로 쓴다.
+
+alertmanager:
+  enabled: false
+prometheus-pushgateway:
+  enabled: false
+
+server:
+  image:
+    pullPolicy: IfNotPresent
+  # control-plane 은 taint 가 있고 메모리도 빠듯하다(설치 시점 73%). 워커에만 둔다.
+  affinity:
+    nodeAffinity:
+      requiredDuringSchedulingIgnoredDuringExecution:
+        nodeSelectorTerms:
+          - matchExpressions:
+              - key: node-role.kubernetes.io/control-plane
+                operator: DoesNotExist
+  persistentVolume:
+    enabled: true
+    size: 20Gi
+    storageClass: local-path
+  retention: 15d
+  resources:
+    requests:
+      cpu: 200m
+      memory: 1Gi
+    limits:
+      cpu: "2"
+      memory: 4Gi
+  securityContext:
+    runAsNonRoot: true
+    runAsUser: 65534
+    runAsGroup: 65534
+    fsGroup: 65534
+
+configmapReload:
+  prometheus:
+    image:
+      pullPolicy: IfNotPresent
+
+nodeExporter:
+  image:
+    pullPolicy: IfNotPresent
+
+kube-state-metrics:
+  image:
+    pullPolicy: IfNotPresent
