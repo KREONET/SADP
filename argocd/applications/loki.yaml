@@ -7,8 +7,8 @@ spec:
   project: default
   source:
     chart: loki
-    repoURL: https://grafana.github.io/helm-charts
-    targetRevision: 7.2.0
+    repoURL: https://grafana-community.github.io/helm-charts
+    targetRevision: 18.9.1
     helm:
       valuesObject:
         deploymentMode: SingleBinary

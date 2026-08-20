@@ -1,24 +1,25 @@
-platform:                       
-  rke2: v1.35.6+rke2r1           
+platform:
+  rke2: v1.35.7+rke2r1
   metallb: 0.16.1
   envoyGateway: 1.8.3
   certManager: 1.21.1
   rancher: v2.14.3
-  keycloak: 26.7.0
-  openbao: 2.6.1
-  postgresql: 17.5
-  prometheus: 29.21.0            
-  loki: 7.2.0                    
-  alloy: 1.11.1                  
-  
-delivery:                       
-  devtronOperator: 1.5.0         
+  keycloak: 26.7.2
+  openbao: 2.6.2
+  openbaoChart: 0.29.2
+  postgresql: "17.10"
+  prometheus: 29.27.0
+  loki: 18.9.1
+  alloy: 1.11.1
+
+delivery:
+  devtronOperator: 1.5.0
   devtronOperatorChart: 0.22.92
-  argoCd: bundled               
-  externalSecrets: 2.8.0          
-  reloader: 1.2.0
-  helm: 3.16.3
-  gatewayApi: v1.5.1             
+  argoCd: bundled
+  externalSecrets: 2.9.0
+  reloader: 2.2.16
+  helm: 3.21.3
+  gatewayApi: v1.5.1
 
 api:
   externalSecrets: external-secrets.io/v1
@@ -28,7 +29,7 @@ api:
 applications:
   portalLite:
     node: 22.18.0
-    next: 16.3.0
+    next: 16.3.1
     nextAuth: 5.0.0-beta.32
     react: 19.2.8
     eslint: 9.39.5

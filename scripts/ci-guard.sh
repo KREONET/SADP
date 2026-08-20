@@ -177,7 +177,10 @@ else:
 
 external_secrets_version = str(version_lock["delivery"]["externalSecrets"])
 external_secrets_api = str(version_lock["api"]["externalSecrets"])
-compatible_external_secrets_api = {"2.8.0": "external-secrets.io/v1"}
+compatible_external_secrets_api = {
+    "2.8.0": "external-secrets.io/v1",
+    "2.9.0": "external-secrets.io/v1",
+}
 expected_external_secrets_api = compatible_external_secrets_api.get(external_secrets_version)
 if expected_external_secrets_api != external_secrets_api:
     bad(
@@ -186,6 +189,40 @@ if expected_external_secrets_api != external_secrets_api:
     )
 else:
     ok("External Secrets chart와 external-secrets.io API 버전 계약 일치")
+
+# 설치 manifest와 컨테이너 빌드 도구도 lock을 소비하는 계약이다. Chart targetRevision만
+# 맞고 실제 image가 예전 값이면 fresh 설치와 기존 클러스터 upgrade 결과가 갈라진다.
+keycloak_image = f'quay.io/keycloak/keycloak:{version_lock["platform"]["keycloak"]}'
+postgresql_image = f'postgres:{version_lock["platform"]["postgresql"]}-bookworm'
+versioned_image_files = {
+    "scripts/site/templates/keycloak-in-cluster.yaml.template": {keycloak_image, postgresql_image},
+    "platform/keycloak/external/docker-compose.yml": {keycloak_image, postgresql_image},
+}
+# external 배포에서는 이 파일이 Service/EndpointSlice만 가지므로 workload image가 없는 것이 정상이다.
+if str((contract["spec"].get("keycloak") or {}).get("deployment") or "in-cluster") == "in-cluster":
+    versioned_image_files["platform/keycloak/resources.yaml"] = {keycloak_image, postgresql_image}
+image_lock_errors = []
+for path, expected_images in versioned_image_files.items():
+    text = pathlib.Path(path).read_text(encoding="utf-8")
+    missing = sorted(image for image in expected_images if image not in text)
+    if missing:
+        image_lock_errors.append(f"{path}: {', '.join(missing)}")
+openbao_values = yaml.safe_load(
+    pathlib.Path("platform/openbao/values-beta.yaml").read_text(encoding="utf-8")
+) or {}
+openbao_image_tag = str(((openbao_values.get("server") or {}).get("image") or {}).get("tag") or "")
+if openbao_image_tag != str(version_lock["platform"]["openbao"]):
+    image_lock_errors.append(
+        "platform/openbao/values-beta.yaml: "
+        f"{openbao_image_tag or 'missing'} != {version_lock['platform']['openbao']}"
+    )
+portal_dockerfile = pathlib.Path("apps/portal-lite/Dockerfile").read_text(encoding="utf-8")
+if f'FROM alpine/helm:{version_lock["delivery"]["helm"]} AS helm' not in portal_dockerfile:
+    image_lock_errors.append("apps/portal-lite/Dockerfile: Helm image가 delivery.helm과 불일치")
+if image_lock_errors:
+    bad("versions.lock.yaml image/tool 계약 불일치: " + "; ".join(image_lock_errors))
+else:
+    ok("Keycloak/PostgreSQL/OpenBao/Helm image 버전 계약 일치")
 
 # 3. RKE2 config 에 실제 token 이 들어갔는지
 tok_bad = []
@@ -717,6 +754,30 @@ if missing_applications:
 else:
     ok("플랫폼 controller GitOps child Application 존재")
 
+def chart_source(application):
+    spec = (application or {}).get("spec") or {}
+    for source in spec.get("sources") or []:
+        if source.get("chart"):
+            return source
+    return spec.get("source") or {}
+
+controller_chart_locks = {
+    "external-secrets": version_lock["delivery"]["externalSecrets"],
+    "reloader": version_lock["delivery"]["reloader"],
+    "openbao": version_lock["platform"]["openbaoChart"],
+}
+controller_chart_errors = []
+for name, locked in controller_chart_locks.items():
+    source = chart_source(application_files.get(name))
+    if str(source.get("targetRevision") or "") != str(locked):
+        controller_chart_errors.append(
+            f"{name}={source.get('targetRevision') or 'missing'} (lock={locked})"
+        )
+if controller_chart_errors:
+    bad("controller Helm chart와 versions.lock.yaml 불일치: " + "; ".join(controller_chart_errors))
+else:
+    ok("External Secrets/Reloader/OpenBao chart 버전 계약 일치")
+
 platform_resources = application_files.get("platform-resources") or {}
 platform_directory = (
     platform_resources.get("spec", {}).get("source", {}).get("directory", {})
@@ -788,6 +849,9 @@ for component in ("prometheus", "loki", "alloy"):
     source = application.get("spec", {}).get("source", {})
     if str(source.get("targetRevision")) != str(locked):
         bad(f"{component} Application 버전이 versions.lock.yaml 과 불일치")
+        monitoring_ok = False
+    if component == "loki" and str(source.get("repoURL")) != "https://grafana-community.github.io/helm-charts":
+        bad("Loki OSS Application은 grafana-community Helm 저장소를 사용해야 한다")
         monitoring_ok = False
     if str(source.get("helm", {}).get("valuesObject", {}) and "ok") != "ok":
         bad(f"{component} Application 에 valuesObject 가 비어 있다")

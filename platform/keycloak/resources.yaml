@@ -42,7 +42,7 @@ spec:
           type: RuntimeDefault
       containers:
       - name: postgresql
-        image: postgres:17.5-bookworm
+        image: postgres:17.10-bookworm
         imagePullPolicy: IfNotPresent
         ports:
         - name: postgres
@@ -145,7 +145,7 @@ spec:
           type: RuntimeDefault
       containers:
       - name: keycloak
-        image: quay.io/keycloak/keycloak:26.7.0
+        image: quay.io/keycloak/keycloak:26.7.2
         imagePullPolicy: IfNotPresent
         args:
         - start

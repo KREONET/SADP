@@ -5,7 +5,7 @@
 # KEYCLOAK_BIND_ADDRESS 로 내부 NIC에 묶어 공인 NIC에 노출되지 않게 한다.
 services:
   postgres:
-    image: postgres:17.5-bookworm
+    image: postgres:17.10-bookworm
     restart: unless-stopped
     environment:
       POSTGRES_DB: ${KC_DB_NAME:?set KC_DB_NAME}
@@ -22,7 +22,7 @@ services:
     # DB는 컨테이너 네트워크 밖으로 내보내지 않는다. ports 를 열지 않는다.
 
   keycloak:
-    image: quay.io/keycloak/keycloak:26.7.0
+    image: quay.io/keycloak/keycloak:26.7.2
     restart: unless-stopped
     command: ["start"]
     depends_on:
@@ -67,7 +67,7 @@ services:
       retries: 30
 
   keycloak-config:
-    image: quay.io/keycloak/keycloak:26.7.0
+    image: quay.io/keycloak/keycloak:26.7.2
     restart: "no"
     depends_on:
       keycloak:
