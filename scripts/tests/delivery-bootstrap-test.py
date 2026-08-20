@@ -37,6 +37,7 @@ with tempfile.TemporaryDirectory(prefix="sadp-delivery-test-") as raw_tmp:
     kubectl = tmp / "kubectl"
     helm = tmp / "helm"
     log = tmp / "kubectl.log"
+    apply_log = tmp / "kubectl-apply.log"
     write_executable(
         helm,
         """#!/usr/bin/env bash
@@ -111,6 +112,7 @@ exit 1
         "HELM_BIN": str(helm),
         "KUBECONFIG_PATH": str(tmp / "kubeconfig"),
         "MOCK_LOG": str(log),
+        "MOCK_APPLY_LOG": str(apply_log),
     }
 
     for scenario, expected, contains in (
@@ -172,7 +174,7 @@ if [[ ${args} == *" get storageclass -o json "* ]]; then
 fi
 if [[ ${args} == *" get storageclass "* ]]; then printf 'NAME\\nlocal-path (default)\\n'; exit 0; fi
 if [[ ${args} == *" create namespace sadp-preflight-"* ]]; then exit 0; fi
-if [[ ${args} == *" apply -f - "* ]]; then cat >/dev/null; exit 0; fi
+if [[ ${args} == *" apply -f - "* ]]; then cat >>"${MOCK_APPLY_LOG}"; exit 0; fi
 if [[ ${args} == *" wait --for=jsonpath="* ]]; then exit 0; fi
 if [[ ${args} == *" delete namespace sadp-preflight-"* ]]; then exit 0; fi
 if [[ ${args} == *" top nodes "* ]]; then exit 1; fi
@@ -181,6 +183,7 @@ exit 0
 """,
     )
     log.write_text("", encoding="utf-8")
+    apply_log.write_text("", encoding="utf-8")
     result = subprocess.run(
         ["bash", "scripts/cluster/preflight.sh"],
         cwd=ROOT,
@@ -190,6 +193,7 @@ exit 0
         check=False,
     )
     commands = log.read_text(encoding="utf-8")
+    applied = apply_log.read_text(encoding="utf-8")
     report(
         "PF-unique namespace and cleanup",
         result,
@@ -203,6 +207,16 @@ exit 0
     else:
         FAILED += 1
         print("[FAIL] PF namespace lifecycle mismatch")
+    if (
+        "kind: PersistentVolumeClaim" in applied
+        and "kind: Pod" in applied
+        and "claimName: preflight-pvc" in applied
+    ):
+        PASSED += 1
+        print("[OK]   PF-WaitForFirstConsumer creates a temporary consumer Pod")
+    else:
+        FAILED += 1
+        print("[FAIL] PF-WaitForFirstConsumer consumer Pod missing")
 
     log.write_text("", encoding="utf-8")
     result = subprocess.run(

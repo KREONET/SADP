@@ -11,6 +11,7 @@ platform:
   prometheus: 29.27.0
   loki: 18.9.1
   alloy: 1.11.1
+  localPathProvisioner: 0.0.37
 
 delivery:
   devtronOperator: 1.5.0

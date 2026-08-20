@@ -55,6 +55,29 @@ metadata: {name: preflight-pvc}
 spec:
   accessModes: [ReadWriteOnce]
   resources: {requests: {storage: 1Gi}}
+---
+# WaitForFirstConsumer StorageClass는 소비 Pod가 scheduler에 배치되어야 PV를 만든다.
+# Pod가 Running일 필요는 없으므로 provisioning 검증은 PVC Bound까지만 기다린다.
+apiVersion: v1
+kind: Pod
+metadata: {name: preflight-volume-consumer}
+spec:
+  restartPolicy: Never
+  securityContext:
+    runAsNonRoot: true
+    seccompProfile: {type: RuntimeDefault}
+  containers:
+    - name: volume-consumer
+      image: registry.k8s.io/pause:3.10
+      imagePullPolicy: IfNotPresent
+      securityContext:
+        allowPrivilegeEscalation: false
+        capabilities: {drop: ["ALL"]}
+      volumeMounts:
+        - {name: data, mountPath: /data}
+  volumes:
+    - name: data
+      persistentVolumeClaim: {claimName: preflight-pvc}
 PVC
 kctl -n "${preflight_namespace}" wait --for=jsonpath='{.status.phase}'=Bound pvc/preflight-pvc --timeout=90s
 ok "기본 StorageClass dynamic provisioning 정상"

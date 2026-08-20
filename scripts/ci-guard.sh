@@ -194,9 +194,14 @@ else:
 # 맞고 실제 image가 예전 값이면 fresh 설치와 기존 클러스터 upgrade 결과가 갈라진다.
 keycloak_image = f'quay.io/keycloak/keycloak:{version_lock["platform"]["keycloak"]}'
 postgresql_image = f'postgres:{version_lock["platform"]["postgresql"]}-bookworm'
+local_path_image = (
+    "docker.io/rancher/local-path-provisioner:"
+    f'v{version_lock["platform"]["localPathProvisioner"]}'
+)
 versioned_image_files = {
     "scripts/site/templates/keycloak-in-cluster.yaml.template": {keycloak_image, postgresql_image},
     "platform/keycloak/external/docker-compose.yml": {keycloak_image, postgresql_image},
+    "docs/examples/local-path-storage.yaml": {local_path_image},
 }
 # external 배포에서는 이 파일이 Service/EndpointSlice만 가지므로 workload image가 없는 것이 정상이다.
 if str((contract["spec"].get("keycloak") or {}).get("deployment") or "in-cluster") == "in-cluster":
@@ -222,7 +227,7 @@ if f'FROM alpine/helm:{version_lock["delivery"]["helm"]} AS helm' not in portal_
 if image_lock_errors:
     bad("versions.lock.yaml image/tool 계약 불일치: " + "; ".join(image_lock_errors))
 else:
-    ok("Keycloak/PostgreSQL/OpenBao/Helm image 버전 계약 일치")
+    ok("Keycloak/PostgreSQL/OpenBao/Helm/local-path image 버전 계약 일치")
 
 # 3. RKE2 config 에 실제 token 이 들어갔는지
 tok_bad = []

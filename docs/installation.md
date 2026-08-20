@@ -51,8 +51,53 @@ sudo bash ./sadp --preflight
 
 이 검사는 RKE2 전용 kubeconfig와 kubectl을 사용해 server 1대와 worker 2대, 정확히 3대가 모두
 Ready인지와 기본 StorageClass가 정확히 1개인지 강제합니다. 자신이 만든 고유
-`sadp-preflight-*` Namespace/PVC로
+`sadp-preflight-*` Namespace/PVC와 임시 소비 Pod로 `WaitForFirstConsumer`를 포함한
 실제 provisioning을 확인하고 성공·실패 모두 해당 임시 Namespace만 정리합니다.
+
+#### StorageClass가 없을 때
+
+먼저 control-plane에서 RKE2 전용 kubectl로 현재 상태를 확인합니다.
+
+```bash
+sudo /var/lib/rancher/rke2/bin/kubectl \
+  --kubeconfig /etc/rancher/rke2/rke2.yaml \
+  get storageclass
+```
+
+- `(default)`가 정확히 1개면 새 provisioner를 설치하지 않고 그 이름을 `STORAGE_CLASS`에 씁니다.
+- 동적 provisioner가 있지만 기본 class가 아니면 운영 기준에 맞는 class 하나만 기본값으로
+  지정합니다.
+- 기본 class가 2개 이상이면 설치를 진행하지 말고 annotation을 정리해 정확히 1개만 남깁니다.
+- StorageClass가 전혀 없는 베타 테스트베드는 저장소의 고정 버전 local-path 예제를 사용할 수
+  있습니다.
+
+```bash
+sudo /var/lib/rancher/rke2/bin/kubectl \
+  --kubeconfig /etc/rancher/rke2/rke2.yaml \
+  apply -f docs/examples/local-path-storage.yaml
+
+sudo /var/lib/rancher/rke2/bin/kubectl \
+  --kubeconfig /etc/rancher/rke2/rke2.yaml \
+  rollout status deployment/local-path-provisioner \
+  -n local-path-storage --timeout=5m
+
+sudo /var/lib/rancher/rke2/bin/kubectl \
+  --kubeconfig /etc/rancher/rke2/rke2.yaml \
+  annotate storageclass local-path \
+  storageclass.kubernetes.io/is-default-class=true --overwrite
+
+sudo bash ./sadp --preflight
+```
+
+`docs/examples/local-path-storage.yaml`은
+[Rancher 공식 local-path-provisioner](https://github.com/rancher/local-path-provisioner)를 사용합니다.
+provisioner 버전은 `versions.lock.yaml`의 `platform.localPathProvisioner`와 CI가 대조합니다.
+이후 `/etc/sadp/site.env`에는 `STORAGE_CLASS=local-path`를 사용합니다.
+
+> [!WARNING]
+> local-path는 선택된 노드의 로컬 디스크를 사용하며 데이터를 노드 사이에 복제하지 않습니다.
+> 노드 장애에도 데이터 가용성이 필요한 운영 환경에서는 조직이 승인한 CSI를 설치하고 그 기본
+> StorageClass 이름을 사용하세요. 기존 PVC는 기본 class를 바꿔도 자동 이전되지 않습니다.
 
 Devtron과 번들 Argo CD는 원툴 cluster apply의 사전 설치 조건이 아닙니다. 둘이 완전히 없으면
 `versions.lock.yaml`의 Devtron app/chart 고정 버전으로 자동 설치합니다. 정확한 기존 설치는
