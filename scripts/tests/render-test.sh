@@ -41,6 +41,35 @@ NMS_PORT=${SITE_VALUES[8]}
 PORTAL_NAMESPACE=${SITE_VALUES[9]}
 APP_GROUP_VOLUME_SIZE=${SITE_VALUES[10]}
 APP_GROUP_STORAGE_CLASS=${SITE_VALUES[11]}
+# cluster-scoped/ESO 이름은 project/environment를 포함한 canonical tuple의 hash다.
+# 사이트 계약을 바꿔도 research/beta 시절 golden suffix를 기대하지 않도록 Chart/Go와 같은
+# prefix|canonical 공식을 시험 입력에도 적용한다.
+readarray -t APP_GROUP_TYPED_NAMES < <(python3 - "$APP_PROJECT" "$APP_ENV" <<'PY'
+import hashlib
+import sys
+
+project, environment = sys.argv[1:]
+
+def typed_name(prefix, slug, canonical):
+    suffix = hashlib.sha256(f"{prefix}|{canonical}".encode()).hexdigest()[:10]
+    room = 52 - len(prefix)
+    normalized_slug = slug[:room].strip("-")
+    return f"{prefix}{normalized_slug}-{suffix}"
+
+print(typed_name(
+    "css-g-",
+    "mobility-platform",
+    f"v1/group/{project}/{environment}/mobility-platform",
+))
+print(typed_name(
+    "eso-sa-a-",
+    "api",
+    f"v1/app/{project}/{environment}/mobility-platform/api",
+))
+PY
+)
+APP_GROUP_PULL_STORE=${APP_GROUP_TYPED_NAMES[0]}
+APP_GROUP_API_ESO_SA=${APP_GROUP_TYPED_NAMES[1]}
 # 금지 profile도 계약값이 바뀌면 계속 다른 용량을 요청해야 한다.
 INVALID_APP_GROUP_VOLUME_SIZE=10Gi
 if [[ "$APP_GROUP_VOLUME_SIZE" == "$INVALID_APP_GROUP_VOLUME_SIZE" ]]; then
@@ -410,10 +439,11 @@ fi
 helm template mobility-platform charts/app-group -n app-mobility-platform -f $CONTRACT \
   --set group.name=mobility-platform --set group.project=${APP_PROJECT} \
   --set group.environment=${APP_ENV} >$TMP/group.yaml
-if python3 - "$TMP/group.yaml" <<'PY'
+if python3 - "$TMP/group.yaml" "$APP_GROUP_PULL_STORE" <<'PY'
 import sys, yaml
 
 documents = [doc for doc in yaml.safe_load_all(open(sys.argv[1], encoding="utf-8")) if doc]
+expected_store = sys.argv[2]
 kinds = {doc["kind"] for doc in documents}
 required = {"Namespace", "NetworkPolicy", "ResourceQuota", "LimitRange", "Role", "RoleBinding"}
 missing = required - kinds
@@ -461,7 +491,7 @@ if sa_ref.get("namespace") != "app-mobility-platform":
     raise SystemExit("ESO ServiceAccountRef가 AppGroup Namespace에 묶이지 않았다")
 if pull["spec"]["secretStoreRef"].get("kind") != "ClusterSecretStore":
     raise SystemExit("registry ExternalSecret이 ClusterSecretStore를 참조하지 않는다")
-if store["metadata"]["name"] != "css-g-mobility-platform-2c722ce1e3":
+if store["metadata"]["name"] != expected_store:
     raise SystemExit(f"registry ClusterSecretStore typed-name golden 불일치: {store['metadata']['name']}")
 service_account = next(doc for doc in documents if doc["kind"] == "ServiceAccount")
 if service_account["metadata"]["name"] != "eso-registry":
@@ -564,7 +594,7 @@ configuration:
   externalSecrets:
     - name: app-env
       secretStore: openbao-api
-      remotePath: apps/${APP_PROJECT}/${APP_ENV}/workloads/app-mobility-platform/eso-sa-a-api-e9f54d5c38
+      remotePath: apps/${APP_PROJECT}/${APP_ENV}/workloads/app-mobility-platform/${APP_GROUP_API_ESO_SA}
       inject: true
       keys:
         - API_TOKEN
