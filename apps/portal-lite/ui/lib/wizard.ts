@@ -21,9 +21,11 @@ export const WIZARD_LAST_STEP = WIZARD_STEPS.length;
 export const EMPTY_DRAFT: NewAppDraft = {
   name: "",
   project: "",
+  sourceMode: "git",
   repositoryUrl: "",
   branch: "main",
   dockerfilePath: "Dockerfile",
+  image: "",
   port: "8080",
   resourceSize: "",
   replicas: "1",

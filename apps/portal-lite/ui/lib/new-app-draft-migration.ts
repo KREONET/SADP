@@ -37,6 +37,7 @@ export function migrateStoredDraft(value: unknown): NewAppDraft {
     stored.egressMode === "custom"
       ? stored.egressMode
       : EMPTY_DRAFT.egressMode;
+  const sourceMode = stored.sourceMode === "image" ? "image" : "git";
 
   const text = (key: keyof NewAppDraft): string =>
     typeof stored[key] === "string"
@@ -85,9 +86,11 @@ export function migrateStoredDraft(value: unknown): NewAppDraft {
   return {
     name: text("name"),
     project: text("project"),
+    sourceMode,
     repositoryUrl: text("repositoryUrl"),
     branch: text("branch"),
     dockerfilePath: text("dockerfilePath"),
+    image: text("image"),
     port: text("port"),
     resourceSize: text("resourceSize"),
     replicas: text("replicas"),

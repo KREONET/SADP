@@ -360,38 +360,50 @@ func validDockerCredential(credential dockerCredential) bool {
 	return err == nil && bytes.Contains(decoded, []byte(":"))
 }
 
-// requireBuildCredential는 소스 빌드 신청을 받기 전에 고정 push Secret과 key가 실제로
-// 있는지 확인한다. 값은 로그/응답에 남기지 않고 map 존재 여부만 본다.
-func (p *buildPipeline) requireBuildCredential(ctx context.Context) error {
+// requireDockerCredential는 신청을 받기 전에 고정 Docker config Secret과 key가 실제로
+// 있는지 확인한다. 값은 로그/응답에 남기지 않고 메모리에서 형식만 검증한다.
+func (p *buildPipeline) requireDockerCredential(
+	ctx context.Context, namespace, secretName, secretKey, purpose string,
+) error {
 	if p == nil {
 		return errors.New("클러스터 build pipeline이 비활성입니다")
 	}
 	var secret secretKeyStatus
 	secretPath := fmt.Sprintf("/api/v1/namespaces/%s/secrets/%s",
-		url.PathEscape(buildNamespace), url.PathEscape(buildPushSecret))
+		url.PathEscape(namespace), url.PathEscape(secretName))
 	if _, err := p.do(ctx, http.MethodGet, secretPath, nil, &secret); err != nil {
-		return fmt.Errorf("registry push Secret 확인 실패: %w", err)
+		return fmt.Errorf("%s Secret 확인 실패: %w", purpose, err)
 	}
-	encoded, exists := secret.Data[buildPushSecretKey]
+	encoded, exists := secret.Data[secretKey]
 	if !exists || encoded == "" {
-		return fmt.Errorf("registry push Secret %s에 key %s가 없습니다", buildPushSecret, buildPushSecretKey)
+		return fmt.Errorf("%s Secret %s에 필요한 key가 없습니다", purpose, secretName)
 	}
 	decoded, err := base64.StdEncoding.DecodeString(encoded)
 	if err != nil {
-		return fmt.Errorf("registry push Secret %s의 Docker config 인코딩이 올바르지 않습니다", buildPushSecret)
+		return fmt.Errorf("%s Secret %s의 Docker config 인코딩이 올바르지 않습니다", purpose, secretName)
 	}
 	var dockerConfig struct {
 		Auths map[string]dockerCredential `json:"auths"`
 	}
 	if json.Unmarshal(decoded, &dockerConfig) != nil || len(dockerConfig.Auths) == 0 {
-		return fmt.Errorf("registry push Secret %s의 Docker config 형식이 올바르지 않습니다", buildPushSecret)
+		return fmt.Errorf("%s Secret %s의 Docker config 형식이 올바르지 않습니다", purpose, secretName)
 	}
 	for _, credential := range dockerConfig.Auths {
 		if !validDockerCredential(credential) {
-			return fmt.Errorf("registry push Secret %s의 auth는 base64(username:password) 형식이어야 합니다", buildPushSecret)
+			return fmt.Errorf("%s Secret %s의 auth 형식이 올바르지 않습니다", purpose, secretName)
 		}
 	}
 	return nil
+}
+
+func (p *buildPipeline) requireBuildCredential(ctx context.Context) error {
+	return p.requireDockerCredential(ctx, buildNamespace, buildPushSecret,
+		buildPushSecretKey, "registry push")
+}
+
+func (p *buildPipeline) requireRegistryPullCredential(ctx context.Context, namespace string) error {
+	return p.requireDockerCredential(ctx, namespace, registryPullSecret,
+		".dockerconfigjson", "registry pull")
 }
 
 var fatalPodWaitingReasons = map[string]bool{

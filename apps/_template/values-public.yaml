@@ -8,6 +8,7 @@ image:
   tag: '0000000000000000000000000000000000000000'
   digest: ''
   pullPolicy: IfNotPresent
+  usePullSecret: true
 imagePullSecrets:
 - forgejo-registry-pull
 service:

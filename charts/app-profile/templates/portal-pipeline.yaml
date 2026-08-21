@@ -9,6 +9,9 @@
 {{- if not .Values.configuration.config.PORTAL_BUILD_DOCKER_CONFIG_NAME }}
 {{- fail "portalPipeline.enabled=true이면 PORTAL_BUILD_DOCKER_CONFIG_NAME이 필요하다" }}
 {{- end }}
+{{- if not .Values.configuration.config.PORTAL_APP_IMAGE_PULL_NAME }}
+{{- fail "portalPipeline.enabled=true이면 PORTAL_APP_IMAGE_PULL_NAME이 필요하다" }}
+{{- end }}
 apiVersion: rbac.authorization.k8s.io/v1
 kind: Role
 metadata:
@@ -28,11 +31,13 @@ rules:
   - apiGroups: [""]
     resources: ["pods"]
     verbs: ["get", "list"]
-  # 신청을 durable하게 받기 전에 kaniko push credential/key 존재 여부만 확인한다.
-  # build Job이 이미 이 exact Secret을 mount하므로 권한 경계를 넓히지 않는다.
+  # 신청을 durable하게 받기 전에 kaniko push와 Zone 앱 pull credential의 준비 상태만
+  # 확인한다. 두 exact Secret 밖의 Secret을 읽을 수 없게 resourceNames로 가둔다.
   - apiGroups: [""]
     resources: ["secrets"]
-    resourceNames: [{{ .Values.configuration.config.PORTAL_BUILD_DOCKER_CONFIG_NAME | quote }}]
+    resourceNames:
+      - {{ .Values.configuration.config.PORTAL_BUILD_DOCKER_CONFIG_NAME | quote }}
+      - {{ .Values.configuration.config.PORTAL_APP_IMAGE_PULL_NAME | quote }}
     verbs: ["get"]
 ---
 apiVersion: rbac.authorization.k8s.io/v1

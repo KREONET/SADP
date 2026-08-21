@@ -41,8 +41,9 @@ configure-nms-egress|bash|scripts/node/configure-nms-egress.sh|렌더된 host ro
 GROUP:cluster — control-plane에서 root. 클러스터 전체
 bootstrap|bash|scripts/cluster/bootstrap-testbed.sh|전체 설치 진입점(아래 단계를 순서대로)
 preflight|bash|scripts/cluster/preflight.sh|3노드 RKE2와 기본 StorageClass 실검증
-install-devtron|bash|scripts/cluster/install-devtron.sh|Devtron/번들 Argo CD 계획 또는 부재 시 설치
+install-devtron|bash|scripts/cluster/install-devtron.sh|Devtron/번들 Argo CD 계획, 부재 시 설치, 동일 버전 failed 복구
 install-platform|bash|scripts/cluster/install-testbed-platform.sh|인증서/3노드/OpenBao/ESO/Reloader/Keycloak
+configure-keycloak|bash|scripts/cluster/configure-keycloak.sh|이미 실행 중인 in-cluster/external Keycloak 계약 수렴
 configure-openbao-app-access|bash|scripts/ops/configure-openbao-app-access.sh|앱별 OpenBao OIDC 권한 구성(관리자 전용)
 build-images|bash|scripts/cluster/build-local-images.sh|이미지 빌드(워커 Pod) + 세 노드 import
 bootstrap-services|bash|scripts/cluster/bootstrap-testbed-services.sh|Keycloak realm/client, OpenBao auth/KV

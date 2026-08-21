@@ -127,11 +127,10 @@ func (f *forgejoClient) apiURL(segments ...string) string {
 type forgejoAPIError struct {
 	Method string
 	Status int
-	Detail string
 }
 
 func (e *forgejoAPIError) Error() string {
-	return fmt.Sprintf("Forgejo %s 응답 %d: %s", e.Method, e.Status, e.Detail)
+	return fmt.Sprintf("Forgejo %s 응답 %d", e.Method, e.Status)
 }
 
 // forgejoStatus는 에러에서 HTTP 상태 코드를 꺼낸다. API 응답이 아니면 0이다.
@@ -174,11 +173,9 @@ func (f *forgejoClient) do(ctx context.Context, method, endpoint string, body an
 	}()
 
 	if response.StatusCode >= 400 {
-		detail, _ := io.ReadAll(io.LimitReader(response.Body, 2<<10))
 		return &forgejoAPIError{
 			Method: method,
 			Status: response.StatusCode,
-			Detail: strings.TrimSpace(string(detail)),
 		}
 	}
 	if out != nil {

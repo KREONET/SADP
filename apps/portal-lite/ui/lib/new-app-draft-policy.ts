@@ -4,6 +4,7 @@ const API_FIELD_TO_DRAFT: Record<string, keyof NewAppDraft> = {
   appName: "name",
   project: "project",
   gitRepository: "repositoryUrl",
+  image: "image",
   branch: "branch",
   dockerfile: "dockerfilePath",
   containerPort: "port",

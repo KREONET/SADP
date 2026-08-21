@@ -16,6 +16,7 @@ SADP 문서는 역할별 가이드와 작업별 runbook으로 나뉩니다. 문�
 
 | 작업 | 문서 |
 | --- | --- |
+| 신규 템플릿 앱과 Secret 준비 | [템플릿 앱 등록 안내](template-app-onboarding.md) |
 | 새 사이트 통합 설치 | [설치 가이드](installation.md) |
 | 모든 site.env key와 생성 방식 | [사이트 설정 참조](site-configuration.md) |
 | NIC, firewall, Squid, DNS, NMS | [네트워크·egress 안내](network-egress.md) |

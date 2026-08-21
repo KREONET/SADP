@@ -38,6 +38,7 @@ done
 
 require_root
 for command in base64 python3 ssh; do require_command "${command}"; done
+ensure_state_dirs
 cd "${TESTBED_ROOT}"
 local_script=platform/keycloak/external/configure-default-developer.sh
 local_test_user_script=platform/keycloak/external/configure-test-user.sh
@@ -143,6 +144,12 @@ ssh "${ssh_args[@]}" "${target}" bash -s -- "${REMOTE_ENV_FILE}" "${REMOTE_KCADM
 set -euo pipefail
 [[ -r $1 ]] || { echo "[FAIL] Keycloak EnvironmentFile을 읽을 수 없음" >&2; exit 1; }
 [[ -x $2 ]] || { echo "[FAIL] kcadm 실행 파일 없음" >&2; exit 1; }
+# client secret을 회수한 뒤 뒤늦게 보조 명령 누락으로 실패하면 이미 realm 정책은
+# 바뀐 상태가 된다. 변경 전에 원격 응답 생성에 필요한 도구까지 함께 확인한다.
+for command in awk base64 grep jq sed; do
+  command -v "${command}" >/dev/null \
+    || { echo "[FAIL] 외부 Keycloak VM 필수 명령 없음: ${command}" >&2; exit 1; }
+done
 REMOTE
 
 # 스크립트 본문만 stdin으로 보내며 Secret 파일은 복사하지 않는다.
@@ -220,4 +227,112 @@ REMOTE
   "http://${external_address}:${external_port}" \
   "${keycloak_realm}" "${portal_client_id}" "${base_domain}"
 
-ok "외부 Keycloak realm 공통 로그인·Portal client·acceptance 계정 원격 수렴 완료"
+# OpenBao에는 임의로 만든 값이나 과거 파일이 아니라 Keycloak이 현재 보유한 client secret만
+# 시드해야 한다. 관리자 자격증명은 계속 VM의 EnvironmentFile에서 읽고, 세 client secret만
+# 암호화된 SSH stdout으로 base64 전송해 root-only 응답 파일에서 원자적으로 교체한다.
+client_secret_response=$(mktemp "${CREDENTIAL_DIR}/.keycloak-client-secrets.XXXXXX")
+chmod 0600 "${client_secret_response}"
+cleanup_client_secret_response() { rm -f "${client_secret_response}"; }
+trap cleanup_client_secret_response EXIT
+
+secret_command='bash -s --'
+for value in "${REMOTE_ENV_FILE}" "${REMOTE_KCADM}" \
+  "http://${external_address}:${external_port}" "${keycloak_realm}" \
+  secure-demo-prod "${portal_client_id}" openbao; do
+  printf -v quoted_value '%q' "${value}"
+  secret_command+=" ${quoted_value}"
+done
+ssh "${ssh_args[@]}" "${target}" "${secret_command}" >"${client_secret_response}" <<'REMOTE'
+set -euo pipefail
+env_file_value() {
+  local file=$1 key=$2 rows
+  rows=$(sed -n "s/^${key}=//p" "${file}")
+  [[ $(grep -c '^' <<<"${rows}") == 1 && -n ${rows} ]] || exit 1
+  if [[ ${rows} == \"*\" && ${rows} == *\" ]]; then
+    rows=${rows:1:${#rows}-2}
+  elif [[ ${rows} == \'*\' && ${rows} == *\' ]]; then
+    rows=${rows:1:${#rows}-2}
+  fi
+  printf '%s' "${rows}"
+}
+kcadm_home=$(mktemp -d /root/.sadp-keycloak-secret-read.XXXXXX)
+kcadm_config=${kcadm_home}/kcadm.config
+cleanup() {
+  rm -f "${kcadm_config}"
+  rmdir "${kcadm_home}/.keycloak" 2>/dev/null || true
+  rmdir "${kcadm_home}" 2>/dev/null || true
+}
+trap cleanup EXIT
+admin_user=$(env_file_value "$1" KC_BOOTSTRAP_ADMIN_USERNAME)
+admin_password=$(env_file_value "$1" KC_BOOTSTRAP_ADMIN_PASSWORD)
+export KC_CLI_PASSWORD=${admin_password}
+"$2" config credentials --server "$3" --realm master --user "${admin_user}" \
+  --config "${kcadm_config}" >/dev/null
+unset KC_CLI_PASSWORD admin_password admin_user
+
+for client_spec in \
+  "keycloak-secure-demo-client-secret:$5" \
+  "keycloak-portal-client-secret:$6" \
+  "keycloak-openbao-client-secret:$7"; do
+  filename=${client_spec%%:*}
+  client_id=${client_spec#*:}
+  clients=$("$2" get clients -r "$4" -q clientId="${client_id}" \
+    --fields id,clientId --format csv --noquotes --config "${kcadm_config}")
+  uuid=$(awk -F, -v wanted="${client_id}" '$2 == wanted {count++; id=$1} END {if (count == 1) print id}' \
+    <<<"${clients}")
+  [[ -n ${uuid} ]] || exit 1
+  secret=$("$2" get "clients/${uuid}/client-secret" -r "$4" \
+    --config "${kcadm_config}" | jq -er '.value | strings | select(length > 0)')
+  printf '%s\t' "${filename}"
+  printf '%s' "${secret}" | base64 -w0
+  printf '\n'
+  unset secret
+done
+REMOTE
+
+python3 - "${client_secret_response}" "${CREDENTIAL_DIR}" <<'PY'
+import base64
+import binascii
+import os
+from pathlib import Path
+import sys
+import tempfile
+
+response = Path(sys.argv[1])
+credential_dir = Path(sys.argv[2])
+expected = {
+    "keycloak-secure-demo-client-secret",
+    "keycloak-portal-client-secret",
+    "keycloak-openbao-client-secret",
+}
+decoded = {}
+for line in response.read_text(encoding="ascii").splitlines():
+    name, separator, payload = line.partition("\t")
+    if not separator or name not in expected or name in decoded:
+        raise SystemExit("[FAIL] 외부 Keycloak client secret 응답 형식 오류")
+    try:
+        value = base64.b64decode(payload, validate=True)
+    except (binascii.Error, ValueError):
+        raise SystemExit("[FAIL] 외부 Keycloak client secret 응답 인코딩 오류")
+    if not value or b"\x00" in value or b"\r" in value or b"\n" in value:
+        raise SystemExit("[FAIL] 외부 Keycloak client secret 응답 값 오류")
+    decoded[name] = value
+if set(decoded) != expected:
+    raise SystemExit("[FAIL] 외부 Keycloak client secret 응답 항목 누락")
+for name in sorted(expected):
+    target = credential_dir / name
+    descriptor, temporary_name = tempfile.mkstemp(prefix="." + name + ".", dir=credential_dir)
+    temporary = Path(temporary_name)
+    try:
+        os.fchmod(descriptor, 0o600)
+        os.write(descriptor, decoded[name])
+        os.fsync(descriptor)
+    finally:
+        os.close(descriptor)
+    os.replace(temporary, target)
+    os.chmod(target, 0o600)
+PY
+cleanup_client_secret_response
+trap - EXIT
+
+ok "외부 Keycloak realm 정책·acceptance 계정 수렴 및 현재 client secret 안전 회수 완료"

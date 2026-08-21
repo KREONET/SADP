@@ -77,9 +77,13 @@ export async function submitNewApp(
     appName: draft.name.trim(),
     project: draft.project.trim(),
     environment: options.environment,
-    gitRepository: draft.repositoryUrl.trim(),
-    branch: draft.branch.trim(),
-    dockerfile: draft.dockerfilePath.trim(),
+    ...(draft.sourceMode === "image"
+      ? { image: draft.image.trim() }
+      : {
+          gitRepository: draft.repositoryUrl.trim(),
+          branch: draft.branch.trim(),
+          dockerfile: draft.dockerfilePath.trim(),
+        }),
     containerPort: Number(draft.port.trim()),
     exposure: { mode: draft.exposureMode },
     // 내부 전용 앱에 oidc를 보내면 서버가 422로 거부한다. 화면에서 이미 막지만

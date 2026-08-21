@@ -70,17 +70,17 @@ if keycloak_is_external; then
   # 원격 수렴시키고, in-cluster 전용 test user/client 생성만 건너뛴다.
   note "Keycloak deployment=external: 기존 realm 정책을 외부 VM에 원격 수렴한다"
   note "절차는 docs/keycloak-external.md 를 따른다"
-  # Keycloak 구간은 건너뛰어도 OpenBao KV 시드는 이 값들을 넣어야 한다. 안 그러면
-  # unbound variable 로 죽거나, ExternalSecret 이 빈 값을 받아 앱이 로그인에 실패한다.
-  # client secret 두 개는 외부 Keycloak 이 발급한 값이라 사람이 파일로 넣어야 한다.
+  # 외부 VM의 관리자 Secret은 VM 밖으로 복사하지 않는다. SSH로 최신 수렴 스크립트만
+  # 보내 원격 EnvironmentFile을 읽게 한다. client secret은 현재 Keycloak 값을 수렴 성공
+  # 뒤 암호화된 SSH 응답으로 회수하므로 stale 로컬 파일이나 임의 생성값을 시드하지 않는다.
+  bash scripts/cluster/configure-external-keycloak.sh --apply
   for credential in keycloak-secure-demo-client-secret keycloak-portal-client-secret \
     keycloak-openbao-client-secret; do
     [[ -s ${CREDENTIAL_DIR}/${credential} ]] || die \
-      "외부 Keycloak client secret 파일 없음: ${CREDENTIAL_DIR}/${credential} (docs/keycloak-external.md)"
+      "외부 Keycloak 현재 client secret 회수 실패: ${CREDENTIAL_DIR}/${credential}"
+    [[ $(stat -c '%a' "${CREDENTIAL_DIR}/${credential}") == 600 ]] \
+      || die "외부 Keycloak client secret 파일 mode가 0600이 아님: ${credential}"
   done
-  # 외부 VM의 관리자 Secret은 VM 밖으로 복사하지 않는다. SSH로 최신 수렴 스크립트만
-  # 보내 원격 EnvironmentFile을 읽게 하면 전체 설치를 다시 돌려도 Keycloak 정책이 따라온다.
-  bash scripts/cluster/configure-external-keycloak.sh --apply
   # Auth.js 서명 키는 Keycloak 과 무관한 클러스터 자체 값이라 여기서 만들어도 된다.
   ensure_random_file "${CREDENTIAL_DIR}/portal-auth-secret"
 else
@@ -634,22 +634,31 @@ bao write auth/kubernetes/role/portal-app-secret-writer \
   bound_service_account_namespaces="${app_namespace}" audience=vault \
   token_policies=portal-app-secret-writer token_ttl=15m token_max_ttl=1h >/dev/null
 
-# KV v2 HTTP 본문과 같은 JSON을 stdin으로 쓴다. Secret을 shell 변수와 argv에 올리지
-# 않아 host의 /proc, audit log, set -x 오진단 경로에 값이 남지 않는다.
-jq -nc \
-  --rawfile db_password "${CREDENTIAL_DIR}/app-db-password" \
-  --rawfile api_token "${CREDENTIAL_DIR}/app-api-token" \
-  --rawfile oidc_secret "${CREDENTIAL_DIR}/keycloak-secure-demo-client-secret" '{data:{
-    DB_PASSWORD:($db_password | sub("[\\r\\n]+$"; "")),
-    API_TOKEN:($api_token | sub("[\\r\\n]+$"; "")),
-    OIDC_CLIENT_SECRET:($oidc_secret | sub("[\\r\\n]+$"; ""))
-  }}' | bao_input write "kv/data/${kv_prefix}/secure-demo" - >/dev/null
-jq -nc \
-  --rawfile keycloak_secret "${CREDENTIAL_DIR}/keycloak-portal-client-secret" \
-  --rawfile auth_secret "${CREDENTIAL_DIR}/portal-auth-secret" '{data:{
-    AUTH_KEYCLOAK_SECRET:($keycloak_secret | sub("[\\r\\n]+$"; "")),
-    AUTH_SECRET:($auth_secret | sub("[\\r\\n]+$"; ""))
-  }}' | bao_input write "kv/data/${kv_prefix}/portal-lite" - >/dev/null
+# bootstrap을 다시 실행해도 install-portal-backend가 별도로 넣은 FORGEJO_BOT_TOKEN 같은
+# 운영 key를 지우면 안 된다. 문서가 이미 있으면 key 하나씩 patch하고, 최초 문서에만 put을
+# 사용한다. 값은 stdin으로만 보내므로 host의 argv와 로그에는 나타나지 않는다.
+seed_kv_file_key() {
+  local remote_path=$1 key=$2 source_file=$3
+  [[ -s ${source_file} ]] || die "OpenBao 시드 파일이 비어 있음: ${source_file}"
+  if bao kv get -mount=kv "${remote_path}" >/dev/null 2>&1; then
+    tr -d '\r\n' <"${source_file}" |
+      bao_input kv patch -mount=kv "${remote_path}" "${key}=-" >/dev/null
+  else
+    tr -d '\r\n' <"${source_file}" |
+      bao_input kv put -mount=kv "${remote_path}" "${key}=-" >/dev/null
+  fi
+}
+
+seed_kv_file_key "${kv_prefix}/secure-demo" DB_PASSWORD \
+  "${CREDENTIAL_DIR}/app-db-password"
+seed_kv_file_key "${kv_prefix}/secure-demo" API_TOKEN \
+  "${CREDENTIAL_DIR}/app-api-token"
+seed_kv_file_key "${kv_prefix}/secure-demo" OIDC_CLIENT_SECRET \
+  "${CREDENTIAL_DIR}/keycloak-secure-demo-client-secret"
+seed_kv_file_key "${kv_prefix}/portal-lite" AUTH_KEYCLOAK_SECRET \
+  "${CREDENTIAL_DIR}/keycloak-portal-client-secret"
+seed_kv_file_key "${kv_prefix}/portal-lite" AUTH_SECRET \
+  "${CREDENTIAL_DIR}/portal-auth-secret"
 
 if ! bao auth list -format=json | jq -e 'has("oidc/")' >/dev/null; then
   bao auth enable oidc >/dev/null

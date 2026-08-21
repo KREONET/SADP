@@ -48,6 +48,13 @@ describe("stored new-app draft migration", () => {
       }).envVars,
     ).toEqual([{ key: "TOKEN", value: "sensitive", classification: "openbao" }]);
   });
+
+  it("defaults old drafts to Git and preserves an explicit image source", () => {
+    expect(migrateStoredDraft({ name: "old" }).sourceMode).toBe("git");
+    expect(
+      migrateStoredDraft({ sourceMode: "image", image: "registry.example/app:1.2.3" }),
+    ).toMatchObject({ sourceMode: "image", image: "registry.example/app:1.2.3" });
+  });
 });
 
 describe("new-app final validation", () => {
@@ -64,6 +71,7 @@ describe("new-app final validation", () => {
     expect(draftFieldForApiError("networkPolicy.allowedCIDRs[2]")).toBe(
       "allowedCidrs",
     );
+    expect(draftFieldForApiError("image")).toBe("image");
   });
 });
 

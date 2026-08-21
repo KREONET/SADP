@@ -597,6 +597,7 @@ export async function getWizardOptions(): Promise<WizardOptions> {
     return {
       environment: "",
       baseDomain: PLATFORM.appDomain,
+      zoneId: "",
       projects: [],
       presets: [],
       quota: { cpu: "", memory: "" },
@@ -622,6 +623,7 @@ export async function getWizardOptions(): Promise<WizardOptions> {
   return {
     environment: catalog.environment,
     baseDomain: catalog.baseDomain,
+    zoneId: catalog.zone?.id?.trim() ?? "",
     projects: catalog.projects ?? [],
     presets,
     quota: {

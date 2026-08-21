@@ -205,6 +205,30 @@ false
 {{- if and (eq $auth "oidc") (not .Values.platform.keycloak.issuer) -}}
 {{ fail "authentication.mode=oidc 인데 platform.keycloak.issuer 계약값이 비어 있다" }}
 {{- end -}}
+{{- $oidcSecretCount := 0 -}}
+{{- range .Values.configuration.externalSecrets -}}
+{{- if eq .name "oidc-client" -}}
+{{- $oidcSecretCount = add1 $oidcSecretCount -}}
+{{- if or (not (hasKey . "inject")) (ne .inject false) -}}
+{{ fail "OIDC ExternalSecret은 앱 Pod 환경에 주입하지 않도록 inject=false여야 한다" }}
+{{- end -}}
+{{- if or (ne (len .keys) 1) (not (has "OIDC_CLIENT_SECRET" .keys)) -}}
+{{ fail "OIDC ExternalSecret keys는 OIDC_CLIENT_SECRET 하나여야 한다" }}
+{{- end -}}
+{{- if ne (get (default (dict) .targetKeyMap) "OIDC_CLIENT_SECRET") "client-secret" -}}
+{{ fail "OIDC ExternalSecret targetKeyMap은 OIDC_CLIENT_SECRET을 client-secret으로 매핑해야 한다" }}
+{{- end -}}
+{{- end -}}
+{{- end -}}
+{{- if and (eq $auth "oidc") (ne (int $oidcSecretCount) 1) -}}
+{{ fail "authentication.mode=oidc 앱은 oidc-client ExternalSecret 계약을 정확히 하나 가져야 한다" }}
+{{- end -}}
+{{- if and (eq $auth "none") (gt (int $oidcSecretCount) 0) -}}
+{{ fail "authentication.mode=none 앱은 Keycloak oidc-client ExternalSecret을 만들 수 없다" }}
+{{- end -}}
+{{- if and (eq $auth "oidc") (ne .Values.oidc.callbackPath "/oauth2/callback") -}}
+{{ fail "OIDC callbackPath는 플랫폼 Keycloak 계약과 같은 /oauth2/callback이어야 한다" }}
+{{- end -}}
 {{- if eq $auth "oidc" -}}
 {{- range .Values.oidc.allowedGroups -}}
 {{- if not (regexMatch "^[A-Za-z0-9][A-Za-z0-9._/-]*$" .) -}}
@@ -263,6 +287,9 @@ false
 {{- if and .Values.eso.createSecretStore .Values.configuration.externalSecrets -}}
 {{- /* 각 ExternalSecret의 path와 실제 role 쌍은 assertRemotePath가 함께 검증한다. */ -}}
 {{- if not (include "app-profile.esoRole" .) -}}{{ fail "ESO role이 비어 있다" }}{{- end -}}
+{{- end -}}
+{{- if and .Values.configuration.externalSecrets (not .Values.eso.createSecretStore) -}}
+{{ fail "ExternalSecret을 사용하는 앱은 앱 경계의 OpenBao SecretStore를 만들도록 eso.createSecretStore=true여야 한다" }}
 {{- end -}}
 {{- $expectedSA := printf "eso-%s" .Values.app.name -}}
 {{- if .Values.app.group -}}

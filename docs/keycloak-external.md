@@ -545,7 +545,9 @@ sudo docker exec -it keycloak-external-keycloak-1 \
 
 > [!IMPORTANT]
 > client secret은 클러스터의 OpenBao/ESO가 앱에 공급하는 값과 **같아야 합니다.**
-> VM에서 생성한 값을 승인된 절차로 OpenBao에 넣고, **화면이나 로그에 출력하지 않습니다.**
+> 수렴 스크립트가 Keycloak의 **현재 값**을 조회한 뒤 암호화된 SSH 응답으로만 control-plane의
+> root-only `0600` 파일에 원자 저장합니다. 임의 값을 만들거나 과거 파일을 재사용하지 않으며,
+> **화면·로그·명령행에는 출력하지 않습니다.**
 
 Docker Compose 구성은 `keycloak-config` job이 위 설정을 멱등 적용하고 결과까지 검증합니다.
 네이티브 설치도 같은 스크립트를 사용해야 두 배포 방식이 갈라지지 않습니다. Keycloak이
@@ -555,7 +557,8 @@ Ready인 상태에서 실행하며 재시작은 필요 없습니다. 관리자 �
 control-plane에서 외부 VM의 root 공개키 인증과 host key 검증이 준비되어 있으면 설치
 과정이 이 작업을 원격으로 수행할 수 있습니다. 기본 실행은 계획만 출력하고 `--apply`가
 스크립트 설치와 Keycloak 설정 변경을 수행합니다. `StrictHostKeyChecking=yes`라서 host key를
-자동 승인하지 않으며, 관리자 비밀번호나 client secret을 외부로 복사하지 않습니다.
+자동 승인하지 않습니다. 관리자 자격증명은 VM 밖으로 복사하지 않고, 현재 client secret 세
+개만 SSH stdout의 base64 응답으로 회수해 control-plane의 root-only credential 파일로 바꿉니다.
 acceptance 사용자명과 비밀번호는 control-plane의 root-only 파일에서 암호화된 SSH stdin으로만
 전달하며 remote command argv, 환경변수, 원격 파일에 저장하지 않습니다.
 
@@ -579,7 +582,7 @@ sudo env \
 `bootstrap-testbed-services.sh`는 `keycloak.deployment=external`이면 위 `--apply`를 자동으로
 호출합니다. 따라서 통합 설치기의 `cluster --apply`를 다시 실행해도 First Login flow, Authentik username URI,
 developer mapper, Portal callback/origin/logout, acceptance 사용자 realm/client role이 현재 계약으로
-수렴합니다. 외부 VM에는
+수렴합니다. 그 다음에만 회수한 현재 client secret을 OpenBao에 key 단위 patch합니다. 외부 VM에는
 `/etc/keycloak/keycloak.env`와 `/opt/keycloak/bin/kcadm.sh`가 먼저 준비되어 있어야 합니다.
 
 ```bash

@@ -77,7 +77,8 @@ bash ./sadp --render-all
 | 명령 | 역할 |
 | --- | --- |
 | `--preflight` | 기존 3노드 RKE2와 도구·네트워크 선행 조건 검사 |
-| `--install-devtron` | Devtron/번들 Argo CD 상태 계획, `--apply` 시 완전 부재 상태에 고정 버전 설치 |
+| `--install-devtron` | Devtron/번들 Argo CD 상태 계획, `--apply` 시 부재 설치 또는 동일 버전 failed release 복구 |
+| `--configure-keycloak` | 이미 실행 중인 in-cluster/external Keycloak을 계약으로 수렴(`--apply` 전은 계획만) |
 | `--configure-argocd-repo` | Argo repository Secret과 per-repository proxy 설정 |
 | `--install-platform` | Argo 소유 플랫폼을 설치·대기하고 외부 이미지를 동기화 |
 | `--configure-openbao-app-access` | 앱별 OpenBao OIDC 접근 정책 구성 |

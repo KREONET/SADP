@@ -829,12 +829,63 @@ if grep -q '^kind: SecurityPolicy$' $TMP/public.yaml; then
 else
   echo "[OK]   public 템플릿은 로그인 없이 접근"; PASS=$((PASS+1))
 fi
+if grep -q '^kind: ExternalSecret$' $TMP/public.yaml; then
+  echo "[FAIL] Secret 없는 public 템플릿이 ExternalSecret을 생성함"; FAILED=$((FAILED+1))
+else
+  echo "[OK]   Secret 없는 public 템플릿은 Keycloak/OpenBao 리소스 불필요"; PASS=$((PASS+1))
+fi
 if grep -q '^kind: SecurityPolicy$' $TMP/sso.yaml \
    && grep -q '^kind: ExternalSecret$' $TMP/sso.yaml \
    && grep -q "clientID: \"sample-sso-${APP_ENV}\"" $TMP/sso.yaml; then
   echo "[OK]   SSO 템플릿은 Keycloak 인증을 강제"; PASS=$((PASS+1))
 else
   echo "[FAIL] 템플릿의 OIDC 리소스 누락"; FAILED=$((FAILED+1))
+fi
+if helm template sample-sso charts/app-profile -f $CONTRACT \
+     -f apps/_template/values-sso.yaml --set 'configuration.externalSecrets=null' >/dev/null 2>&1; then
+  echo "[FAIL] OIDC ExternalSecret 없는 앱이 렌더됨"; FAILED=$((FAILED+1))
+else
+  echo "[OK]   OIDC ExternalSecret 누락 거부"; PASS=$((PASS+1))
+fi
+for invalid_oidc in \
+  'oidc.callbackPath=/wrong/callback' \
+  'configuration.externalSecrets[0].inject=true' \
+  'configuration.externalSecrets[0].targetKeyMap.OIDC_CLIENT_SECRET=wrong-key'; do
+  if helm template sample-sso charts/app-profile -f $CONTRACT \
+       -f apps/_template/values-sso.yaml --set-string "$invalid_oidc" >/dev/null 2>&1; then
+    echo "[FAIL] 잘못된 OIDC 계약이 렌더됨: $invalid_oidc"; FAILED=$((FAILED+1))
+  else
+    echo "[OK]   잘못된 OIDC 계약 거부: $invalid_oidc"; PASS=$((PASS+1))
+  fi
+done
+if helm template sample-sso charts/app-profile -f $CONTRACT \
+     -f apps/_template/values-sso.yaml --set authentication.mode=none >/dev/null 2>&1; then
+  echo "[FAIL] authentication=none 앱에 OIDC ExternalSecret이 남음"; FAILED=$((FAILED+1))
+else
+  echo "[OK]   authentication=none의 OIDC ExternalSecret 거부"; PASS=$((PASS+1))
+fi
+
+python3 - apps/_template/values-public.yaml "$TMP/public-runtime-secret.yaml" \
+  "$APP_PROJECT" "$APP_ENV" "$PORTAL_NAMESPACE" <<'PY'
+import sys, yaml
+
+source, output, project, environment, namespace = sys.argv[1:]
+values = yaml.safe_load(open(source, encoding="utf-8"))
+values["configuration"]["externalSecrets"] = [{
+    "name": "runtime",
+    "secretStore": "openbao-sample-public",
+    "remotePath": f"apps/{project}/{environment}/workloads/{namespace}/eso-sample-public",
+    "keys": ["API_TOKEN"],
+}]
+values["eso"] = {"createSecretStore": True, "role": "portal-zone-app-eso"}
+open(output, "w", encoding="utf-8").write(yaml.safe_dump(values, sort_keys=False))
+PY
+if helm template sample-public charts/app-profile -n "$PORTAL_NAMESPACE" -f $CONTRACT \
+     -f "$TMP/public-runtime-secret.yaml" >"$TMP/public-runtime-secret-rendered.yaml" \
+   && grep -q '^kind: ExternalSecret$' "$TMP/public-runtime-secret-rendered.yaml"; then
+  echo "[OK]   runtime Secret 앱은 canonical OpenBao ExternalSecret 생성"; PASS=$((PASS+1))
+else
+  echo "[FAIL] runtime Secret 앱의 ExternalSecret 계약 누락"; FAILED=$((FAILED+1))
 fi
 # clientSecretName을 바꾸면 SecurityPolicy 참조만 바뀌고 ESO target은 예전 이름에 남는
 # 반쪽 override가 되어 로그인이 시작되지 않는다. 기본/사용자 지정 이름을 함께 대조한다.

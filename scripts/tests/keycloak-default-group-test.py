@@ -124,6 +124,27 @@ check(
     "외부 Keycloak 관리자 Secret은 argv/지속 kcadm session에 남기지 않음",
 )
 check(
+    'client_secret_response=$(mktemp "${CREDENTIAL_DIR}/.keycloak-client-secrets.XXXXXX")'
+    in remote
+    and 'clients/${uuid}/client-secret' in remote
+    and 'os.replace(temporary, target)' in remote
+    and 'os.chmod(target, 0o600)' in remote,
+    "외부 Keycloak 현재 client secret은 SSH 응답을 root-only 파일로 원자 교체",
+)
+check(
+    'KC_BOOTSTRAP_ADMIN_PASSWORD' in remote
+    and 'admin_password=$(env_file_value "$1" KC_BOOTSTRAP_ADMIN_PASSWORD)' in remote
+    and 'base64.b64decode(payload, validate=True)' in remote,
+    "외부 관리자 자격증명은 VM 안에서만 읽고 client secret 응답만 엄격히 해석",
+)
+external_branch = bootstrap.split("if keycloak_is_external; then", 1)[1].split("else", 1)[0]
+check(
+    external_branch.index("configure-external-keycloak.sh --apply")
+    < external_branch.index("현재 client secret 회수 실패")
+    and "openssl rand" not in external_branch,
+    "OpenBao 시드 전 현재 외부 client secret 회수를 강제하고 임의 생성을 금지",
+)
+check(
     'base64 -w0 <"${test_user_file}"' in remote
     and 'base64 -w0 <"${test_password_file}"' in remote
     and '"${REMOTE_TEST_USER_SCRIPT}"' in remote

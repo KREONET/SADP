@@ -122,9 +122,56 @@ kubectl get crd applications.argoproj.io
 별도 외부 진입점을 만들지 않도록 `ClusterIP`로 고정하고, installer/microservice는 렌더된
 Squid/NO_PROXY 계약을 사용합니다.
 
-첫 설치는 Devtron Installer가 `Applied`가 될 때까지 최대 30분 기다린 뒤 핵심 Devtron/Argo CD
-rollout을 확인합니다. 승인 버전이라도 설정이 다르거나 Installer/워크로드가 Ready가 아니면 자동으로
-재적용하지 않고 `devtroncd` 상태 확인을 요구합니다.
+첫 설치는 Helm hook, Devtron Installer, 핵심 Devtron/Argo CD rollout을 하나의 30분
+timeout 안에서 확인합니다. 같은 app/chart 버전의 Helm release 상태가 `failed`일
+때만 `--reuse-values`로 기존 values를 보존하며 위 SADP 관리 값을 다시 적용합니다.
+정상 release의 설정 불일치나 Ready 실패는 자동 덮어쓰기하지 않고 `devtroncd`
+상태 확인을 요구합니다.
+
+### 설치된 Keycloak 사후 설정
+
+`--configure-keycloak`은 Keycloak을 설치하거나 재시작하지 않고, 이미 실행 중인
+Keycloak의 realm·group·client·role·선택적 SAML IdP를 SADP 계약에 맞게 반복
+수렴시킵니다. 관리자 값은 Git, shell argv, Kubernetes Secret/ConfigMap에 넣지 않습니다.
+
+먼저 control-plane 노드에서 root 전용 파일을 만듭니다. 다음 명령은 터미널에서
+값을 묻고 stdin으로만 받습니다.
+
+```bash
+sudo install -d -o root -g root -m 0700 /etc/sadp/keycloak-admin
+sudo bash -c '
+  set -euo pipefail
+  umask 077
+  IFS= read -r -p "Keycloak admin ID: " admin_user
+  IFS= read -r -s -p "Keycloak admin password: " admin_password
+  printf "\n" >&2
+  printf %s "$admin_user" > /etc/sadp/keycloak-admin/username
+  printf %s "$admin_password" > /etc/sadp/keycloak-admin/password
+'
+sudo chown root:root /etc/sadp/keycloak-admin/username /etc/sadp/keycloak-admin/password
+sudo chmod 0600 /etc/sadp/keycloak-admin/username /etc/sadp/keycloak-admin/password
+```
+
+계획을 먼저 확인하고, 같은 명령 끝에 `--apply`를 붙여 실제 적용합니다.
+
+```bash
+sudo bash ./sadp --configure-keycloak \
+  --server-url https://<KEYCLOAK_HOST> \
+  --admin-user-file /etc/sadp/keycloak-admin/username \
+  --admin-password-file /etc/sadp/keycloak-admin/password
+
+sudo bash ./sadp --configure-keycloak \
+  --server-url https://<KEYCLOAK_HOST> \
+  --admin-user-file /etc/sadp/keycloak-admin/username \
+  --admin-password-file /etc/sadp/keycloak-admin/password \
+  --apply
+```
+
+`--server-url`을 생략하면 계약의 in-cluster Service 또는 external address를 사용합니다.
+임의 host는 관리자 자격증명 유출을 막기 위해 거부됩니다. external 배치도 SSH를
+요구하지 않고, `versions.lock.yaml` 버전의 일회성 Keycloak CLI Pod가 관리자 API에
+접속합니다. 성공·실패 모두 Pod와 kcadm session을 정리하며, 회수한 client
+Secret과 acceptance 계정 상태는 `/var/lib/sadp/credentials`의 root-only 파일에만 저장합니다.
 
 ### 설치 호스트 도구
 

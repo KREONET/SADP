@@ -187,10 +187,12 @@ export interface NewAppDraft {
   /** Step 1 — 기본 정보 (appName, project) */
   name: string;
   project: string;
-  /** Step 2 — 소스 (gitRepository, branch, dockerfile) */
+  /** Step 2 — Git에서 빌드하거나 이미 만들어진 immutable image를 사용한다. */
+  sourceMode: "git" | "image";
   repositoryUrl: string;
   branch: string;
   dockerfilePath: string;
+  image: string;
   /** Step 3 — 실행 조건 (containerPort, resourceSize, replicas) */
   port: string;
   resourceSize: string;
@@ -237,6 +239,8 @@ export interface ResourcePresetOption {
 export interface WizardOptions {
   environment: string;
   baseDomain: string;
+  /** 단일 앱의 실제 Namespace. canonical OpenBao path 미리보기에 사용한다. */
+  zoneId: string;
   projects: string[];
   presets: ResourcePresetOption[];
   quota: { cpu: string; memory: string };

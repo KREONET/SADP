@@ -71,6 +71,12 @@ export const ko = {
 
   /* STEP 2 */
   repositorySettings: "Repository Settings",
+  sourceMode: "프로그램 입력 방식",
+  sourceModeHelper: "Git 소스를 빌드하거나 이미 만들어진 고정 버전 이미지를 선택합니다.",
+  sourceGit: "Git 저장소에서 빌드",
+  sourceImage: "기존 컨테이너 이미지 사용",
+  image: "컨테이너 이미지",
+  imageHelper: "고정된 tag 또는 sha256 digest가 필요합니다. Registry 인증은 플랫폼이 제공합니다.",
   repositoryUrl: "Git Repository URL",
   repositoryUrlHelper:
     "자격증명이 없는 https URL만 허용합니다. 플랫폼이 이 주소를 그대로 읽습니다.",
@@ -139,6 +145,7 @@ export const ko = {
   reviewRepository: "Repository",
   reviewBranch: "Branch",
   reviewDockerfile: "Dockerfile",
+  reviewImage: "Image",
   reviewPort: "Port",
   reviewResource: "자원",
   reviewReplicas: "Pod 수",
@@ -176,6 +183,9 @@ export const ko = {
     dockerfilePathRequired: "Dockerfile 경로를 입력하세요.",
     dockerfilePathPattern:
       "저장소 안의 상대 경로여야 하고 파일명은 Dockerfile로 시작해야 합니다.",
+    imageRequired: "컨테이너 이미지와 고정 버전을 입력하세요.",
+    imagePattern: "registry/name:tag 또는 registry/name@sha256:<digest> 형식으로 입력하세요.",
+    imageMutableTag: "latest, main, master, stable 같은 가변 태그 대신 고정 버전이나 digest를 사용하세요.",
     portRange: "1~65535 사이의 포트 번호를 입력하세요.",
     resourceSizeRequired: "자원 크기를 선택하세요(선택 가능: {allowed}).",
     replicasRange: "1~{max} 사이의 정수를 입력하세요.",
@@ -263,6 +273,12 @@ export const en: typeof ko = {
   environmentHelper: "The environment the API currently allows. It cannot be changed.",
 
   repositorySettings: "Repository Settings",
+  sourceMode: "Program source",
+  sourceModeHelper: "Build Git source or use an existing image pinned to an immutable version.",
+  sourceGit: "Build from a Git repository",
+  sourceImage: "Use an existing container image",
+  image: "Container image",
+  imageHelper: "Use a fixed tag or sha256 digest. The platform supplies Registry credentials.",
   repositoryUrl: "Git Repository URL",
   repositoryUrlHelper:
     "Only https URLs without credentials are allowed. The platform reads this address as-is.",
@@ -329,6 +345,7 @@ export const en: typeof ko = {
   reviewRepository: "Repository",
   reviewBranch: "Branch",
   reviewDockerfile: "Dockerfile",
+  reviewImage: "Image",
   reviewPort: "Port",
   reviewResource: "Resources",
   reviewReplicas: "Replicas",
@@ -365,6 +382,9 @@ export const en: typeof ko = {
     dockerfilePathRequired: "Enter the Dockerfile path.",
     dockerfilePathPattern:
       "Use a relative path inside the repository whose file name starts with Dockerfile.",
+    imageRequired: "Enter a container image with a fixed version.",
+    imagePattern: "Use registry/name:tag or registry/name@sha256:<digest>.",
+    imageMutableTag: "Use a fixed version or digest instead of latest, main, master, or stable.",
     portRange: "Enter a port number between 1 and 65535.",
     resourceSizeRequired: "Select a resource size (available: {allowed}).",
     replicasRange: "Enter an integer between 1 and {max}.",

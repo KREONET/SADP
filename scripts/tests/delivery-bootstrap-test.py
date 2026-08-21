@@ -5,13 +5,19 @@ from __future__ import annotations
 
 import os
 import pathlib
+import shlex
 import subprocess
 import tempfile
+
+import yaml
 
 
 ROOT = pathlib.Path(__file__).resolve().parents[2]
 PASSED = 0
 FAILED = 0
+VERSIONS = yaml.safe_load((ROOT / "versions.lock.yaml").read_text(encoding="utf-8"))["delivery"]
+DEVTRON_APP_VERSION = str(VERSIONS["devtronOperator"])
+DEVTRON_CHART_VERSION = str(VERSIONS["devtronOperatorChart"])
 
 
 def write_executable(path: pathlib.Path, text: str) -> None:
@@ -36,20 +42,40 @@ with tempfile.TemporaryDirectory(prefix="sadp-delivery-test-") as raw_tmp:
     tmp = pathlib.Path(raw_tmp)
     kubectl = tmp / "kubectl"
     helm = tmp / "helm"
+    fake_id = tmp / "id"
     log = tmp / "kubectl.log"
+    helm_log = tmp / "helm.log"
     apply_log = tmp / "kubectl-apply.log"
+    write_executable(
+        fake_id,
+        """#!/usr/bin/env bash
+[[ ${1:-} == -u ]] && { printf '0\\n'; exit 0; }
+exec /usr/bin/id "$@"
+""",
+    )
     write_executable(
         helm,
         """#!/usr/bin/env bash
 set -euo pipefail
+printf '%s\\n' "$*" >>"${MOCK_HELM_LOG}"
 args=" $* "
 case "${MOCK_SCENARIO:-missing}" in
   missing|partial|devtron-crd)
     [[ ${args} == *" status devtron "* ]] && exit 1
     ;;
-  ready|stalled|wrong-config)
-    [[ ${args} == *" status devtron "* ]] && exit 0
-    [[ ${args} == *" list "* ]] && printf '[{"chart":"devtron-operator-0.22.92","app_version":"1.5.0"}]\\n' && exit 0
+  ready|stalled|wrong-config|failed|pending)
+    if [[ ${args} == *" status devtron "* ]]; then
+      status=deployed
+      [[ ${MOCK_SCENARIO} != failed ]] || status=failed
+      [[ ${MOCK_SCENARIO} != pending ]] || status=pending-upgrade
+      printf '{"info":{"status":"%s"}}\\n' "${status}"
+      exit 0
+    fi
+    if [[ ${args} == *" list "* ]]; then
+      printf '[{"chart":"devtron-operator-%s","app_version":"%s"}]\\n' \
+        "${EXPECTED_CHART_VERSION}" "${EXPECTED_APP_VERSION}"
+      exit 0
+    fi
     if [[ ${args} == *" get values "* ]]; then
       if [[ ${MOCK_SCENARIO} == wrong-config ]]; then
         printf '{"installer":{"modules":[]},"argo-cd":{"enabled":false},"components":{"devtron":{"service":{"type":"LoadBalancer"}}}}\\n'
@@ -76,8 +102,10 @@ PY
     fi
     ;;
   wrong-version)
-    [[ ${args} == *" status devtron "* ]] && exit 0
-    [[ ${args} == *" list "* ]] && printf '[{"chart":"devtron-operator-0.23.0","app_version":"2.0.0"}]\\n' && exit 0
+    [[ ${args} == *" status devtron "* ]] \
+      && { printf '{"info":{"status":"deployed"}}\\n'; exit 0; }
+    [[ ${args} == *" list "* ]] \
+      && { printf '[{"chart":"devtron-operator-other","app_version":"other"}]\\n'; exit 0; }
     ;;
 esac
 exit 0
@@ -90,7 +118,8 @@ set -euo pipefail
 printf '%s\\n' "$*" >>"${MOCK_LOG}"
 args=" $* "
 scenario=${MOCK_SCENARIO:-missing}
-if [[ ${scenario} == ready || ${scenario} == wrong-config || ${scenario} == wrong-version ]]; then
+if [[ ${scenario} == ready || ${scenario} == wrong-config || ${scenario} == wrong-version \
+  || ${scenario} == failed ]]; then
   [[ ${args} == *" get installer -n devtroncd installer-devtron "* ]] && printf 'Applied' && exit 0
   [[ ${args} == *" get crd applications.argoproj.io "* ]] && exit 0
   [[ ${args} == *" get deployment -n devtroncd argocd-repo-server "* ]] && exit 0
@@ -112,7 +141,11 @@ exit 1
         "HELM_BIN": str(helm),
         "KUBECONFIG_PATH": str(tmp / "kubeconfig"),
         "MOCK_LOG": str(log),
+        "MOCK_HELM_LOG": str(helm_log),
         "MOCK_APPLY_LOG": str(apply_log),
+        "EXPECTED_APP_VERSION": DEVTRON_APP_VERSION,
+        "EXPECTED_CHART_VERSION": DEVTRON_CHART_VERSION,
+        "PATH": f"{tmp}:{os.environ['PATH']}",
     }
 
     for scenario, expected, contains in (
@@ -120,14 +153,25 @@ exit 1
             "missing",
             0,
             (
-                "Devtron 1.5.0 / chart 0.22.92",
-                "--version 0.22.92",
+                f"Devtron {DEVTRON_APP_VERSION} / chart {DEVTRON_CHART_VERSION}",
+                f"--version {DEVTRON_CHART_VERSION}",
+                "--timeout 1800s",
                 "components.devtron.service.type=ClusterIP",
                 "configs.HTTP_PROXY",
                 "global.configs.NO_PROXY",
             ),
         ),
-        ("ready", 0, ("기존 Devtron 1.5.0/Argo CD Ready", "자동 변경 없음")),
+        (
+            "ready",
+            0,
+            (f"기존 Devtron {DEVTRON_APP_VERSION}/Argo CD Ready", "자동 변경 없음"),
+        ),
+        (
+            "failed",
+            0,
+            ("동일 버전 failed release 복구", "--reuse-values", "--timeout 1800s"),
+        ),
+        ("pending", 1, ("상태가 pending-upgrade", "failed 상태만 자동 복구")),
         ("stalled", 1, ("Helm release가 있지만 Installer/Devtron/Argo CD가 Ready가 아님", "자동 재적용하지 않으므로")),
         ("wrong-config", 1, ("Devtron release 설정이 SADP 계약과 다름", "자동 덮어쓰기하지 않음")),
         ("wrong-version", 1, ("Devtron release가 계약과 다름", "자동 upgrade/downgrade하지 않음")),
@@ -143,6 +187,49 @@ exit 1
             check=False,
         )
         report(f"DB-{scenario}", result, expected, contains)
+
+    helm_log.write_text("", encoding="utf-8")
+    result = subprocess.run(
+        ["bash", "scripts/cluster/install-devtron.sh", "--apply"],
+        cwd=ROOT,
+        env=base_env | {"MOCK_SCENARIO": "failed"},
+        capture_output=True,
+        text=True,
+        check=False,
+    )
+    report(
+        "DB-failed apply",
+        result,
+        0,
+        (f"Devtron {DEVTRON_APP_VERSION}와 번들 Argo CD Ready",),
+    )
+    helm_calls = [shlex.split(line) for line in helm_log.read_text(encoding="utf-8").splitlines()]
+    upgrade = next(
+        (
+            call
+            for call in helm_calls
+            if any(call[index : index + 2] == ["upgrade", "--install"] for index in range(len(call)))
+        ),
+        [],
+    )
+    managed = {
+        "installer.modules={cicd}",
+        "argo-cd.enabled=true",
+        "components.devtron.service.type=ClusterIP",
+    }
+    if (
+        "--reuse-values" in upgrade
+        and "--timeout" in upgrade
+        and "1800s" in upgrade
+        and managed.issubset(set(upgrade))
+        and any(value.startswith("configs.HTTP_PROXY=") for value in upgrade)
+        and any(value.startswith("global.configs.NO_PROXY=") for value in upgrade)
+    ):
+        PASSED += 1
+        print("[OK]   DB-failed apply preserves values and reapplies only managed boundary")
+    else:
+        FAILED += 1
+        print(f"[FAIL] DB-failed apply Helm args mismatch: {upgrade}")
 
     write_executable(
         helm,

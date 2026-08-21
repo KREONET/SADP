@@ -1993,6 +1993,9 @@ def template_values(path: pathlib.Path, cfg: dict, app_name: str, exposure: str)
     document["image"]["tag"] = "0" * 40
     document["image"]["digest"] = ""
     document["image"]["pullPolicy"] = cfg["registry"]["pullPolicy"]
+    # 템플릿 image는 플랫폼 Registry를 전제로 한다. 사용자가 Docker credential을 values에
+    # 넣지 않고 Namespace의 ESO 동기화 pull Secret만 쓰도록 명시한다.
+    document["image"]["usePullSecret"] = True
     document["imagePullSecrets"] = [cfg["registry"]["pullSecret"]]
     # 내부 전용 앱은 외부 도메인을 갖지 않는다. host 를 채우면 Chart 가 렌더를 거부한다.
     if document["exposure"].get("mode") == "internal":
@@ -2004,10 +2007,36 @@ def template_values(path: pathlib.Path, cfg: dict, app_name: str, exposure: str)
         f"apps/{document['app']['project']}/{cfg['environment']}/workloads/"
         f"{cfg['layout']['workloadNamespace']}/eso-{app_name}"
     )
-    for external_secret in document["configuration"].get("externalSecrets") or []:
-        external_secret["remotePath"] = expected_path
-    if document["configuration"].get("externalSecrets"):
-        document.setdefault("eso", {})["role"] = OPENBAO_ESO_ROLES["zoneApp"]
+    authentication = document.setdefault("authentication", {})
+    configuration = document.setdefault("configuration", {})
+    eso = document.setdefault("eso", {})
+    if exposure == "oidc":
+        authentication["mode"] = "oidc"
+        configuration["externalSecrets"] = [
+            {
+                "name": "oidc-client",
+                "secretStore": f"openbao-{app_name}",
+                "remotePath": expected_path,
+                "inject": False,
+                "keys": ["OIDC_CLIENT_SECRET"],
+                "targetKeyMap": {"OIDC_CLIENT_SECRET": "client-secret"},
+            }
+        ]
+        eso["createSecretStore"] = True
+        eso["role"] = OPENBAO_ESO_ROLES["zoneApp"]
+        oidc = document.setdefault("oidc", {})
+        oidc["clientSecretName"] = ""
+        oidc["callbackPath"] = "/oauth2/callback"
+        oidc.setdefault("logoutPath", "/logout")
+        oidc["allowedGroups"] = oidc.get("allowedGroups") or [f"{app_name}-user"]
+    else:
+        # 인증과 runtime Secret이 모두 없는 기본 템플릿은 Keycloak/OpenBao를 전혀 요구하지
+        # 않는다. runtime Secret이 실제로 필요한 앱만 이 목록과 canonical path를 추가한다.
+        authentication["mode"] = "none"
+        configuration["externalSecrets"] = []
+        eso["createSecretStore"] = False
+        eso.pop("role", None)
+        document.pop("oidc", None)
     return yaml_text(
         document,
         f"# Generated {exposure} app example; copy to a new values file before editing.\n",

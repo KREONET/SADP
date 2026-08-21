@@ -237,6 +237,25 @@ func TestBuildCredentialRequiresValidDockerConfig(t *testing.T) {
 	}
 }
 
+func TestRegistryPullCredentialUsesExactZoneSecret(t *testing.T) {
+	validAuth := base64.StdEncoding.EncodeToString([]byte("reader:token"))
+	encoded := base64.StdEncoding.EncodeToString([]byte(
+		`{"auths":{"registry.example":{"auth":"` + validAuth + `"}}}`))
+	api := reconciliationAPI(t, func(w http.ResponseWriter, r *http.Request) {
+		want := "/api/v1/namespaces/" + zoneNamespace() + "/secrets/" + registryPullSecret
+		if r.Method != http.MethodGet || r.URL.Path != want {
+			t.Fatalf("예상하지 못한 registry pull Secret 조회: %s %s", r.Method, r.URL.Path)
+		}
+		_ = json.NewEncoder(w).Encode(map[string]any{
+			"data": map[string]string{".dockerconfigjson": encoded},
+		})
+	})
+	if err := api.forgejo.builder.requireRegistryPullCredential(
+		context.Background(), zoneNamespace()); err != nil {
+		t.Fatalf("registry pull credential 검증 실패: %v", err)
+	}
+}
+
 func TestPodFailureRejectsFatalWaitingReason(t *testing.T) {
 	var pods podListStatus
 	if err := json.Unmarshal([]byte(`{"items":[{"status":{"containerStatuses":[{"state":{"waiting":{"reason":"ImagePullBackOff","message":"image not found"}}}]}}]}`), &pods); err != nil {

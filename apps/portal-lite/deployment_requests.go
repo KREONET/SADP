@@ -120,7 +120,18 @@ func writeForgejoUnavailable(w http.ResponseWriter) {
 	w.Header().Set("Retry-After", "86400")
 	writeProblem(w, http.StatusServiceUnavailable,
 		"urn:sadp:portal:problem:forgejo-not-configured", "배포 요청 기능 비활성",
-		"Forgejo Actions, OCI Registry, GitOps bot 연결 후 이 기능을 활성화합니다.", nil)
+		"플랫폼 공용 Forgejo 봇 자격증명(FORGEJO_BOT_TOKEN)이 준비되지 않았습니다. 관리자에게 Portal 런타임 연동을 요청하세요.", nil)
+}
+
+func writeOpenBaoContractUnavailable(w http.ResponseWriter, profile normalizedProfile) {
+	title := "앱 Secret 계약 준비 안 됨"
+	detail := "앱의 canonical OpenBao 경로와 ExternalSecret key가 준비되지 않았습니다. 플랫폼 관리자에게 시드를 요청하세요."
+	if profile.authMode() == authOIDC {
+		title = "OIDC 인증 준비 안 됨"
+		detail = "Keycloak client ID, /oauth2/callback, 허용 그룹과 OpenBao OIDC client secret 계약을 관리자가 준비해야 합니다."
+	}
+	writeProblem(w, http.StatusServiceUnavailable,
+		"urn:sadp:portal:problem:openbao-contract-unavailable", title, detail, nil)
 }
 
 // readProfileBody는 본문 원본과 파싱 결과를 함께 돌려준다.
@@ -269,6 +280,11 @@ func (api *apiServer) handleCreateDeploymentRequest(w http.ResponseWriter, r *ht
 						"OpenBao에 Secret을 저장하지 못했습니다. 같은 요청으로 다시 시도하세요.", nil)
 					return
 				}
+				if err := api.openbao.grantESOAccessAt(r.Context(), existing.Profile,
+					existing.Profile.namespace(), existing.Generated.OpenBaoPath); err != nil {
+					writeOpenBaoContractUnavailable(w, existing.Profile)
+					return
+				}
 				existing.SecretWritePending = false
 				existing.State = stateReceived
 				existing.FailedFromState = ""
@@ -378,6 +394,38 @@ func (api *apiServer) handleCreateDeploymentRequest(w http.ResponseWriter, r *ht
 			secrets[item.Key] = item.Value
 		}
 	}
+	usesPullSecret := result.Profile.Source.Image == ""
+	if result.Profile.Source.Image != "" {
+		repository, _, _ := splitPrebuiltImage(result.Profile.Source.Image)
+		usesPullSecret = prebuiltImageUsesPullSecret(repository)
+	}
+	if usesPullSecret && result.Profile.App.Group == "" && api.forgejo.builder != nil {
+		if err := api.forgejo.builder.requireRegistryPullCredential(r.Context(), result.Profile.namespace()); err != nil {
+			writeProblem(w, http.StatusServiceUnavailable,
+				"urn:sadp:portal:problem:registry-pull-unavailable", "Registry pull 인증 준비 안 됨",
+				"플랫폼 Registry pull ExternalSecret이 아직 동기화되지 않았습니다. 관리자에게 Zone 자격증명 준비를 요청하세요.", nil)
+			return
+		}
+	}
+	if result.Profile.App.Group != "" {
+		group, _ := groupOf(result.Profile)
+		if registryPullRemotePath == "" ||
+			api.openbao.grantGroupRegistryAccess(r.Context(), group, registryPullRemotePath) != nil {
+			writeProblem(w, http.StatusServiceUnavailable,
+				"urn:sadp:portal:problem:registry-pull-unavailable", "Registry pull 인증 준비 안 됨",
+				"AppGroup용 OpenBao Registry pull 계약이 준비되지 않았습니다. 플랫폼 관리자에게 문의하세요.", nil)
+			return
+		}
+	}
+	// 사용자가 새 runtime 값을 보내지 않는 OIDC/사전 시드 앱은 durable 신청을 만들기
+	// 전에 path·role·key를 모두 확인한다. runtime 값이 있으면 안전하게 쓴 직후 같은 검사를 한다.
+	if profileNeedsAppESO(result.Profile) && len(secrets) == 0 {
+		if err := api.openbao.grantESOAccessAt(r.Context(), result.Profile,
+			result.Profile.namespace(), result.Generated.OpenBaoPath); err != nil {
+			writeOpenBaoContractUnavailable(w, result.Profile)
+			return
+		}
+	}
 	id, err := newRequestID()
 	if err != nil {
 		writeProblem(w, http.StatusInternalServerError,
@@ -422,6 +470,16 @@ func (api *apiServer) handleCreateDeploymentRequest(w http.ResponseWriter, r *ht
 			return
 		}
 		request.SecretWritePending = false
+		if err := api.openbao.grantESOAccessAt(r.Context(), result.Profile,
+			result.Profile.namespace(), result.Generated.OpenBaoPath); err != nil {
+			request.State = stateFailed
+			request.FailedFromState = stateReceived
+			request.Message = "앱 Secret 계약 검증에 실패했습니다. 플랫폼 관리자에게 문의하세요."
+			_ = api.store.update(request)
+			w.Header().Set("Location", "/api/v1/deployment-requests/"+id)
+			writeOpenBaoContractUnavailable(w, result.Profile)
+			return
+		}
 		if err := api.store.update(request); err != nil {
 			writeProblem(w, http.StatusInternalServerError,
 				"urn:sadp:portal:problem:storage-unavailable", "Secret 상태 저장 실패",

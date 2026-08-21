@@ -33,6 +33,11 @@ export const APP_NAME_PATTERN = /^[a-z]([-a-z0-9]*[a-z0-9])?$/;
 /** 서버 branchPattern과 동일. */
 export const BRANCH_PATTERN = /^[A-Za-z0-9][A-Za-z0-9._/-]{0,127}$/;
 
+/** 서버 prebuiltImagePattern과 동일하며 가변 tag는 별도로 거부한다. */
+const PREBUILT_IMAGE_PATTERN =
+  /^[a-z0-9][a-z0-9._/-]{0,199}(:[A-Za-z0-9._-]{1,128}|@sha256:[a-f0-9]{64})$/;
+const MUTABLE_IMAGE_TAGS = new Set(["latest", "main", "master", "stable"]);
+
 export type DraftErrors = Partial<Record<keyof NewAppDraft, string>>;
 
 export function isValidStep(step: number): boolean {
@@ -218,33 +223,47 @@ export function validateStep(
   }
 
   if (step === 2 || finalReview) {
-    const repository = draft.repositoryUrl.trim();
-    if (!repository) {
-      errors.repositoryUrl = msg.repositoryUrlRequired;
-    } else if (!isSafeHttpsRepository(repository)) {
-      errors.repositoryUrl = msg.repositoryUrlPattern.replace(
-        "{https}",
-        GIT_REPO_PLACEHOLDER,
-      );
-    }
+    if (draft.sourceMode === "image") {
+      const image = draft.image.trim();
+      const reference = image.includes("@")
+        ? image.split("@").at(-1) ?? ""
+        : image.slice(image.lastIndexOf(":") + 1);
+      if (!image) {
+        errors.image = msg.imageRequired;
+      } else if (!PREBUILT_IMAGE_PATTERN.test(image)) {
+        errors.image = msg.imagePattern;
+      } else if (MUTABLE_IMAGE_TAGS.has(reference.toLowerCase())) {
+        errors.image = msg.imageMutableTag;
+      }
+    } else {
+      const repository = draft.repositoryUrl.trim();
+      if (!repository) {
+        errors.repositoryUrl = msg.repositoryUrlRequired;
+      } else if (!isSafeHttpsRepository(repository)) {
+        errors.repositoryUrl = msg.repositoryUrlPattern.replace(
+          "{https}",
+          GIT_REPO_PLACEHOLDER,
+        );
+      }
 
-    const branch = draft.branch.trim();
-    if (!branch) {
-      errors.branch = msg.branchRequired;
-    } else if (
-      !BRANCH_PATTERN.test(branch) ||
-      branch.includes("..") ||
-      branch.includes("//") ||
-      branch.includes("@{")
-    ) {
-      errors.branch = msg.branchPattern;
-    }
+      const branch = draft.branch.trim();
+      if (!branch) {
+        errors.branch = msg.branchRequired;
+      } else if (
+        !BRANCH_PATTERN.test(branch) ||
+        branch.includes("..") ||
+        branch.includes("//") ||
+        branch.includes("@{")
+      ) {
+        errors.branch = msg.branchPattern;
+      }
 
-    const dockerfile = draft.dockerfilePath.trim();
-    if (!dockerfile) {
-      errors.dockerfilePath = msg.dockerfilePathRequired;
-    } else if (!isSafeDockerfilePath(dockerfile)) {
-      errors.dockerfilePath = msg.dockerfilePathPattern;
+      const dockerfile = draft.dockerfilePath.trim();
+      if (!dockerfile) {
+        errors.dockerfilePath = msg.dockerfilePathRequired;
+      } else if (!isSafeDockerfilePath(dockerfile)) {
+        errors.dockerfilePath = msg.dockerfilePathPattern;
+      }
     }
   }
 

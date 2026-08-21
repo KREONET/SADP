@@ -157,65 +157,72 @@ export function StepSource({ draft, errors, update }: StepBodyProps) {
     <div className="space-y-6">
       <SubHeading icon={<Link2 aria-hidden />}>{t.repositorySettings}</SubHeading>
 
-      <FormField
-        id="repository-url"
-        label={t.repositoryUrl}
-        required
-        error={errors.repositoryUrl}
-        helper={t.repositoryUrlHelper}
-      >
-        <Input
-          id="repository-url"
-          value={draft.repositoryUrl}
-          onChange={(event) => update("repositoryUrl", event.target.value)}
-          placeholder={GIT_REPO_PLACEHOLDER}
-          autoComplete="off"
-          spellCheck={false}
-          inputMode="url"
-          className="font-mono"
-          aria-invalid={Boolean(errors.repositoryUrl)}
-        />
+      <FormField id="source-mode" label={t.sourceMode} required helper={t.sourceModeHelper}>
+        <Select
+          value={draft.sourceMode}
+          onValueChange={(value: "git" | "image") => update("sourceMode", value)}
+        >
+          <SelectTrigger id="source-mode" className="w-full">
+            <SelectValue />
+          </SelectTrigger>
+          <SelectContent>
+            <SelectItem value="git">{t.sourceGit}</SelectItem>
+            <SelectItem value="image">{t.sourceImage}</SelectItem>
+          </SelectContent>
+        </Select>
       </FormField>
 
-      <div className="grid gap-6 sm:grid-cols-2">
+      {draft.sourceMode === "image" ? (
         <FormField
-          id="repository-branch"
-          label={t.branch}
+          id="prebuilt-image"
+          label={t.image}
           required
-          error={errors.branch}
-          helper={t.branchHelper}
+          error={errors.image}
+          helper={t.imageHelper}
         >
           <Input
-            id="repository-branch"
-            value={draft.branch}
-            onChange={(event) => update("branch", event.target.value)}
-            placeholder="main"
+            id="prebuilt-image"
+            value={draft.image}
+            onChange={(event) => update("image", event.target.value)}
+            placeholder="<REGISTRY>/<IMAGE>:<FIXED_TAG>"
             autoComplete="off"
             spellCheck={false}
             className="font-mono"
-            aria-invalid={Boolean(errors.branch)}
+            aria-invalid={Boolean(errors.image)}
+          />
+        </FormField>
+      ) : (
+        <>
+        <FormField
+          id="repository-url"
+          label={t.repositoryUrl}
+          required
+          error={errors.repositoryUrl}
+          helper={t.repositoryUrlHelper}
+        >
+          <Input
+            id="repository-url"
+            value={draft.repositoryUrl}
+            onChange={(event) => update("repositoryUrl", event.target.value)}
+            placeholder={GIT_REPO_PLACEHOLDER}
+            autoComplete="off"
+            spellCheck={false}
+            inputMode="url"
+            className="font-mono"
+            aria-invalid={Boolean(errors.repositoryUrl)}
           />
         </FormField>
 
-        <FormField
-          id="dockerfile-path"
-          label={t.dockerfilePath}
-          required
-          error={errors.dockerfilePath}
-          helper={t.dockerfilePathHelper}
-        >
-          <Input
-            id="dockerfile-path"
-            value={draft.dockerfilePath}
-            onChange={(event) => update("dockerfilePath", event.target.value)}
-            placeholder="Dockerfile"
-            autoComplete="off"
-            spellCheck={false}
-            className="font-mono"
-            aria-invalid={Boolean(errors.dockerfilePath)}
-          />
-        </FormField>
-      </div>
+        <div className="grid gap-6 sm:grid-cols-2">
+          <FormField id="repository-branch" label={t.branch} required error={errors.branch} helper={t.branchHelper}>
+            <Input id="repository-branch" value={draft.branch} onChange={(event) => update("branch", event.target.value)} placeholder="main" autoComplete="off" spellCheck={false} className="font-mono" aria-invalid={Boolean(errors.branch)} />
+          </FormField>
+          <FormField id="dockerfile-path" label={t.dockerfilePath} required error={errors.dockerfilePath} helper={t.dockerfilePathHelper}>
+            <Input id="dockerfile-path" value={draft.dockerfilePath} onChange={(event) => update("dockerfilePath", event.target.value)} placeholder="Dockerfile" autoComplete="off" spellCheck={false} className="font-mono" aria-invalid={Boolean(errors.dockerfilePath)} />
+          </FormField>
+        </div>
+        </>
+      )}
     </div>
   );
 }
@@ -613,9 +620,13 @@ export function StepReview({ draft, errors, options }: StepBodyProps) {
         </h4>
         <MonoKeyValueBox
           rows={[
-            { label: t.reviewRepository, value: draft.repositoryUrl || "-" },
-            { label: t.reviewBranch, value: draft.branch || "-" },
-            { label: t.reviewDockerfile, value: draft.dockerfilePath || "-" },
+            ...(draft.sourceMode === "image"
+              ? [{ label: t.reviewImage, value: draft.image || "-" }]
+              : [
+                  { label: t.reviewRepository, value: draft.repositoryUrl || "-" },
+                  { label: t.reviewBranch, value: draft.branch || "-" },
+                  { label: t.reviewDockerfile, value: draft.dockerfilePath || "-" },
+                ]),
             { label: t.reviewPort, value: draft.port || "-" },
             {
               label: t.reviewResource,
@@ -732,7 +743,7 @@ export function StepReview({ draft, errors, options }: StepBodyProps) {
                       label: t.reviewEnvOpenBaoPath,
                       value: `kv/apps/${draft.project || "-"}/${
                         options.environment || "-"
-                      }/${draft.name || "-"}`,
+                      }/workloads/${options.zoneId || "-"}/eso-${draft.name || "-"}`,
                     },
                   ]}
                 />

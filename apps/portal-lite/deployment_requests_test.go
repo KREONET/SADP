@@ -126,6 +126,21 @@ func (f *fakeForgejo) callCount() int {
 	return len(f.calls)
 }
 
+func TestForgejoErrorDoesNotExposeExternalResponseBody(t *testing.T) {
+	const externalBody = "external-sensitive-debug-payload"
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		w.WriteHeader(http.StatusInternalServerError)
+		_, _ = w.Write([]byte(externalBody))
+	}))
+	t.Cleanup(server.Close)
+	client := newForgejoClient(forgejoConfig{BaseURL: server.URL, Token: "runtime-only"}, nil,
+		log.New(io.Discard, "", 0))
+	err := client.do(context.Background(), http.MethodGet, server.URL+"/failure", nil, nil)
+	if err == nil || strings.Contains(err.Error(), externalBody) {
+		t.Fatalf("외부 응답 원문이 error에 포함됨: %v", err)
+	}
+}
+
 func postRequest(t *testing.T, handler http.Handler, body, idempotencyKey string) *httptest.ResponseRecorder {
 	t.Helper()
 	req := httptest.NewRequest(http.MethodPost, "/api/v1/deployment-requests", strings.NewReader(body))
@@ -315,7 +330,10 @@ func TestGroupedDeploymentRequestBootstrapsWhenNamespaceIsMissing(t *testing.T) 
 	api.forgejo.builder = probeAPI.forgejo.builder
 	// group 입력은 기존 AppProfile API 호환 계약이다. Namespace가 없으면 bootstrap을
 	// 계속 허용해야 하므로, prebuilt image로 빌드 credential 검사와 분리해 확인한다.
-	api.openbao = &openBaoClient{}
+	api.openbao = registryReadyOpenBao(t)
+	previousRegistryPath := registryPullRemotePath
+	registryPullRemotePath = "platform/registry/pull-secret"
+	t.Cleanup(func() { registryPullRemotePath = previousRegistryPath })
 	input := profileFromJSON(t, validInput("public"))
 	input.Group = "stack"
 	input.Image = "nginx:1.27"

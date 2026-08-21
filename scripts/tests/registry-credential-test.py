@@ -158,7 +158,7 @@ for fixed_resource in (
 for legacy_app in ("portal-lite", "secure-demo"):
     check(
         f'grant_legacy_static_secret_access {legacy_app}' in bootstrap
-        and f'bao_input write "kv/data/${{kv_prefix}}/{legacy_app}"' in bootstrap,
+        and f'seed_kv_file_key "${{kv_prefix}}/{legacy_app}"' in bootstrap,
         f"기존 정적 앱 exact OpenBao role/path bootstrap 유지: {legacy_app}",
     )
     check(
@@ -178,6 +178,18 @@ check(
     "oidc_role app-admin app-user" in bootstrap
     and "oidc_role developer app-user" in bootstrap,
     "app-admin/developer 기본 role은 Secret 없는 app-user로 하향",
+)
+check(
+    'bao_input kv patch -mount=kv "${remote_path}" "${key}=-"' in bootstrap
+    and 'bao_input kv put -mount=kv "${remote_path}" "${key}=-"' in bootstrap,
+    "bootstrap은 기존 KV 문서를 key patch하고 최초 문서만 put",
+)
+portal_seed = bootstrap.split(
+    'seed_kv_file_key "${kv_prefix}/portal-lite" AUTH_KEYCLOAK_SECRET', 1
+)[1].split('if ! bao auth list', 1)[0]
+check(
+    "FORGEJO_BOT_TOKEN" not in portal_seed,
+    "bootstrap Portal 시드는 공용 Forgejo 봇 token key를 덮어쓰거나 삭제하지 않음",
 )
 
 # 실제 클러스터를 건드리지 않는 계획 모드에서 Go/Chart와 같은 canonical/hash 이름을 확인한다.

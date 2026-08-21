@@ -229,6 +229,9 @@ func TestDeploymentRequestIsUnavailableUntilForgejoCutover(t *testing.T) {
 	if recorder.Code != http.StatusServiceUnavailable || recorder.Header().Get("Retry-After") == "" {
 		t.Fatalf("status=%d retry-after=%q", recorder.Code, recorder.Header().Get("Retry-After"))
 	}
+	if !strings.Contains(recorder.Body.String(), "FORGEJO_BOT_TOKEN") {
+		t.Fatalf("공용 Forgejo 봇 준비 오류가 조치 가능한 설명을 주지 않음: %s", recorder.Body.String())
+	}
 }
 
 func TestOpenAPIAndUnknownRoute(t *testing.T) {

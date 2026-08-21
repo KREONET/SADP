@@ -11,7 +11,7 @@
 
 | 대상 | 입력 | 이미지 | 제출 흐름 |
 | --- | --- | --- | --- |
-| 단일 앱 | HTTPS Git URL, branch/tag, Dockerfile | Portal 파이프라인이 소스 빌드 | 5단계 화면에서 바로 제출 |
+| 단일 앱 | HTTPS Git URL·branch·Dockerfile 또는 고정 tag/digest image | Portal 빌드 또는 기존 image | 5단계 화면에서 바로 제출 |
 | AppGroup | 같은 Forgejo의 Git URL 또는 Compose 원문 | 고정 tag/digest의 기존 이미지 | 구성 확인 후 별도 제출 |
 
 단일 앱은 저장소 루트를 build context로 사용합니다. AppGroup의 Compose `build:`는 받지
@@ -91,7 +91,7 @@ Chart가 `kind: Secret`을 직접 만들거나 Secret 값을 Git values에 쓰�
 화면 입력은 다음 다섯 단계입니다.
 
 1. 앱 이름, project, 서버가 정한 읽기 전용 environment
-2. Git URL, branch/tag, Dockerfile 경로
+2. Git URL·branch/tag·Dockerfile 경로 또는 고정 버전 컨테이너 image
 3. container port, replicas, resource preset
 4. exposure, authentication, egress 정책
 5. 환경변수 분류와 전체 내용 검토 후 **신청 제출**
@@ -99,6 +99,9 @@ Chart가 `kind: Secret`을 직접 만들거나 Secret 값을 Git values에 쓰�
 화면에는 별도의 단일 앱 검증 버튼이 없습니다. `POST /api/v1/deployment-requests`가 먼저 같은
 검증을 수행하고 성공한 경우에만 신청을 저장합니다. API 연동 개발자는 상태 변경이 없는
 `POST /api/v1/app-profiles/validate`로 계획을 미리 볼 수 있습니다.
+
+Forgejo token, Registry credential, Keycloak client secret은 사용자 입력이 아닙니다. 플랫폼
+준비 항목과 Secret 전달 경로는 [템플릿 앱 등록 안내](template-app-onboarding.md)를 따릅니다.
 
 ## 7. AppGroup 입력과 제한
 
