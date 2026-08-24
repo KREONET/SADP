@@ -106,6 +106,12 @@ fi
 # source하지 않으므로 command substitution이나 Secret처럼 보이는 key가 shell에 들어오지 않는다.
 eval "$(python3 scripts/site/configure-site.py --env-file "${ENV_FILE}" --print-install-env)"
 
+if [[ ${KEYCLOAK_DEPLOYMENT} == in-cluster ]]; then
+  note "Keycloak 통합 설치: in-cluster, node-placement=${KEYCLOAK_NODE_PLACEMENT}"
+else
+  note "Keycloak 통합 설치: external Service/EndpointSlice와 원격 정책 수렴"
+fi
+
 if [[ ${APPLY} == true ]]; then
   case "${BASE_DOMAIN}" in
     *.example.invalid|example.invalid) die "예제 BASE_DOMAIN을 실제 설치에 사용할 수 없음" ;;

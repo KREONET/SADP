@@ -65,8 +65,9 @@ check(
     "if keycloak_is_external; then" in install
     and "external_keycloak_endpoints=" in install
     and ".items[]?.endpoints[]?" in install
-    and 'kctl rollout status -n keycloak statefulset/keycloak-postgresql' in install,
-    "platform 설치는 external Keycloak에서 EndpointSlice만 검증",
+    and 'kctl rollout status -n keycloak statefulset/keycloak-postgresql' in install
+    and "keycloak_workloads_on_control_plane" in install,
+    "platform 설치는 external EndpointSlice와 내부 control-plane 배치를 분리 검증",
 )
 check(
     "registrationAllowed=false" in bootstrap

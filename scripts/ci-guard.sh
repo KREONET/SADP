@@ -1030,6 +1030,7 @@ systems = contract["spec"].get("systems") or []
 
 def check_keycloak_deployment(label, keycloak, manifest_path):
     mode = str(keycloak.get("deployment") or "in-cluster")
+    placement = str(keycloak.get("nodePlacement") or "any")
     external = keycloak.get("external") or {}
     if not manifest_path.exists():
         bad(f"{label}: {manifest_path} 가 없다")
@@ -1040,7 +1041,12 @@ def check_keycloak_deployment(label, keycloak, manifest_path):
     kinds = [str(item.get("kind")) for item in documents]
     if mode not in ("in-cluster", "external"):
         bad(f"{label}: keycloak.deployment 값이 올바르지 않다: {mode}")
+    elif placement not in ("any", "control-plane"):
+        bad(f"{label}: keycloak.nodePlacement 값이 올바르지 않다: {placement}")
     elif mode == "external":
+        if placement != "any":
+            bad(f"{label}: external 모드는 keycloak.nodePlacement=any 여야 한다")
+            return
         external_address = str(external.get("address") or "")
         try:
             ipaddress.IPv4Address(external_address)
@@ -1066,10 +1072,54 @@ def check_keycloak_deployment(label, keycloak, manifest_path):
     else:
         if external.get("address"):
             bad(f"{label}: in-cluster 모드인데 keycloak.external.address 가 채워져 있다")
-        elif "Deployment" not in kinds:
-            bad(f"{label}: in-cluster 모드인데 Keycloak Deployment 가 없다")
+        elif "Deployment" not in kinds or "StatefulSet" not in kinds:
+            bad(f"{label}: in-cluster 모드인데 Keycloak/PostgreSQL 워크로드가 없다")
         else:
-            ok(f"{label}: Keycloak in-cluster 배포 계약 유지")
+            workloads = [
+                item for item in documents
+                if item.get("kind") in ("Deployment", "StatefulSet")
+            ]
+            placement_errors = []
+            for workload in workloads:
+                workload_name = str((workload.get("metadata") or {}).get("name") or "")
+                pod_spec = (((workload.get("spec") or {}).get("template") or {}).get("spec") or {})
+                selector = pod_spec.get("nodeSelector") or {}
+                tolerations = pod_spec.get("tolerations") or []
+                has_critical = any(
+                    item.get("key") == "CriticalAddonsOnly"
+                    and item.get("operator") == "Equal"
+                    and str(item.get("value") or "").lower() == "true"
+                    and item.get("effect") == "NoExecute"
+                    for item in tolerations
+                )
+                has_control = any(
+                    item.get("key") == "node-role.kubernetes.io/control-plane"
+                    and item.get("operator") == "Equal"
+                    and str(item.get("value") or "").lower() == "true"
+                    and item.get("effect") == "NoSchedule"
+                    for item in tolerations
+                )
+                pinned = (
+                    str(selector.get("node-role.kubernetes.io/control-plane") or "").lower()
+                    == "true"
+                    and has_critical
+                    and has_control
+                )
+                if placement == "control-plane" and not pinned:
+                    placement_errors.append(workload_name)
+                if placement == "any" and (
+                    "node-role.kubernetes.io/control-plane" in selector
+                    or has_critical
+                    or has_control
+                ):
+                    placement_errors.append(workload_name)
+            if placement_errors:
+                bad(
+                    f"{label}: nodePlacement={placement} 와 워크로드 scheduling 불일치: "
+                    + ", ".join(placement_errors)
+                )
+            else:
+                ok(f"{label}: Keycloak in-cluster nodePlacement={placement} 계약 유지")
 
 
 check_keycloak_deployment(

@@ -252,7 +252,13 @@ if keycloak_is_external; then
 else
   kctl rollout status -n keycloak statefulset/keycloak-postgresql --timeout=10m >/dev/null
   kctl rollout status -n keycloak deployment/keycloak --timeout=15m >/dev/null
-  ok "HTTPS Gateway/플랫폼 routes 및 Keycloak Ready"
+  if [[ $(keycloak_node_placement) == control-plane ]]; then
+    keycloak_workloads_on_control_plane \
+      || die "Keycloak/PostgreSQL이 control-plane 노드에 함께 배치되지 않음"
+    ok "HTTPS Gateway/플랫폼 routes 및 Keycloak Ready(control-plane 올인원 배치)"
+  else
+    ok "HTTPS Gateway/플랫폼 routes 및 Keycloak Ready"
+  fi
 fi
 # 외부 Grafana 통합 운영용 읽기 백엔드. Grafana 자체는 클러스터 밖에 있으므로 설치하지 않고,
 # Prometheus/Loki 와 로그 수집기(Alloy)만 둔다. 노출과 인증은 계약의 MACHINE_AUTH_SERVICES 가

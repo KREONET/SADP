@@ -98,6 +98,7 @@ check(
     ],
     0,
     (
+        "Keycloak 통합 설치: in-cluster, node-placement=any",
         "기존 RKE2 클러스터 선행 조건 검사",
         "Devtron과 번들 Argo CD 자동 준비",
         "scripts/cluster/install-devtron.sh",

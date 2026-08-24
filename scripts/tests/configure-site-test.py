@@ -43,6 +43,7 @@ MACHINE_AUTH_ALLOWED_CIDRS=
 KEYCLOAK_REALM=platform
 PORTAL_KEYCLOAK_CLIENT_ID=portal-prod
 KEYCLOAK_DEPLOYMENT=in-cluster
+KEYCLOAK_NODE_PLACEMENT=any
 KEYCLOAK_EXTERNAL_ADDRESS=
 KEYCLOAK_EXTERNAL_PORT=8080
 KEYCLOAK_SAML_SP_ENTITY_ID=
@@ -362,6 +363,8 @@ def verify_generated(workspace: pathlib.Path, *, expect_nms: bool, expected_mode
     keycloak = (workspace / "platform/keycloak/resources.yaml").read_text(encoding="utf-8")
     if "https://sso.prod.company.kr" not in keycloak:
         return "Keycloak public hostname mismatch"
+    if spec["keycloak"].get("nodePlacement") != "any":
+        return "default Keycloak node placement mismatch"
     quota_documents = [
         item
         for item in yaml.safe_load_all(
@@ -656,6 +659,69 @@ case(
 case(
     "SC-15 in-cluster Keycloak with an external address is rejected",
     mutate(VALID, "KEYCLOAK_EXTERNAL_ADDRESS=", "KEYCLOAK_EXTERNAL_ADDRESS=10.20.30.60"),
+    False,
+)
+
+
+def generated_control_plane_keycloak(workspace: pathlib.Path, _result) -> str:
+    contract = yaml.safe_load(
+        (workspace / "contracts/platform-production.yaml").read_text(encoding="utf-8")
+    )["spec"]
+    if contract["keycloak"].get("nodePlacement") != "control-plane":
+        return "control-plane Keycloak placement was not written to the contract"
+    documents = [
+        item
+        for item in yaml.safe_load_all(
+            (workspace / "platform/keycloak/resources.yaml").read_text(encoding="utf-8")
+        )
+        if item and item.get("kind") in {"Deployment", "StatefulSet"}
+    ]
+    if {item["kind"] for item in documents} != {"Deployment", "StatefulSet"}:
+        return "Keycloak/PostgreSQL workload set mismatch"
+    for document in documents:
+        pod_spec = document["spec"]["template"]["spec"]
+        if pod_spec.get("nodeSelector") != {
+            "node-role.kubernetes.io/control-plane": "true"
+        }:
+            return f"{document['kind']} control-plane selector mismatch"
+        tolerations = pod_spec.get("tolerations") or []
+        expected = {
+            ("CriticalAddonsOnly", "Equal", "true", "NoExecute"),
+            ("node-role.kubernetes.io/control-plane", "Equal", "true", "NoSchedule"),
+        }
+        rendered = {
+            (
+                item.get("key"),
+                item.get("operator"),
+                item.get("value"),
+                item.get("effect"),
+            )
+            for item in tolerations
+        }
+        if rendered != expected:
+            return f"{document['kind']} control-plane tolerations mismatch: {rendered}"
+    return ""
+
+
+case(
+    "SC-15d in-cluster Keycloak/PostgreSQL control-plane 올인원 배치 생성",
+    mutate(VALID, "KEYCLOAK_NODE_PLACEMENT=any", "KEYCLOAK_NODE_PLACEMENT=control-plane"),
+    True,
+    generated_control_plane_keycloak,
+    write=True,
+)
+case(
+    "SC-15e 알 수 없는 Keycloak node placement 거부",
+    mutate(VALID, "KEYCLOAK_NODE_PLACEMENT=any", "KEYCLOAK_NODE_PLACEMENT=worker"),
+    False,
+)
+case(
+    "SC-15f external Keycloak의 stale control-plane placement 거부",
+    mutate(
+        KEYCLOAK_EXTERNAL,
+        "KEYCLOAK_NODE_PLACEMENT=any",
+        "KEYCLOAK_NODE_PLACEMENT=control-plane",
+    ),
     False,
 )
 case(

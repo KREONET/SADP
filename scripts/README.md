@@ -107,6 +107,10 @@ cluster apply는 TLS 진행 상태를 읽습니다. 운영 인증서가 아직 R
 설치하고 서비스 초기화·앱 배포·검수를 보류한 뒤 정상 종료합니다. `site.env`의 TLS 진행값을
 갱신하고 render→commit/push→cluster를 반복합니다.
 
+`KEYCLOAK_DEPLOYMENT=in-cluster`와 `KEYCLOAK_NODE_PLACEMENT=control-plane`을 함께 쓰면 cluster
+apply가 Keycloak/PostgreSQL을 control-plane에 고정하고 runtime Secret과 realm/client 초기화까지
+한 번에 수행합니다. `--phase all --apply`의 노드 재시작 안전 경계는 그대로 유지됩니다.
+
 ## 검수와 운영
 
 | 그룹 | 명령 |

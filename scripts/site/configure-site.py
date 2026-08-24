@@ -51,6 +51,10 @@ SUPPORTED_DELEGATION_TYPES = {"cname", "ns"}
 # direct-rfc2136 은 Pod 가 권위 서버로 raw DNS UPDATE 를 보낸다. Squid 로는 대신할 수
 # 없으므로 egress 가 gateway 노드에만 있는 사이트에서는 controller 를 그 노드에 고정한다.
 SUPPORTED_CERT_MANAGER_PLACEMENTS = {"any", "control-plane"}
+# control-plane 은 관리 taint 두 개를 쓰므로 selector만 붙이면 Keycloak과 DB가 영원히
+# Pending이다. placement를 계약으로 두고 두 워크로드의 selector/toleration을 함께 만든다.
+SUPPORTED_KEYCLOAK_PLACEMENTS = {"any", "control-plane"}
+CONTROL_PLANE_LABEL = "node-role.kubernetes.io/control-plane"
 # _acme-challenge 처럼 밑줄로 시작하는 label 도 위임 zone 이름이 될 수 있다.
 DNS_ZONE = re.compile(
     r"^_?[a-z0-9](?:[-a-z0-9]*[a-z0-9])?(?:\._?[a-z0-9](?:[-a-z0-9]*[a-z0-9])?)+$"
@@ -168,7 +172,7 @@ KNOWN_KEYS = {
     "RANCHER_HOST", "OPENBAO_HOST", "SYSTEMS", "EXTERNAL_SERVICES",
     "MACHINE_AUTH_SERVICES", "MACHINE_AUTH_CLIENTS", "MACHINE_AUTH_ALLOWED_CIDRS",
     "KEYCLOAK_REALM",
-    "PORTAL_KEYCLOAK_CLIENT_ID", "KEYCLOAK_DEPLOYMENT",
+    "PORTAL_KEYCLOAK_CLIENT_ID", "KEYCLOAK_DEPLOYMENT", "KEYCLOAK_NODE_PLACEMENT",
     "KEYCLOAK_EXTERNAL_ADDRESS", "KEYCLOAK_EXTERNAL_PORT",
     "KEYCLOAK_SAML_SP_ENTITY_ID",
     "KEYCLOAK_IDP_ALIAS", "KEYCLOAK_IDP_DISPLAY_NAME", "KEYCLOAK_IDP_PROVIDER_ID",
@@ -392,6 +396,18 @@ def parse_keycloak_deployment(
     elif address:
         raise ConfigError(f"in-cluster {deployment_key} must not set {address_key}")
     return deployment, address, resolved_port
+
+
+def parse_keycloak_node_placement(values: dict[str, str], deployment: str) -> str:
+    """in-cluster Keycloak의 노드 배치를 검증하고 external의 stale 입력을 막는다."""
+    placement = (optional(values, "KEYCLOAK_NODE_PLACEMENT") or "any").lower()
+    if placement not in SUPPORTED_KEYCLOAK_PLACEMENTS:
+        raise ConfigError("KEYCLOAK_NODE_PLACEMENT must be any or control-plane")
+    if deployment == "external" and placement != "any":
+        raise ConfigError(
+            "KEYCLOAK_DEPLOYMENT=external requires KEYCLOAK_NODE_PLACEMENT=any"
+        )
+    return placement
 
 
 def parse_machine_auth_services(
@@ -1166,6 +1182,7 @@ def validate(values: dict[str, str]) -> dict:
     keycloak_deployment, keycloak_address, keycloak_port = parse_keycloak_deployment(
         values, "KEYCLOAK_DEPLOYMENT", "KEYCLOAK_EXTERNAL_ADDRESS", "KEYCLOAK_EXTERNAL_PORT"
     )
+    keycloak_node_placement = parse_keycloak_node_placement(values, keycloak_deployment)
     keycloak_issuer = f"https://{hosts['sso']}/realms/{realm}"
     keycloak_saml_sp_entity_id = saml_sp_entity_id(
         optional(values, "KEYCLOAK_SAML_SP_ENTITY_ID"), keycloak_issuer
@@ -1381,6 +1398,7 @@ def validate(values: dict[str, str]) -> dict:
             "portalClientID": portal_client,
             "samlSpEntityId": keycloak_saml_sp_entity_id,
             "deployment": keycloak_deployment,
+            "nodePlacement": keycloak_node_placement,
             "externalAddress": keycloak_address,
             "externalPort": keycloak_port,
             "identityProvider": identity_provider,
@@ -1655,6 +1673,7 @@ def build_contract(base: dict, cfg: dict) -> dict:
     spec["keycloak"]["samlSpEntityId"] = cfg["keycloak"]["samlSpEntityId"]
     # issuer 와 sso host 는 배포 모드와 무관하게 같다. 달라지는 것은 backend 뿐이다.
     spec["keycloak"]["deployment"] = cfg["keycloak"]["deployment"]
+    spec["keycloak"]["nodePlacement"] = cfg["keycloak"]["nodePlacement"]
     spec["keycloak"]["external"] = {
         "address": cfg["keycloak"]["externalAddress"],
         "port": cfg["keycloak"]["externalPort"] or 8080,
@@ -2183,6 +2202,7 @@ def in_cluster_keycloak_documents(
     namespace: str,
     hostname: str,
     storage_class: str,
+    node_placement: str,
     network_replacements: dict[str, str],
     previous_documents: list[dict] | None,
     *,
@@ -2203,6 +2223,33 @@ def in_cluster_keycloak_documents(
         if document.get("kind") == "StatefulSet" and document["metadata"].get("name") == "keycloak-postgresql":
             for claim in document.get("spec", {}).get("volumeClaimTemplates") or []:
                 claim.setdefault("spec", {})["storageClassName"] = storage_class
+        if document.get("kind") in {"Deployment", "StatefulSet"}:
+            pod_spec = document.setdefault("spec", {}).setdefault("template", {}).setdefault(
+                "spec", {}
+            )
+            if node_placement == "control-plane":
+                # RKE2 server의 NoSchedule/NoExecute taint를 둘 다 견뎌야 새 설치에서도
+                # Keycloak과 로컬 PostgreSQL이 같은 control-plane에 함께 뜬다.
+                pod_spec["nodeSelector"] = {CONTROL_PLANE_LABEL: "true"}
+                pod_spec["tolerations"] = [
+                    {
+                        "key": "CriticalAddonsOnly",
+                        "operator": "Equal",
+                        "value": "true",
+                        "effect": "NoExecute",
+                    },
+                    {
+                        "key": CONTROL_PLANE_LABEL,
+                        "operator": "Equal",
+                        "value": "true",
+                        "effect": "NoSchedule",
+                    },
+                ]
+            else:
+                # control-plane에서 any로 되돌릴 때 이전 생성 결과가 남아 계속 고정되지
+                # 않도록 생성기가 소유한 scheduling field를 함께 지운다.
+                pod_spec.pop("nodeSelector", None)
+                pod_spec.pop("tolerations", None)
         if document.get("kind") == "Deployment":
             for container in document.get("spec", {}).get("template", {}).get("spec", {}).get("containers") or []:
                 for env in container.get("env") or []:
@@ -2304,6 +2351,7 @@ def runtime_updates(cfg: dict, old_contract: dict) -> dict[pathlib.Path, str]:
             "keycloak",
             f"https://sso.{cfg['baseDomain']}",
             cfg["storageClass"],
+            cfg["keycloak"]["nodePlacement"],
             network_replacements,
             previous_documents,
             include_namespace=True,
@@ -2332,6 +2380,7 @@ def runtime_updates(cfg: dict, old_contract: dict) -> dict[pathlib.Path, str]:
                 system["workloadNamespace"],
                 f"https://sso.{system['domain']}",
                 cfg["storageClass"],
+                "any",
                 network_replacements,
                 previous_system_documents,
                 include_namespace=False,
@@ -2401,6 +2450,8 @@ def install_env(cfg: dict) -> str:
         "REGISTRY_PULL_SECRET": cfg["registry"]["pullSecret"],
         "TLS_SOURCE": cfg["tls"]["source"],
         "EXISTING_GATEWAY_TLS_READY": str(cfg["tls"]["existingReady"]).lower(),
+        "KEYCLOAK_DEPLOYMENT": cfg["keycloak"]["deployment"],
+        "KEYCLOAK_NODE_PLACEMENT": cfg["keycloak"]["nodePlacement"],
         "DNS_CREDENTIAL_SECRET_NAME": cfg["tls"]["credentialSecretName"],
         "DNS_CREDENTIAL_SECRET_KEY": cfg["tls"]["credentialSecretKey"],
         "NMS_MODE": cfg["nms"]["mode"],

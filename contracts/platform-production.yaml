@@ -251,6 +251,7 @@ spec:
     issuer: https://sso.sadp.example.invalid/realms/sadp
     samlSpEntityId: https://sso.sadp.example.invalid/realms/sadp
     deployment: in-cluster
+    nodePlacement: any
     external:
       address: ''
       port: 8080

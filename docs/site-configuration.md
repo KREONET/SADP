@@ -65,7 +65,7 @@ pull/push Docker config 경로와 권한은 분리합니다.
 | 공개 경로 | public IP 소유, `nat`/`direct`, Gateway VIP/pool |
 | egress | Squid host/port/client CIDR, upstream DNS |
 | TLS | ACME mode, RFC2136 endpoint/key metadata, 진행 상태 |
-| 인증 | Keycloak deployment/realm/client와 선택적 SAML IdP |
+| 인증 | Keycloak deployment/node placement/realm/client와 선택적 SAML IdP |
 | 스토리지 | StorageClass와 AppGroup 고정 volume 크기 |
 
 ### NIC와 CIDR
@@ -120,6 +120,32 @@ production Certificate Ready
 ```
 
 클러스터가 HTTPS인데 env가 뒤처지면 다음 render가 listener를 HTTP로 되돌릴 수 있습니다.
+
+### Keycloak 배치
+
+외부 VM을 사용할 때는 기존 주소를 EndpointSlice로 연결합니다.
+
+```dotenv
+KEYCLOAK_DEPLOYMENT=external
+KEYCLOAK_NODE_PLACEMENT=any
+KEYCLOAK_EXTERNAL_ADDRESS=<PRIVATE_KEYCLOAK_IPV4>
+KEYCLOAK_EXTERNAL_PORT=8080
+```
+
+RKE2 안에 설치할 때는 외부 주소를 비우고 node placement를 선택합니다.
+
+```dotenv
+KEYCLOAK_DEPLOYMENT=in-cluster
+KEYCLOAK_NODE_PLACEMENT=control-plane
+KEYCLOAK_EXTERNAL_ADDRESS=
+KEYCLOAK_EXTERNAL_PORT=8080
+```
+
+`any`는 스케줄러가 일반 노드를 선택하는 기존 동작입니다. `control-plane`은 Keycloak과
+PostgreSQL을 함께 RKE2 server에 고정하며 필요한 두 taint toleration도 생성합니다. external과
+`control-plane`을 함께 쓰거나 알 수 없는 placement를 쓰면 `configure-site.py`가 거부합니다.
+통합 설치 동작과 기존 로컬 PVC 이전 주의사항은
+[설치 가이드](installation.md#control-plane-내부-keycloak-올인원-설치)를 따릅니다.
 
 ## 4. 검증·생성·드리프트 확인
 

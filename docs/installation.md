@@ -128,11 +128,58 @@ timeout 안에서 확인합니다. 같은 app/chart 버전의 Helm release 상�
 정상 release의 설정 불일치나 Ready 실패는 자동 덮어쓰기하지 않고 `devtroncd`
 상태 확인을 요구합니다.
 
+### control-plane 내부 Keycloak 올인원 설치
+
+외부 Keycloak VM 없이 RKE2 server에 Keycloak과 PostgreSQL을 함께 두려면 `site.env`를
+다음처럼 설정합니다.
+
+```dotenv
+KEYCLOAK_DEPLOYMENT=in-cluster
+KEYCLOAK_NODE_PLACEMENT=control-plane
+KEYCLOAK_EXTERNAL_ADDRESS=
+KEYCLOAK_EXTERNAL_PORT=8080
+```
+
+render 결과의 Keycloak Deployment와 PostgreSQL StatefulSet에는
+`node-role.kubernetes.io/control-plane=true` selector와 RKE2 server의
+`CriticalAddonsOnly=true:NoExecute`, `control-plane=true:NoSchedule` taint 두 개에 맞는
+toleration이 함께 생성됩니다. selector만 추가해 Pod가 `Pending`에 머무는 구성은 생성기와
+CI가 거부합니다.
+
+노드 phase 적용과 수동 RKE2 재시작/Ready 확인을 끝낸 뒤 control-plane에서 기존 통합 cluster
+명령을 실행합니다.
+
+```bash
+sudo bash ./sadp --install \
+  --env-file /etc/sadp/site.env \
+  --phase cluster \
+  --apply
+```
+
+이 한 단계가 내부 Keycloak/PostgreSQL 리소스, root-only bootstrap 값, Kubernetes runtime
+Secret, Keycloak realm/group/client/role, 선택적 SAML IdP, OpenBao 시드까지 순서대로 설치하고
+실제 두 Pod가 control-plane에 배치됐는지 확인합니다. 외부 VM 주소, SSH, 별도
+`--configure-keycloak` 실행은 필요하지 않습니다. `KEYCLOAK_NODE_PLACEMENT=any`이면 기존처럼
+일반 스케줄러가 노드를 선택하며, `KEYCLOAK_DEPLOYMENT=external`에서는 placement를 `any`로
+두고 [외부 Keycloak Runbook](keycloak-external.md)을 사용합니다.
+
+첫 cluster apply에서 운영 TLS가 아직 Ready가 아니면 기존 안전 경계대로 기반 리소스까지만
+설치하고 정상 종료합니다. 인증서 확인 후 `EXISTING_GATEWAY_TLS_READY=true`를 render·배포한 뒤
+같은 cluster 명령을 다시 실행해야 realm/client/OpenBao 초기화까지 완료됩니다.
+
+> [!WARNING]
+> 이미 worker의 `local-path` PVC를 쓰는 PostgreSQL을 `control-plane`으로 바꾸면 기존 PVC의
+> node affinity 때문에 자동 이동되지 않습니다. 이 값은 새 설치에서 선택하거나,
+> [복구 가이드](recovery.md)에 따라 DB를 백업하고 control-plane에서 새 PVC로 복원하는
+> 유지보수 작업과 함께 변경하세요. control-plane에는 Keycloak 요청 `250m/768Mi`, PostgreSQL
+> 요청 `100m/256Mi`와 운영 여유 자원이 있어야 합니다.
+
 ### 설치된 Keycloak 사후 설정
 
 `--configure-keycloak`은 Keycloak을 설치하거나 재시작하지 않고, 이미 실행 중인
 Keycloak의 realm·group·client·role·선택적 SAML IdP를 SADP 계약에 맞게 반복
-수렴시킵니다. 관리자 값은 Git, shell argv, Kubernetes Secret/ConfigMap에 넣지 않습니다.
+수렴시키는 유지보수 명령입니다. 위 통합 cluster 설치의 내부 Keycloak 초기화에는 별도로
+실행하지 않습니다. 관리자 값은 Git, shell argv, Kubernetes Secret/ConfigMap에 넣지 않습니다.
 
 먼저 control-plane 노드에서 root 전용 파일을 만듭니다. 다음 명령은 터미널에서
 값을 묻고 stdin으로만 받습니다.
@@ -201,7 +248,7 @@ bash ./sadp --list
 | DNS | base domain, wildcard/apex record, RFC2136 또는 `_acme-challenge` 위임 |
 | GitOps | Forgejo repository/revision, bot 계정 |
 | Registry | OCI host/project, push 계정과 pull 계정 분리 |
-| 인증 | Keycloak 배치, realm/client, 선택적 외부 SAML IdP |
+| 인증 | Keycloak 외부/내부 배치, 내부 node placement, realm/client, 선택적 외부 SAML IdP |
 | 스토리지 | 기본 StorageClass, AppGroup volume 크기 |
 
 ## 2. 입력과 Secret 준비

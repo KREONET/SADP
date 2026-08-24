@@ -99,6 +99,37 @@ keycloak_is_external() {
   [[ $(keycloak_deployment) == external ]]
 }
 
+keycloak_node_placement() {
+  python3 - "${TESTBED_ROOT}/contracts/platform-production.yaml" <<'PY'
+import sys
+
+import yaml
+
+document = yaml.safe_load(open(sys.argv[1], encoding="utf-8")) or {}
+keycloak = (document.get("spec") or {}).get("keycloak") or {}
+print(keycloak.get("nodePlacement") or "any")
+PY
+}
+
+# selector만 검사하면 Pending Pod도 통과한다. 실제 Pod가 배정된 node의 control-plane label을
+# 확인해야 taint/toleration 오타와 잘못된 서버 label을 설치 단계에서 바로 잡을 수 있다.
+keycloak_workloads_on_control_plane() {
+  local selector pod_json node
+  local -a nodes
+  for selector in \
+    app.kubernetes.io/name=keycloak-postgresql \
+    app.kubernetes.io/name=keycloak; do
+    pod_json=$(kctl get pods -n keycloak -l "${selector}" -o json) || return 1
+    mapfile -t nodes < <(jq -r '.items[]?.spec.nodeName // empty' <<<"${pod_json}")
+    ((${#nodes[@]})) || return 1
+    for node in "${nodes[@]}"; do
+      [[ $(kctl get node "${node}" \
+        -o jsonpath='{.metadata.labels.node-role\.kubernetes\.io/control-plane}') == true ]] \
+        || return 1
+    done
+  done
+}
+
 apply_generic_secret_from_files() {
   local namespace=$1 name=$2
   shift 2

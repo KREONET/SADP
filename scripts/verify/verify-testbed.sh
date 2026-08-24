@@ -726,6 +726,15 @@ REMOTE
   fi
 fi
 
+if ! keycloak_is_external && [[ $(keycloak_node_placement) == control-plane ]]; then
+  if keycloak_workloads_on_control_plane; then
+    ok "Keycloak/PostgreSQL control-plane 올인원 배치"
+  else
+    echo '[FAIL] Keycloak/PostgreSQL이 control-plane 노드에 함께 배치되지 않음' >&2
+    fail=1
+  fi
+fi
+
 issuer=$(curl -ksS --resolve "sso.${base_domain}:443:${vip}" \
   "https://sso.${base_domain}/realms/${keycloak_realm}/.well-known/openid-configuration" \
   | jq -r '.issuer // empty')
