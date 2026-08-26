@@ -227,6 +227,10 @@ repo-server cache를 재시작합니다.
 
 ### machine-auth backend
 
+이 값들은 신규 사이트의 최초 설치에서는 모두 비워 둡니다. SADP 설치와 production TLS,
+Keycloak 운영 검증을 끝낸 뒤 외부 Grafana를 연결할 때 기존 `site.env`에 추가하고 render와
+cluster phase를 다시 적용합니다.
+
 ```dotenv
 MACHINE_AUTH_SERVICES=<NAME>=<NAMESPACE>/<SERVICE>:<PORT>
 MACHINE_AUTH_CLIENTS=<KEYCLOAK_CLIENT_ID>
@@ -234,7 +238,8 @@ MACHINE_AUTH_ALLOWED_CIDRS=<SOURCE_IPV4_CIDR>
 ```
 
 외부 Grafana 같은 기계 client의 JWT `azp`와 source CIDR을 함께 검사합니다. CIDR `/0`은
-거부합니다. 자세한 절차는 [외부 관측](external-observability.md)을 사용합니다.
+거부합니다. 생성물이나 live 리소스를 직접 patch하지 말고
+[설치 완료 후 외부 Grafana 연동](external-observability.md)을 사용합니다.
 
 ### NMS mode
 

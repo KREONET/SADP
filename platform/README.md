@@ -106,7 +106,7 @@ kubectl get applications -n devtroncd \
 - Keycloak in-cluster 리소스 또는 external Endpoint 적용
 - ESO/Reloader/OpenBao Argo Application과 rollout 대기
 - Gateway/플랫폼 Route 적용
-- monitoring 이미지 동기화와 Prometheus/Loki/Alloy Argo rollout 대기
+- 원툴 cluster 단계가 미리 동기화한 Prometheus/Loki/Alloy 이미지 확인과 Argo rollout 대기
 
 따라서 이 스크립트 전에 Argo repository, AppProject, app-of-apps bootstrap이 완료돼야 합니다.
 

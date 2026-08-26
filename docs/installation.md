@@ -17,10 +17,12 @@
 1. 선행 조건 확인
 2. site.env와 root 전용 Secret 파일 준비
 3. render 계획 → 생성 → 테스트 → commit/push
-4. 필요한 서드파티 이미지 준비
-5. 각 노드에 node phase 적용
+4. Squid 담당 노드에 node phase를 먼저 적용하고 egress 검증
+5. 나머지 노드에 node phase 적용
    → 사람이 노드별 RKE2 재시작/Ready 확인
-6. control-plane에서 Devtron/번들 Argo CD 보장 후 GitOps bootstrap
+6. control-plane cluster phase에서 Squid 재검증
+   → Prometheus/Loki/Alloy 이미지 선배포
+   → Devtron/번들 Argo CD 보장 후 GitOps bootstrap
 7. staging → production TLS 진행값 반영
 8. 서비스 초기화·앱 배포
 9. acceptance와 인수인계
@@ -272,6 +274,9 @@ sudoedit /etc/sadp/site.env
 - Forgejo/Registry endpoint와 project
 - DNS-01, Keycloak, StorageClass 설정
 
+외부 Grafana는 기본 설치 완료 후 별도 Runbook으로 추가합니다. 최초 설치에서는
+`MACHINE_AUTH_SERVICES`, `MACHINE_AUTH_CLIENTS`, `MACHINE_AUTH_ALLOWED_CIDRS`를 모두 비워 둡니다.
+
 통합 설치기는 문서용 endpoint/IP가 남은 상태에서 `--apply`를 거부합니다. 전체 필드 설명은
 [사이트 설정 참조](site-configuration.md)를 사용합니다.
 
@@ -363,10 +368,90 @@ bash ./sadp --test
 > `--allow-dirty`는 기존 변경을 확인하고 보존한 경우에만 사용합니다. 생성물 충돌을 무시하는
 > 일반 옵션이 아닙니다.
 
-## 4. 서드파티 이미지 배포
+## 4. Squid 선행 설치와 노드 설정 적용
 
-worker가 직접 인터넷 registry에 접근하지 못하는 환경에서는 control-plane이 승인된 이미지를
-받아 모든 노드의 containerd로 전달합니다.
+control-plane과 각 worker에서 같은 Git revision과 같은 `site.env`를 사용합니다. hostname이
+`CONTROL_PLANE_HOSTNAME` 또는 `WORKER_NODES`와 일치하면 역할과 내부 IP를 자동 판별합니다.
+
+패키지, Helm chart, container image를 받기 전에 `SQUID_INTERNAL_IP`를 가진 노드부터 적용합니다.
+통합 node phase는 env와 생성물 동기화를 먼저 검사하고, Squid 담당 노드에서는 Squid를 다른
+node 설정보다 먼저 설치합니다. Squid package 자체만 승인된 direct apt mirror 또는 이미 구성된
+upstream proxy로 bootstrap합니다.
+
+### 4.1 Squid 담당 노드
+
+Squid 담당 노드에서 계획과 적용을 순서대로 실행합니다.
+
+```bash
+sudo bash ./sadp --install \
+  --env-file /etc/sadp/site.env \
+  --phase node
+
+sudo bash ./sadp --install \
+  --env-file /etc/sadp/site.env \
+  --phase node \
+  --apply
+```
+
+Squid 설치 직후 로컬 daemon/config와 실제 허용·차단 경로를 모두 확인합니다. 이 검사가 통과하기
+전에는 다른 노드 적용이나 패키지 설치로 넘어가지 않습니다.
+
+```bash
+sudo bash ./sadp --install-squid --check
+bash ./sadp --verify-squid
+```
+
+### 4.2 나머지 노드
+
+같은 계획·적용 명령을 control-plane과 각 worker에서 실행합니다. 이미 적용한 Squid 담당 노드는
+반복할 필요가 없습니다.
+
+node phase의 적용 순서와 항목은 다음과 같습니다.
+
+- 담당 노드이면 Squid 선행 설치·검증
+- RKE2 server/agent 계약 설정
+- 내부 NIC 기반 node identity와 Canal interface
+- 외부/NMS/guarded NIC 관리 포트 차단
+- RKE2 embedded containerd proxy
+- control-plane Docker daemon proxy(monitoring image pull용)
+- env에서 선택한 NMS route/SNAT
+- 지정 노드의 CoreDNS upstream listener
+
+### 수동 재시작 경계
+
+설치기는 RKE2를 자동 재시작하지 않습니다.
+
+1. worker 한 대를 drain합니다.
+2. 해당 노드의 `rke2-agent`를 재시작합니다.
+3. Node와 Canal이 Ready인지 확인하고 uncordon합니다.
+4. 나머지 worker를 한 대씩 반복합니다.
+5. 마지막에 control-plane 유지보수 창에서 `rke2-server`를 재시작합니다.
+6. control-plane의 Docker를 재시작하고 daemon proxy를 확인합니다.
+
+```bash
+sudo systemctl restart docker
+sudo bash ./sadp --install-docker-proxy --check
+```
+
+실제 drain 정책과 PodDisruptionBudget은 사이트 운영 기준을 따릅니다. 모든 노드가 Ready가 되기
+전에는 cluster phase를 실행하지 않습니다.
+
+## 5. Squid 이후 서드파티 이미지·패키지 준비
+
+Squid 검증과 모든 노드의 Ready 확인이 끝난 뒤에만 외부 package/chart/image 작업을 시작합니다.
+원툴 cluster phase는 Devtron·Argo를 설치하기 전에 Squid 허용·차단 경로를 다시 확인한 다음
+`platform/monitoring/images.txt`의 Prometheus/Loki/Alloy 이미지를 control-plane에서 받아 모든
+노드의 containerd에 선배포합니다. 따라서 Argo Application이 만들어질 때 폐쇄망 worker가 외부
+Registry pull에 의존하지 않습니다.
+
+`docker pull`은 CLI가 아니라 Docker daemon이 네트워크 요청을 수행합니다. 따라서 node phase가
+설치한 `/etc/systemd/system/docker.service.d/sadp-proxy.conf`를 재시작으로 반영해야 하며, 원툴
+cluster phase는 daemon의 `HTTP_PROXY`/`HTTPS_PROXY`/`NO_PROXY`가 계약과 다르면 이미지 다운로드
+전에 중단합니다.
+
+기본 monitoring 이미지는 원툴 설치기가 자동 처리합니다. 사이트 전용 목록을 사용하려면
+`/var/lib/sadp/monitoring-images.txt`에 두며, 수동 명령은 원인 분리나 추가 이미지 준비에만
+사용합니다.
 
 ```bash
 sudo bash scripts/cluster/sync-external-images.sh \
@@ -381,51 +466,9 @@ sudo bash scripts/cluster/sync-external-images.sh \
 ```
 
 tag나 digest가 반드시 있어야 하며 `latest`는 거부됩니다. 승인된 이미지 목록과 버전은
-`versions.lock.yaml` 및 Argo Application을 기준으로 검토합니다.
-
-## 5. 노드 설정 적용
-
-control-plane과 각 worker에서 같은 Git revision과 같은 `site.env`를 사용합니다. hostname이
-`CONTROL_PLANE_HOSTNAME` 또는 `WORKER_NODES`와 일치하면 역할과 내부 IP를 자동 판별합니다.
-
-### 계획
-
-```bash
-sudo bash ./sadp --install \
-  --env-file /etc/sadp/site.env \
-  --phase node
-```
-
-### 적용
-
-```bash
-sudo bash ./sadp --install \
-  --env-file /etc/sadp/site.env \
-  --phase node \
-  --apply
-```
-
-적용되는 항목:
-
-- RKE2 server/agent 계약 설정
-- 내부 NIC 기반 node identity와 Canal interface
-- 외부/NMS/guarded NIC 관리 포트 차단
-- RKE2 embedded containerd proxy
-- env에서 선택한 NMS route/SNAT
-- 지정 노드의 Squid와 CoreDNS upstream listener
-
-### 수동 재시작 경계
-
-설치기는 RKE2를 자동 재시작하지 않습니다.
-
-1. worker 한 대를 drain합니다.
-2. 해당 노드의 `rke2-agent`를 재시작합니다.
-3. Node와 Canal이 Ready인지 확인하고 uncordon합니다.
-4. 나머지 worker를 한 대씩 반복합니다.
-5. 마지막에 control-plane 유지보수 창에서 `rke2-server`를 재시작합니다.
-
-실제 drain 정책과 PodDisruptionBudget은 사이트 운영 기준을 따릅니다. 모든 노드가 Ready가 되기
-전에는 cluster phase를 실행하지 않습니다.
+`versions.lock.yaml` 및 Argo Application을 기준으로 검토합니다. Prometheus/Loki/Alloy workload는
+이미지만 이 경로로 선배포하고 실제 리소스는 Argo가 설치합니다. 개별 `helm install`로 겹쳐
+설치하지 않습니다.
 
 ## 6. GitOps bootstrap
 
@@ -448,15 +491,17 @@ sudo bash ./sadp --install \
 
 cluster phase는 env에 따라 다음을 순서대로 수행합니다.
 
-1. 클러스터 선행 조건 검사
-2. Devtron/번들 Argo CD 기존 계약 확인 또는 완전 부재 시 자동 설치
-3. RFC2136 TSIG Kubernetes Secret 적용(값 비출력)
-4. Argo repository 연결
-5. AppProject와 app-of-apps bootstrap 적용
-6. child Application 생성 대기
-7. SADP 기반 플랫폼 설치
-8. TLS 진행 상태 판단
-9. 이미지 빌드, Keycloak/OpenBao 초기화, 앱 배포, acceptance
+1. Squid 허용·차단 egress 실검증
+2. 클러스터 선행 조건 검사
+3. Prometheus/Loki/Alloy 이미지를 Squid 경유로 모든 노드에 선배포
+4. Devtron/번들 Argo CD 기존 계약 확인 또는 완전 부재 시 자동 설치
+5. RFC2136 TSIG Kubernetes Secret 적용(값 비출력)
+6. Argo repository 연결
+7. AppProject와 app-of-apps bootstrap 적용
+8. child Application 생성 대기
+9. SADP 기반 플랫폼 설치와 monitoring rollout 확인
+10. TLS 진행 상태 판단
+11. 이미지 빌드, Keycloak/OpenBao 초기화, 앱 배포, acceptance
 
 | env | 동작 |
 | --- | --- |
@@ -554,6 +599,13 @@ sudo bash ./sadp --verify-testbed
 - acceptance 결과
 
 Secret 본문은 인수인계 문서에 복사하지 않습니다.
+
+### 설치 완료 후 Grafana 추가
+
+외부 Grafana 연동값은 최초 설치의 `site.env`에 미리 넣지 않습니다. 이 절의 acceptance와
+인수인계를 완료한 뒤 [외부 Grafana 사후 연동 Runbook](external-observability.md)에 따라 기존
+`site.env`를 갱신하고 render → test → commit/push → cluster phase만 다시 실행합니다. 이 변경에는
+node phase나 RKE2 재시작이 필요하지 않습니다.
 
 ## 설치 중 자주 멈추는 지점
 

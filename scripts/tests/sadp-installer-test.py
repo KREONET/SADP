@@ -27,6 +27,25 @@ def check(label: str, command: list[str], expected: int, contains: tuple[str, ..
         print(f"       {line}")
 
 
+def check_order(label: str, command: list[str], before: str, after: str) -> None:
+    global PASSED, FAILED
+    result = subprocess.run(command, cwd=ROOT, capture_output=True, text=True, check=False)
+    output = result.stdout + result.stderr
+    before_index = output.find(before)
+    after_index = output.find(after)
+    if result.returncode == 0 and before_index >= 0 and after_index > before_index:
+        PASSED += 1
+        print(f"[OK]   {label}")
+        return
+    FAILED += 1
+    print(
+        f"[FAIL] {label}: exit={result.returncode}, "
+        f"before={before_index}, after={after_index}"
+    )
+    for line in output.splitlines()[-20:]:
+        print(f"       {line}")
+
+
 check(
     "SI-01 example site.env render plan is read-only",
     ["bash", "./sadp", "--install", "--env-file", str(ENV_FILE), "--phase", "render"],
@@ -102,7 +121,77 @@ check(
         "기존 RKE2 클러스터 선행 조건 검사",
         "Devtron과 번들 Argo CD 자동 준비",
         "scripts/cluster/install-devtron.sh",
+        "--skip-monitoring-image-sync",
+        "monitoring image pull용 Docker daemon Squid 확인",
     ),
+)
+
+check_order(
+    "SI-06 Squid node installs egress before containerd proxy configuration",
+    [
+        "bash",
+        "./sadp",
+        "--install",
+        "--env-file",
+        str(ENV_FILE),
+        "--phase",
+        "node",
+        "--node-name",
+        "sadp-control-plane-1",
+    ],
+    "계약 기반 Squid egress 선행 설치",
+    "RKE2 embedded containerd proxy",
+)
+
+check_order(
+    "SI-07 cluster preloads monitoring images through Squid before Devtron/Argo",
+    [
+        "bash",
+        "./sadp",
+        "--install",
+        "--env-file",
+        str(ENV_FILE),
+        "--phase",
+        "cluster",
+        "--node-name",
+        "sadp-control-plane-1",
+    ],
+    "패키지·차트 설치 전 Squid egress 확인",
+    "Prometheus/Loki/Alloy 이미지 Squid 경유 선배포",
+)
+
+check_order(
+    "SI-08 cluster preloads monitoring images before Devtron package/chart installation",
+    [
+        "bash",
+        "./sadp",
+        "--install",
+        "--env-file",
+        str(ENV_FILE),
+        "--phase",
+        "cluster",
+        "--node-name",
+        "sadp-control-plane-1",
+    ],
+    "Prometheus/Loki/Alloy 이미지 Squid 경유 선배포",
+    "Devtron과 번들 Argo CD 자동 준비",
+)
+
+check_order(
+    "SI-09 cluster checks Docker daemon proxy before monitoring image preload",
+    [
+        "bash",
+        "./sadp",
+        "--install",
+        "--env-file",
+        str(ENV_FILE),
+        "--phase",
+        "cluster",
+        "--node-name",
+        "sadp-control-plane-1",
+    ],
+    "monitoring image pull용 Docker daemon Squid 확인",
+    "Prometheus/Loki/Alloy 이미지 Squid 경유 선배포",
 )
 
 print(f"통과 {PASSED} / 실패 {FAILED}")

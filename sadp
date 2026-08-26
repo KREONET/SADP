@@ -35,6 +35,7 @@ install-node-config|bash|scripts/node/install-rke2-node-config.sh|생성된 RKE2
 install-network-identity|bash|scripts/node/install-rke2-network-identity.sh|내부망 NIC에 RKE2 고정
 install-interface-guard|bash|scripts/node/install-rke2-interface-guard.sh|공인/NMS NIC의 관리 포트 차단
 install-containerd-proxy|bash|scripts/node/install-rke2-containerd-proxy.sh|containerd image pull만 Squid 경유
+install-docker-proxy|bash|scripts/node/install-docker-proxy.sh|control-plane Docker image pull을 Squid 경유
 install-squid|bash|scripts/node/install-squid-egress.sh|allowlist Squid proxy 설치
 install-nms-egress|bash|scripts/node/install-nms-egress.sh|고정 출발지 NMS 경로를 systemd unit으로
 configure-nms-egress|bash|scripts/node/configure-nms-egress.sh|렌더된 host route/rp_filter 적용

@@ -4,6 +4,25 @@
 set -euo pipefail
 source "$(dirname "$0")/../lib/testbed-common.sh"
 
+SKIP_MONITORING_IMAGE_SYNC=false
+
+while (($#)); do
+  case "$1" in
+    --skip-monitoring-image-sync) SKIP_MONITORING_IMAGE_SYNC=true ;;
+    -h|--help)
+      cat <<'EOF'
+usage: sudo scripts/cluster/install-testbed-platform.sh [--skip-monitoring-image-sync]
+
+--skip-monitoring-image-sync는 통합 설치기가 Argo bootstrap 전에 Prometheus/Loki/Alloy 이미지를
+모든 노드에 선배포한 경우에만 사용한다. 직접 실행할 때는 기본 동기화를 유지한다.
+EOF
+      exit 0
+      ;;
+    *) die "알 수 없는 인자: $1" ;;
+  esac
+  shift
+done
+
 require_root
 for command in openssl python3 jq base64 stat; do require_command "${command}"; done
 [[ -x ${KUBECTL_BIN} ]] || die "kubectl 없음: ${KUBECTL_BIN}"
@@ -279,9 +298,13 @@ if [[ ! -s ${monitoring_images} ]]; then
   note "monitoring 이미지 목록이 없어 스택 설치를 건너뜀: ${monitoring_images}"
   note "docs/external-observability.md 의 이미지 배포 절차를 먼저 수행한다"
 else
-  # 차트 설치는 Argo 가 한다. 이미지 배포만 여기서 하는 이유는 Argo 가 워커 containerd 에
-  # 이미지를 미리 넣어 줄 수 없기 때문이다. 순서를 바꾸면 워커에서 ImagePullBackOff 로 죽는다.
-  bash scripts/cluster/sync-external-images.sh --image-list "${monitoring_images}"
+  # 원툴 설치기는 Argo Application 생성 전에 이미지를 선배포한다. 이 스크립트를 직접 부르는
+  # 레거시/진단 경로만 여기서 동기화해 어느 진입점도 폐쇄망 worker pull에 기대지 않게 한다.
+  if [[ ${SKIP_MONITORING_IMAGE_SYNC} == true ]]; then
+    note "원툴 cluster 단계가 monitoring 이미지를 Argo bootstrap 전에 선배포함"
+  else
+    bash scripts/cluster/sync-external-images.sh --image-list "${monitoring_images}"
+  fi
   for application in prometheus loki alloy; do require_argo_application "${application}"; done
   kctl rollout status -n monitoring deployment/prometheus-server --timeout=10m >/dev/null \
     || die "Prometheus 미기동. Argo Application prometheus 동기화 상태를 먼저 확인하라"

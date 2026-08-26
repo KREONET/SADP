@@ -77,11 +77,25 @@ sudo bash ./sadp --install \
 
 node phase가 자동 역할 판별 후 수행하는 일:
 
+- 해당 노드가 담당하면 Squid를 가장 먼저 설치·검증
 - 계약 소유 RKE2 config field 병합
 - 내부 NIC/IP identity와 Canal interface 고정
 - external/NMS/guarded NIC 관리 port guard 설치
 - embedded containerd proxy 설정
-- 해당 노드가 담당하면 Squid, DNS forwarder, NMS unit 설치
+- control-plane이면 monitoring pull용 Docker daemon proxy 설정
+- 해당 노드가 담당하면 DNS forwarder, NMS unit 설치
+
+`SQUID_INTERNAL_IP`를 가진 노드의 node phase를 먼저 적용하고 `--install-squid --check`와
+`--verify-squid`를 통과시킨 뒤 다른 노드와 cluster phase로 진행합니다. cluster phase는
+Devtron/Helm chart 작업 전에 Squid를 다시 확인하고 Prometheus/Loki/Alloy 이미지를 이 경로로
+모든 노드에 선배포합니다.
+
+Docker daemon은 셸의 `HTTP_PROXY`만으로 바뀌지 않습니다. control-plane node phase 적용 후
+`systemctl restart docker`를 사람이 실행하고 다음 검사를 통과시킵니다.
+
+```bash
+sudo bash ./sadp --install-docker-proxy --check
+```
 
 설치기는 RKE2를 자동 재시작하지 않습니다. worker를 한 대씩 drain → `rke2-agent` restart →
 Ready → uncordon하고 마지막에 승인된 창에서 server를 재시작합니다.

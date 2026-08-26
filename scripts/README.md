@@ -64,13 +64,20 @@ bash ./sadp --render-all
 | `--install-network-identity` | 내부 NIC/IP에 RKE2 identity 고정 | 계획, `--apply` 시 쓰기 |
 | `--install-interface-guard` | external/NMS/guarded NIC 관리 port 차단 | 계획, `--apply` 시 쓰기 |
 | `--install-containerd-proxy` | RKE2 embedded containerd proxy unit 생성 | 계획, `--apply` 시 쓰기 |
+| `--install-docker-proxy` | control-plane Docker daemon pull을 Squid로 고정 | 계획, `--apply` 시 쓰기, `--check` 검증 |
 | `--install-squid` | 렌더된 allowlist Squid 설치 | 실행 시 설치, `--check`는 검사 |
 | `--install-nms-egress` | `gateway`/`worker` NMS systemd unit 설치 | 실행 시 설치 |
 | `--configure-nms-egress` | 렌더된 route/rp_filter 적용 | 실행 시 적용 |
 
-앞의 네 스크립트는 `--apply` 2단계입니다. Squid/DNS/NMS 설치기는 통합 설치기의 node apply에서만
+앞의 다섯 스크립트는 `--apply` 2단계입니다. Squid/DNS/NMS 설치기는 통합 설치기의 node apply에서만
 자동 호출되며, 직접 호출할 때는 기본 동작이 실제 변경일 수 있으므로 각 `--help`를 먼저 봅니다.
 어떤 스크립트도 RKE2를 자동 재시작하지 않습니다.
+
+원툴 설치는 `site.env`와 생성물 동기화를 먼저 확인합니다. `SQUID_INTERNAL_IP` 담당 노드에서는
+Squid를 containerd proxy보다 먼저 설치하며, cluster phase는 Devtron/Helm chart/image 작업 전에
+실제 Squid 허용·차단 경로를 다시 검증합니다. 이어서 Prometheus/Loki/Alloy 이미지를 모든 노드에
+선배포한 뒤 Devtron과 Argo Application을 설치합니다. 이미지 선배포 전에는 실행 중 Docker
+daemon의 proxy 환경도 계약과 같은지 확인하며, 셸 환경변수만 맞는 상태는 거부합니다.
 
 ## cluster — control-plane에서 실행
 

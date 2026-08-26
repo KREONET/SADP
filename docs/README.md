@@ -22,7 +22,7 @@ SADP 문서는 역할별 가이드와 작업별 runbook으로 나뉩니다. 문�
 | NIC, firewall, Squid, DNS, NMS | [네트워크·egress 안내](network-egress.md) |
 | wildcard staging→production | [Let's Encrypt DNS-01](letsencrypt-dns01.md) |
 | 외부 Keycloak/상위 SAML IdP | [외부 Keycloak 안내](keycloak-external.md) |
-| 외부 Grafana와 Prometheus/Loki | [외부 관측 안내](external-observability.md) |
+| 설치 완료 후 외부 Grafana와 Prometheus/Loki 연동 | [외부 관측 Runbook](external-observability.md) |
 | Forgejo bot token 회전 | [token 회전 runbook](runbooks/forgejo-token-rotation.md) |
 | 백업 검증과 복원 | [백업·복원 안내](recovery.md) |
 | Portal API 연동 | [Portal API 안내](portal-api.md) · [OpenAPI](../apps/portal-lite/openapi.yaml) |

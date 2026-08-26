@@ -80,6 +80,9 @@ systemctl is-active --quiet docker || systemctl start docker
 if [[ -r platform/network/proxy.env ]]; then
   source platform/network/proxy.env
 fi
+# docker pull의 실제 네트워크 주체는 CLI가 아니라 daemon이다. 셸 env만 설정하고 통과시키면
+# direct egress가 열린 호스트에서 정책을 우회할 수 있으므로 실행 중 daemon 환경까지 확인한다.
+bash scripts/node/install-docker-proxy.sh --check
 
 archive=${IMAGE_DIR}/external-images-$(date +%Y%m%d-%H%M%S).tar
 note "이미지 ${#IMAGES[@]}개를 서버 노드에서 받는다"

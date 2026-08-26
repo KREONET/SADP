@@ -164,6 +164,13 @@ if [[ ${PHASE} == node || ${PHASE} == all ]]; then
     || die "현재 노드 '${NODE_NAME}'가 CONTROL_PLANE_HOSTNAME/WORKER_NODES에 없음(--node-name 사용 가능)"
   note "현재 노드: ${NODE_NAME} role=${NODE_ROLE} internal-ip=${NODE_IP}"
 
+  # 이후 containerd/Helm/이미지 작업이 모두 계약 프록시를 전제로 한다. Squid 담당 노드에서는
+  # 다른 node 설정보다 먼저 프록시를 올려야 원툴 설치 순서가 env 검증 → egress 준비 → 소비자
+  # 설정이 된다. Squid 자체 package만 승인된 direct mirror 또는 기존 upstream proxy로 bootstrap한다.
+  if [[ ${NODE_IP} == "${SQUID_INTERNAL_IP}" ]]; then
+    step "계약 기반 Squid egress 선행 설치" bash scripts/node/install-squid-egress.sh
+  fi
+
   node_config=(bash scripts/node/install-rke2-node-config.sh --role "${NODE_ROLE}")
   identity=(bash scripts/node/install-rke2-network-identity.sh
     --role "${NODE_ROLE}"
@@ -184,26 +191,28 @@ if [[ ${PHASE} == node || ${PHASE} == all ]]; then
     [[ -z ${guarded} ]] || guard+=(--guarded-interface "${guarded}")
   done
   containerd_proxy=(bash scripts/node/install-rke2-containerd-proxy.sh --role "${NODE_ROLE}")
+  docker_proxy=(bash scripts/node/install-docker-proxy.sh)
 
   if [[ ${APPLY} == true ]]; then
     node_config+=(--apply)
     identity+=(--apply)
     guard+=(--apply)
     containerd_proxy+=(--apply)
+    docker_proxy+=(--apply)
   fi
   step "RKE2 계약 소유 설정 병합" "${node_config[@]}"
   step "RKE2 내부망 identity 고정" "${identity[@]}"
   step "외부/NMS interface 관리 포트 guard" "${guard[@]}"
   step "RKE2 embedded containerd proxy" "${containerd_proxy[@]}"
+  if [[ ${NODE_ROLE} == server ]]; then
+    step "monitoring image pull용 Docker daemon proxy" "${docker_proxy[@]}"
+  fi
 
   if [[ ${NMS_MODE} == network ]]; then
     nms_role=worker
     [[ ${NODE_IP} != "${NMS_GATEWAY_INTERNAL_IP}" ]] || nms_role=gateway
     step "NMS network egress(${nms_role})" \
       bash scripts/node/install-nms-egress.sh "${nms_role}"
-  fi
-  if [[ ${NODE_IP} == "${SQUID_INTERNAL_IP}" ]]; then
-    step "계약 기반 Squid egress" bash scripts/node/install-squid-egress.sh
   fi
   upstream_address=${CLUSTER_UPSTREAM_DNS%:*}
   if [[ -n ${CLUSTER_UPSTREAM_DNS} && ${NODE_IP} == "${upstream_address}" ]]; then
@@ -212,6 +221,9 @@ if [[ ${PHASE} == node || ${PHASE} == all ]]; then
 
   if [[ ${APPLY} == true ]]; then
     note "RKE2는 자동 재시작하지 않았다. 노드를 drain한 유지보수 창에서 systemctl restart rke2-${NODE_ROLE} 실행 후 Ready를 확인한다"
+    if [[ ${NODE_ROLE} == server ]]; then
+      note "Docker도 자동 재시작하지 않았다. cluster phase 전에 systemctl restart docker 후 --install-docker-proxy --check를 실행한다"
+    fi
   fi
 fi
 
@@ -259,7 +271,32 @@ PY
   die "Argo Application 생성 timeout: ${missing[*]}"
 }
 
+# Devtron Helm repository와 뒤의 외부 image pull을 시작하기 전에 실제 허용/차단 요청으로 Squid를
+# 확인한다. proxy.env 파일 존재만 검사하면 daemon 미기동이나 잘못된 allowlist를 늦게 발견한다.
+step "패키지·차트 설치 전 Squid egress 확인" bash scripts/verify/verify-squid-egress.sh
+
 step "기존 RKE2 클러스터 선행 조건 검사" bash scripts/cluster/preflight.sh
+
+step "monitoring image pull용 Docker daemon Squid 확인" \
+  bash scripts/node/install-docker-proxy.sh --check
+
+# Prometheus/Loki/Alloy Application이 생긴 뒤 이미지를 넣으면 폐쇄망 worker에서 먼저
+# ImagePullBackOff가 난다. 원툴 경로는 Argo bootstrap 전에 승인 목록을 Squid 경유로 받아
+# 모든 노드 containerd에 넣고, 뒤 platform 단계에는 중복 동기화를 건너뛰라고 알린다.
+monitoring_images=${ROOT}/platform/monitoring/images.txt
+state_root=${SADP_STATE_DIR:-/var/lib/sadp}
+if [[ -s ${state_root}/monitoring-images.txt ]]; then
+  monitoring_images=${state_root}/monitoring-images.txt
+  note "사이트 전용 monitoring 이미지 목록 사용: ${monitoring_images}"
+fi
+monitoring_images_preloaded=false
+if [[ -s ${monitoring_images} ]]; then
+  step "Prometheus/Loki/Alloy 이미지 Squid 경유 선배포" \
+    bash scripts/cluster/sync-external-images.sh --image-list "${monitoring_images}"
+  monitoring_images_preloaded=true
+else
+  note "monitoring 이미지 목록이 없어 선배포를 건너뜀: ${monitoring_images}"
+fi
 
 devtron=(bash scripts/cluster/install-devtron.sh)
 [[ ${APPLY} != true ]] || devtron+=(--apply)
@@ -298,7 +335,10 @@ else
   note "SADP_INSTALL_GITOPS=false: 기존 Argo GitOps 연결을 사용"
 fi
 
-step "SADP 플랫폼 기반 서비스 설치" bash scripts/cluster/install-testbed-platform.sh
+platform_install=(bash scripts/cluster/install-testbed-platform.sh)
+[[ ${monitoring_images_preloaded} != true ]] \
+  || platform_install+=(--skip-monitoring-image-sync)
+step "SADP 플랫폼 기반 서비스 설치" "${platform_install[@]}"
 
 if [[ ${EXISTING_GATEWAY_TLS_READY} != true ]]; then
   note "TLS 인증서 준비 단계이므로 서비스 초기화·앱 배포·검수를 보류한다"
