@@ -1,7 +1,4 @@
 {{- if .Values.networkPolicy.enabled }}
-{{- if and .Values.networkPolicy.nms.enabled (or (empty .Values.networkPolicy.nms.destinationCIDR) (lt (int .Values.networkPolicy.nms.port) 1)) }}
-{{- fail "networkPolicy.nms.enabled=true이면 destinationCIDR와 port가 필요하다" }}
-{{- end }}
 {{- $egressMode := include "app-profile.egressMode" . }}
 apiVersion: networking.k8s.io/v1
 kind: NetworkPolicy
@@ -83,13 +80,5 @@ spec:
       ports:
         - protocol: {{ default "TCP" .protocol }}
           port: {{ .port }}
-    {{- end }}
-    {{- if .Values.networkPolicy.nms.enabled }}
-    - to:
-        - ipBlock:
-            cidr: {{ .Values.networkPolicy.nms.destinationCIDR | quote }}
-      ports:
-        - protocol: TCP
-          port: {{ .Values.networkPolicy.nms.port }}
     {{- end }}
 {{- end }}

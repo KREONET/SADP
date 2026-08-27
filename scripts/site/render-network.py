@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Render Squid, cert-manager egress, CoreDNS and NMS inputs from the platform contract."""
+"""Render Squid, cert-manager egress and CoreDNS inputs from the platform contract."""
 
 from __future__ import annotations
 
@@ -9,7 +9,6 @@ import pathlib
 import re
 import shlex
 import sys
-from urllib.parse import urlsplit
 
 import yaml
 
@@ -22,7 +21,6 @@ OUTPUTS = {
     "proxy_env": ROOT / "platform" / "network" / "proxy.env",
     "firewall_env": ROOT / "platform" / "network" / "firewall.env",
     "policies": ROOT / "platform" / "network" / "egress-policies.yaml",
-    "nms_env": ROOT / "platform" / "network" / "nms-egress.env",
     "coredns": ROOT / "platform" / "dns" / "rke2-coredns-config.yaml",
     "cert_manager_application": ROOT / "argocd" / "applications" / "cert-manager.yaml",
     "keycloak_proxy": ROOT / "platform" / "keycloak" / "proxy-patch.yaml",
@@ -30,7 +28,6 @@ OUTPUTS = {
 DOMAIN = re.compile(r"^\.?[a-z0-9](?:[-a-z0-9.]*[a-z0-9])?$")
 INTERFACE = re.compile(r"^[A-Za-z0-9_.:-]+$")
 KUBE_NAME = re.compile(r"^[a-z0-9]([-a-z0-9.]*[a-z0-9])?$")
-NMS_MODES = {"disabled", "network", "api"}
 CERT_MANAGER_PLACEMENTS = {"any", "control-plane"}
 CONTROL_PLANE_LABEL = "node-role.kubernetes.io/control-plane"
 
@@ -77,13 +74,6 @@ def domains(values: object, where: str) -> list[str]:
     if len(result) != len(set(result)):
         raise ValueError(f"{where} contains duplicate hostnames")
     return result
-
-
-def nms_mode(nms: dict) -> str:
-    mode = str(nms.get("mode") or "").strip().lower()
-    if mode not in NMS_MODES:
-        raise ValueError("network.nms.mode must be disabled, network or api")
-    return mode
 
 
 def settings(spec: dict) -> dict:
@@ -142,21 +132,17 @@ def settings(spec: dict) -> dict:
     interfaces = net.get("interfaces") or {}
     internal_interface = str(interfaces.get("internal") or "").strip()
     external_interface = str(interfaces.get("external") or "").strip()
-    nms_interface = str(interfaces.get("nms") or "").strip()
     if not internal_interface or not INTERFACE.fullmatch(internal_interface):
         raise ValueError("network.interfaces.internal is invalid")
-    for where, value in (("external", external_interface), ("nms", nms_interface)):
-        if value and not INTERFACE.fullmatch(value):
-            raise ValueError(f"network.interfaces.{where} is invalid")
-    populated_interfaces = [item for item in (internal_interface, external_interface, nms_interface) if item]
+    if external_interface and not INTERFACE.fullmatch(external_interface):
+        raise ValueError("network.interfaces.external is invalid")
+    populated_interfaces = [item for item in (internal_interface, external_interface) if item]
     if len(populated_interfaces) != len(set(populated_interfaces)):
-        raise ValueError("network internal/external/NMS interfaces must be distinct")
+        raise ValueError("network internal/external interfaces must be distinct")
 
-    # NMS_MODE 가 disabled 면 interfaces.nms 는 반드시 비어야 한다(아래 검사). 그래서
-    # "NMS 용으로 미리 꽂아 두었지만 아직 활성화하지 않은 NIC" 은 계약에 적을 자리가 없다.
-    # 그런 NIC 도 공인 주소를 갖고 있으면 관리 포트는 막아야 하고, 계약에 없으면
+    # 계약상 역할이 없더라도 공인 주소를 받을 수 있는 NIC은 관리 포트를 막아야 한다.
+    # 그런 NIC이 계약에 없으면
     # guard 재설치(--apply 는 체인을 flush 한다) 때 조용히 보호가 빠진다.
-    # NMS 를 실제로 켤 때는 이 목록에서 빼고 interfaces.nms 로 옮긴다.
     guarded_interfaces = [str(item).strip() for item in (interfaces.get("guarded") or [])]
     guarded_interfaces = [item for item in guarded_interfaces if item]
     for value in guarded_interfaces:
@@ -167,20 +153,9 @@ def settings(spec: dict) -> dict:
     # 내부망 NIC 을 막으면 etcd/apiserver/kubelet 이 끊겨 클러스터가 죽는다.
     if internal_interface in guarded_interfaces:
         raise ValueError("network.interfaces.guarded must not contain the internal interface")
-    already_guarded = {item for item in (external_interface, nms_interface) if item}
+    already_guarded = {external_interface} if external_interface else set()
     if already_guarded & set(guarded_interfaces):
         raise ValueError("network.interfaces.guarded must list only additional interfaces")
-
-    nms = net.get("nms") or {}
-    mode = nms_mode(nms)
-    configured_nms_interface = str(nms.get("interface") or "").strip()
-    if mode == "network":
-        if not nms_interface or configured_nms_interface != nms_interface:
-            raise ValueError(
-                "network mode requires network.interfaces.nms and network.nms.interface to match"
-            )
-    elif nms_interface or configured_nms_interface:
-        raise ValueError("disabled/api NMS mode must not configure an NMS interface")
 
     allowed_ports = net.get("allowedPorts") or {}
     port_sets: dict[str, list[int]] = {}
@@ -282,11 +257,9 @@ def settings(spec: dict) -> dict:
         "rfc2136_update": rfc2136_update,
         "recursive_nameservers": recursive_nameservers,
         "cert_manager_placement": cert_manager_placement,
-        "nms": nms,
         "interfaces": {
             "internal": internal_interface,
             "external": external_interface,
-            "nms": nms_interface,
             "guarded": guarded_interfaces,
         },
         "allowed_ports": port_sets,
@@ -359,19 +332,14 @@ def render_proxy_env(cfg: dict) -> str:
 
 
 def render_firewall_env(cfg: dict) -> str:
-    nms_port = ""
-    if nms_mode(cfg["nms"]) == "network":
-        nms_port = str(valid_port(cfg["nms"].get("port"), "network.nms.port"))
     values = {
         "INTERNAL_INTERFACE": cfg["interfaces"]["internal"],
         "EXTERNAL_INTERFACE": cfg["interfaces"]["external"],
-        "NMS_INTERFACE": cfg["interfaces"]["nms"],
         "GUARDED_INTERFACES": ",".join(cfg["interfaces"]["guarded"]),
         "INTERNAL_ALLOWED_TCP_PORTS": ",".join(map(str, cfg["allowed_ports"]["internalTCP"])),
         "INTERNAL_ALLOWED_UDP_PORTS": ",".join(map(str, cfg["allowed_ports"]["internalUDP"])),
         "EXTERNAL_ALLOWED_TCP_PORTS": ",".join(map(str, cfg["allowed_ports"]["externalTCP"])),
         "EXTERNAL_ALLOWED_UDP_PORTS": "",
-        "NMS_ALLOWED_TCP_PORTS": nms_port,
     }
     return (
         "# Generated by scripts/site/render-network.py. Contains no credentials.\n"
@@ -508,36 +476,6 @@ def render_coredns(cfg: dict) -> str:
             ],
         }
     ]
-    nms = cfg["nms"]
-    if nms_mode(nms) != "disabled" and str(nms.get("internalDomain") or "").strip():
-        zone = str(nms["internalDomain"]).strip().rstrip(".")
-        if not DOMAIN.fullmatch(zone):
-            raise ValueError("network.nms.internalDomain is invalid")
-        dns_servers = [str(item).strip() for item in nms.get("dnsServers") or []]
-        if not dns_servers:
-            raise ValueError("network.nms.dnsServers is required for internalDomain")
-        for index, item in enumerate(dns_servers):
-            host, separator, raw_port = item.rpartition(":")
-            if not separator:
-                raise ValueError(
-                    "network.nms.dnsServers entries must be <IPv4>:<port>"
-                )
-            address(host, f"network.nms.dnsServers[{index}]")
-            valid_port(raw_port, f"network.nms.dnsServers[{index}]")
-        servers.append(
-            {
-                "zones": [{"zone": zone}],
-                "port": 53,
-                "plugins": [
-                    {"name": "errors"},
-                    {"name": "cache", "parameters": "30"},
-                    {
-                        "name": "forward",
-                        "parameters": f". {','.join(dns_servers)}",
-                    },
-                ],
-            }
-        )
     resource = {
         "apiVersion": "helm.cattle.io/v1",
         "kind": "HelmChartConfig",
@@ -549,122 +487,6 @@ def render_coredns(cfg: dict) -> str:
     return (
         "# Generated by scripts/site/render-network.py. Do not edit.\n"
         + yaml.safe_dump(resource, sort_keys=False)
-    )
-
-
-def render_nms_env(cfg: dict) -> str:
-    nms = cfg["nms"]
-    mode = nms_mode(nms)
-    values = {
-        "NMS_MODE": mode,
-        "NMS_DESTINATION_CIDR": str(nms.get("destinationCIDR") or ""),
-        "NMS_PORT": str(nms.get("port") or 0),
-        "NMS_GATEWAY_INTERNAL_IP": str(nms.get("gatewayInternalIP") or ""),
-        "NMS_INTERFACE": str(nms.get("interface") or ""),
-        "NMS_GATEWAY_IP": str(nms.get("gatewayIP") or ""),
-        "NMS_NEXT_HOP": str(nms.get("nextHop") or ""),
-        "NMS_API_BASE_URL": str(nms.get("apiBaseURL") or ""),
-        "POD_CIDR": str(cfg["pod_cidrs"][0]),
-    }
-    allowed_apps = [str(item).strip() for item in nms.get("allowedApps") or []]
-    if mode == "disabled":
-        populated = [
-            key
-            for key in (
-                "NMS_DESTINATION_CIDR",
-                "NMS_GATEWAY_INTERNAL_IP",
-                "NMS_INTERFACE",
-                "NMS_GATEWAY_IP",
-                "NMS_NEXT_HOP",
-                "NMS_API_BASE_URL",
-            )
-            if values[key]
-        ]
-        if values["NMS_PORT"] != "0":
-            populated.append("NMS_PORT")
-        if allowed_apps:
-            populated.append("allowedApps")
-        if str(nms.get("internalDomain") or "").strip() or nms.get("dnsServers"):
-            populated.append("internalDomain/dnsServers")
-        if populated:
-            raise ValueError(
-                "network.nms.mode=disabled requires mode-specific fields to stay empty: "
-                + ", ".join(populated)
-            )
-    else:
-        destination = network(
-            values["NMS_DESTINATION_CIDR"], "network.nms.destinationCIDR"
-        )
-        if destination.prefixlen == 0:
-            raise ValueError("network.nms.destinationCIDR must not be a default route")
-        selected_port = valid_port(values["NMS_PORT"], "network.nms.port")
-        if not allowed_apps or len(allowed_apps) != len(set(allowed_apps)):
-            raise ValueError("enabled NMS mode requires unique network.nms.allowedApps")
-        if any(not KUBE_NAME.fullmatch(item) for item in allowed_apps):
-            raise ValueError("network.nms.allowedApps contains an invalid app name")
-
-        internal_domain = str(nms.get("internalDomain") or "").strip()
-        dns_servers = nms.get("dnsServers") or []
-        if bool(internal_domain) != bool(dns_servers):
-            raise ValueError(
-                "network.nms.internalDomain and dnsServers must be configured together"
-            )
-
-    if mode == "network":
-        gateway_internal = address(
-            values["NMS_GATEWAY_INTERNAL_IP"], "network.nms.gatewayInternalIP"
-        )
-        if not any(gateway_internal in item for item in cfg["node_cidrs"]):
-            raise ValueError(
-                "network.nms.gatewayInternalIP must be inside nodeInternalCIDRs"
-            )
-        address(values["NMS_GATEWAY_IP"], "network.nms.gatewayIP")
-        address(values["NMS_NEXT_HOP"], "network.nms.nextHop")
-        if not INTERFACE.fullmatch(values["NMS_INTERFACE"]):
-            raise ValueError("network.nms.interface is invalid")
-        if values["NMS_API_BASE_URL"]:
-            raise ValueError("network NMS mode must not configure apiBaseURL")
-        if bool(nms.get("tokenRequired")):
-            raise ValueError("network NMS mode must not request an API token")
-    elif mode == "api":
-        route_values = [
-            values[key]
-            for key in (
-                "NMS_GATEWAY_INTERNAL_IP",
-                "NMS_INTERFACE",
-                "NMS_GATEWAY_IP",
-                "NMS_NEXT_HOP",
-            )
-        ]
-        if any(route_values):
-            raise ValueError("api NMS mode must not configure gateway/interface/SNAT fields")
-        parsed = urlsplit(values["NMS_API_BASE_URL"])
-        if (
-            parsed.scheme not in {"http", "https"}
-            or not parsed.hostname
-            or parsed.username
-            or parsed.password
-            or parsed.query
-            or parsed.fragment
-            or parsed.path not in {"", "/"}
-        ):
-            raise ValueError("network.nms.apiBaseURL must be an http(s) origin without credentials")
-        try:
-            effective_port = parsed.port or (443 if parsed.scheme == "https" else 80)
-        except ValueError as error:
-            raise ValueError("network.nms.apiBaseURL contains an invalid port") from error
-        if effective_port != selected_port:
-            raise ValueError("network.nms.apiBaseURL port must equal network.nms.port")
-        try:
-            endpoint_ip = ipaddress.ip_address(parsed.hostname)
-        except ValueError:
-            endpoint_ip = None
-        if endpoint_ip is not None and endpoint_ip not in destination:
-            raise ValueError("network.nms.apiBaseURL address must be inside destinationCIDR")
-    return (
-        "# Generated by scripts/site/render-network.py. Do not edit.\n"
-        + "\n".join(f"{key}={shlex.quote(value)}" for key, value in values.items())
-        + "\n"
     )
 
 
@@ -807,7 +629,6 @@ def rendered(spec: dict) -> dict[pathlib.Path, str]:
         OUTPUTS["proxy_env"]: render_proxy_env(cfg),
         OUTPUTS["firewall_env"]: render_firewall_env(cfg),
         OUTPUTS["policies"]: render_policies(cfg),
-        OUTPUTS["nms_env"]: render_nms_env(cfg),
         OUTPUTS["coredns"]: render_coredns(cfg),
         OUTPUTS["cert_manager_application"]: render_cert_manager_application(cfg),
         OUTPUTS["keycloak_proxy"]: render_keycloak_proxy(cfg),

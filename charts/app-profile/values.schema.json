@@ -656,15 +656,6 @@
               "port": { "type": "integer", "minimum": 1, "maximum": 65535 }
             }
           }
-        },
-        "nms": {
-          "type": "object",
-          "additionalProperties": false,
-          "properties": {
-            "enabled": { "type": "boolean" },
-            "destinationCIDR": { "type": "string" },
-            "port": { "type": "integer", "minimum": 0, "maximum": 65535 }
-          }
         }
       }
     }

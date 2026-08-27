@@ -17,11 +17,6 @@ print(spec["gateway"]["vip"])
 print(spec["gateway"]["name"])
 print(app["project"])
 print(spec["baseDomain"])
-nms = spec["network"].get("nms") or {}
-print(str(nms.get("mode") or "disabled"))
-print(",".join(str(item) for item in nms.get("allowedApps") or []))
-print(str(nms.get("destinationCIDR") or ""))
-print(str(nms.get("port") or 0))
 namespaces = (spec.get("network") or {}).get("defaultDenyNamespaces") or []
 print(str(namespaces[0]) if len(namespaces) == 1 else "")
 storage = (spec.get("appGroups") or {}).get("storage") or {}
@@ -34,13 +29,9 @@ GATEWAY_VIP=${SITE_VALUES[1]}
 GATEWAY_NAME=${SITE_VALUES[2]}
 APP_PROJECT=${SITE_VALUES[3]}
 BASE_DOMAIN=${SITE_VALUES[4]}
-NMS_MODE=${SITE_VALUES[5]}
-NMS_ALLOWED_APPS=${SITE_VALUES[6]}
-NMS_DESTINATION_CIDR=${SITE_VALUES[7]}
-NMS_PORT=${SITE_VALUES[8]}
-PORTAL_NAMESPACE=${SITE_VALUES[9]}
-APP_GROUP_VOLUME_SIZE=${SITE_VALUES[10]}
-APP_GROUP_STORAGE_CLASS=${SITE_VALUES[11]}
+PORTAL_NAMESPACE=${SITE_VALUES[5]}
+APP_GROUP_VOLUME_SIZE=${SITE_VALUES[6]}
+APP_GROUP_STORAGE_CLASS=${SITE_VALUES[7]}
 # cluster-scoped/ESO 이름은 project/environment를 포함한 canonical tuple의 hash다.
 # 사이트 계약을 바꿔도 research/beta 시절 golden suffix를 기대하지 않도록 Chart/Go와 같은
 # prefix|canonical 공식을 시험 입력에도 적용한다.
@@ -1012,36 +1003,12 @@ fi
 
 helm template portal-lite charts/app-profile -n "$PORTAL_NAMESPACE" -f $CONTRACT \
   -f apps/portal-lite/values-beta.yaml >$TMP/portal.yaml
-portal_nms_label_ok=false
-if [[ ${NMS_MODE} != disabled && ,${NMS_ALLOWED_APPS}, == *,portal-lite,* ]]; then
-  if grep -q 'nms-access: "true"' $TMP/portal.yaml \
-     && grep -q "cidr: \"${NMS_DESTINATION_CIDR}\"" $TMP/portal.yaml \
-     && grep -q "port: ${NMS_PORT}" $TMP/portal.yaml; then
-    portal_nms_label_ok=true
-  fi
-else
-  ! grep -q 'nms-access: "true"' $TMP/portal.yaml && portal_nms_label_ok=true
-fi
 if grep -q '^kind: NetworkPolicy$' $TMP/portal.yaml \
    && grep -q "cidr: \"${GATEWAY_VIP}/32\"" $TMP/portal.yaml \
-   && grep -q "gateway.envoyproxy.io/owning-gateway-name: ${GATEWAY_NAME}" $TMP/portal.yaml \
-   && [[ ${portal_nms_label_ok} == true ]]; then
-  echo "[OK]   Portal 기본 egress와 NMS 선택 라벨 일치"; PASS=$((PASS+1))
+   && grep -q "gateway.envoyproxy.io/owning-gateway-name: ${GATEWAY_NAME}" $TMP/portal.yaml; then
+  echo "[OK]   Portal 기본 egress 정책 일치"; PASS=$((PASS+1))
 else
   echo "[FAIL] Portal egress 정책 불일치"; FAILED=$((FAILED+1))
-fi
-
-helm template nms-app charts/app-profile -f $CONTRACT \
-  -f apps/hello/values-beta.yaml \
-  --set networkPolicy.nms.enabled=true \
-  --set networkPolicy.nms.destinationCIDR=192.0.2.0/24 \
-  --set networkPolicy.nms.port=8443 >$TMP/nms-rendered.yaml
-if grep -q 'nms-access: "true"' $TMP/nms-rendered.yaml \
-   && grep -q 'cidr: "192.0.2.0/24"' $TMP/nms-rendered.yaml \
-   && grep -q 'port: 8443' $TMP/nms-rendered.yaml; then
-  echo "[OK]   NMS 앱만 라벨과 목적지/포트 허용"; PASS=$((PASS+1))
-else
-  echo "[FAIL] NMS 선택 정책 불일치"; FAILED=$((FAILED+1))
 fi
 # 모든 오브젝트는 metadata.namespace 를 명시해야 한다.
 # kubectl/argocd 의 기본 Namespace 나 helm -n 생략에 따라 배포 대상이 바뀌면 안 된다.

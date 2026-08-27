@@ -37,7 +37,7 @@ describe("Keycloak token mapping", () => {
     const newAccessToken = jwt({
       sub: "user-123",
       realm_access: { roles: ["viewer"] },
-      resource_access: { "portal-beta": { roles: ["nms:read"] } },
+      resource_access: { "portal-beta": { roles: ["deployments:read"] } },
     });
     const fetcher = vi.fn(async () =>
       new Response(
@@ -75,7 +75,7 @@ describe("Keycloak token mapping", () => {
     expect(result.idToken).toBe("rotated-id-token");
     expect(result.accessTokenExpiresAt).toBe(121_000);
     expect(result.realmRoles).toEqual(["viewer"]);
-    expect(result.clientRoles).toEqual(["nms:read"]);
+    expect(result.clientRoles).toEqual(["deployments:read"]);
     expect(fetcher).toHaveBeenCalledWith(
       "https://sso.example.test/realms/platform/protocol/openid-connect/token",
       expect.objectContaining({

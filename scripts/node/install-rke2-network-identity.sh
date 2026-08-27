@@ -6,10 +6,8 @@ ROLE=
 INTERNAL_IP=
 INTERNAL_INTERFACE=eth0
 EXTERNAL_INTERFACE=
-NMS_INTERFACE=
 INTERNAL_MAC=
 EXTERNAL_MAC=
-NMS_MAC=
 SERVER_URL=
 SERVICE_CIDR=10.43.0.0/16
 APPLY=false
@@ -20,10 +18,8 @@ while (($#)); do
     --internal-ip) INTERNAL_IP=${2:-}; shift ;;
     --internal-interface) INTERNAL_INTERFACE=${2:-}; shift ;;
     --external-interface) EXTERNAL_INTERFACE=${2:-}; shift ;;
-    --nms-interface) NMS_INTERFACE=${2:-}; shift ;;
     --internal-mac) INTERNAL_MAC=${2:-}; shift ;;
     --external-mac) EXTERNAL_MAC=${2:-}; shift ;;
-    --nms-mac) NMS_MAC=${2:-}; shift ;;
     --server-url) SERVER_URL=${2:-}; shift ;;
     --service-cidr) SERVICE_CIDR=${2:-}; shift ;;
     --apply) APPLY=true ;;
@@ -32,9 +28,9 @@ while (($#)); do
 usage: sudo scripts/node/install-rke2-network-identity.sh \
   --role server|agent --internal-ip <IPv4> \
   [--internal-interface eth0] [--external-interface eth1] \
-  [--nms-interface eth2] [--server-url https://<internal-ip>:9345] \
+  [--server-url https://<internal-ip>:9345] \
   [--service-cidr 10.43.0.0/16] [--apply] \
-  [--internal-mac <MAC>] [--external-mac <MAC>] [--nms-mac <MAC>]
+  [--internal-mac <MAC>] [--external-mac <MAC>]
 
 --*-mac은 선택이다. 값을 주면 그 이름의 NIC이 실제로 그 MAC인지 확인하고 다르면
 설치를 멈춘다. 이름이 여전히 실제 식별자이고 MAC은 오결선/이름 밀림을 잡는 단언이다.
@@ -154,18 +150,6 @@ if [[ -n ${EXTERNAL_INTERFACE} ]]; then
     echo "[FAIL] IPv4 default route가 ${EXTERNAL_INTERFACE}에 없음" >&2
     exit 1
   }
-fi
-
-if [[ -n ${NMS_INTERFACE} ]]; then
-  [[ ${NMS_INTERFACE} != "${INTERNAL_INTERFACE}" && ${NMS_INTERFACE} != "${EXTERNAL_INTERFACE}" ]] || {
-    echo "[FAIL] NMS interface는 내부망/외부망과 달라야 함" >&2
-    exit 1
-  }
-  ip link show "${NMS_INTERFACE}" >/dev/null 2>&1 || {
-    echo "[FAIL] NMS interface가 없음: ${NMS_INTERFACE}" >&2
-    exit 1
-  }
-  assert_mac "${NMS_INTERFACE}" "${NMS_MAC}"
 fi
 
 content="node-ip: ${INTERNAL_IP}"

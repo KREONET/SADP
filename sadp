@@ -19,11 +19,12 @@ cd "${ROOT}"
 # 명령|실행기|경로|설명 (그룹은 GROUP: 줄로 나눈다)
 COMMANDS=$(
   cat <<'TABLE'
-GROUP:install — site.env 기반 통합 설치
+GROUP:install — site.env 기반·대화형 통합 설치
 install|bash|scripts/install/sadp-install.sh|render/node/cluster phase를 검증된 env 값으로 자동 실행
+install-wizard|python3|scripts/install/sadp-install-wizard.py|질문과 답변으로 site.env를 만들고 같은 설치 phase 실행
 GROUP:site — 계약과 생성물 (워크스테이션, 클러스터 불필요)
 configure-site|python3|scripts/site/configure-site.py|site.env -> 계약. 기본 read-only, --write 필요
-render-network|python3|scripts/site/render-network.py|계약 -> Squid/방화벽/CoreDNS/NMS/cert-manager egress
+render-network|python3|scripts/site/render-network.py|계약 -> Squid/방화벽/CoreDNS/cert-manager egress
 render-exposure|python3|scripts/site/render-exposure.py|계약 -> D4 노출과 D5 TLS
 render-rancher|python3|scripts/site/render-rancher.py|계약 -> Rancher Project와 RBAC
 render-quota|python3|scripts/site/render-quota.py|계약 -> ResourceQuota/LimitRange
@@ -33,15 +34,14 @@ portal-ui-env|python3|scripts/site/portal-ui-build-env.py|루트 .env에서 허�
 GROUP:node — 각 노드에서 root. --apply 없이 먼저 계획을 읽어라
 install-node-config|bash|scripts/node/install-rke2-node-config.sh|생성된 RKE2 config를 /etc/rancher/rke2에 반영
 install-network-identity|bash|scripts/node/install-rke2-network-identity.sh|내부망 NIC에 RKE2 고정
-install-interface-guard|bash|scripts/node/install-rke2-interface-guard.sh|공인/NMS NIC의 관리 포트 차단
+install-interface-guard|bash|scripts/node/install-rke2-interface-guard.sh|공인 NIC의 관리 포트 차단
 install-containerd-proxy|bash|scripts/node/install-rke2-containerd-proxy.sh|containerd image pull만 Squid 경유
 install-docker-proxy|bash|scripts/node/install-docker-proxy.sh|control-plane Docker image pull을 Squid 경유
 install-squid|bash|scripts/node/install-squid-egress.sh|allowlist Squid proxy 설치
-install-nms-egress|bash|scripts/node/install-nms-egress.sh|고정 출발지 NMS 경로를 systemd unit으로
-configure-nms-egress|bash|scripts/node/configure-nms-egress.sh|렌더된 host route/rp_filter 적용
 GROUP:cluster — control-plane에서 root. 클러스터 전체
 bootstrap|bash|scripts/cluster/bootstrap-testbed.sh|전체 설치 진입점(아래 단계를 순서대로)
 preflight|bash|scripts/cluster/preflight.sh|3노드 RKE2와 기본 StorageClass 실검증
+install-local-path-storage|bash|scripts/cluster/install-local-path-storage.sh|StorageClass 부재 시 local-path provisioner 설치
 install-devtron|bash|scripts/cluster/install-devtron.sh|Devtron/번들 Argo CD 계획, 부재 시 설치, 동일 버전 failed 복구
 install-platform|bash|scripts/cluster/install-testbed-platform.sh|인증서/3노드/OpenBao/ESO/Reloader/Keycloak
 configure-keycloak|bash|scripts/cluster/configure-keycloak.sh|이미 실행 중인 in-cluster/external Keycloak 계약 수렴

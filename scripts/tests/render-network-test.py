@@ -3,7 +3,6 @@
 
 from __future__ import annotations
 
-import ipaddress
 import pathlib
 import shutil
 import subprocess
@@ -23,31 +22,6 @@ def contract(root: pathlib.Path) -> dict:
     return yaml.safe_load(
         (root / "contracts/platform-production.yaml").read_text(encoding="utf-8")
     )["spec"]
-
-
-def free_node_address(spec: dict) -> str:
-    """Pick a node-CIDR address that no contract role already claims."""
-    network = spec["network"]
-    taken = {
-        *(str(item) for item in network.get("nodeAddresses") or []),
-        *(str(item) for item in network.get("kubernetesAPIAddresses") or []),
-        str(network["squid"]["internalIP"]),
-        str(spec["gateway"]["vip"]),
-    }
-    pool = str(spec["gateway"].get("addressPoolRange") or "")
-    if "-" in pool:
-        start, _, end = pool.partition("-")
-        start_ip = ipaddress.ip_address(start.strip())
-        end_ip = ipaddress.ip_address(end.strip())
-    else:
-        start_ip = end_ip = None
-    for candidate in ipaddress.ip_network(network["nodeInternalCIDRs"][0]).hosts():
-        if str(candidate) in taken:
-            continue
-        if start_ip is not None and start_ip <= candidate <= end_ip:
-            continue
-        return str(candidate)
-    raise RuntimeError("nodeInternalCIDRs에 사용 가능한 주소가 없다")
 
 
 def workspace() -> pathlib.Path:
@@ -122,9 +96,6 @@ def default_outputs(root: pathlib.Path) -> str:
         line for line in squid.splitlines() if not line.lstrip().startswith("#")
     ):
         return "ssl_bump가 활성화됨"
-    nms = (root / "platform/network/nms-egress.env").read_text(encoding="utf-8")
-    if "NMS_MODE=disabled" not in nms:
-        return "미확정 NMS가 활성화됨"
     policies = list(
         yaml.safe_load_all(
             (root / "platform/network/egress-policies.yaml").read_text(encoding="utf-8")
@@ -166,24 +137,6 @@ def default_outputs(root: pathlib.Path) -> str:
     return ""
 
 
-def enable_network_nms(spec: dict) -> None:
-    spec["network"]["interfaces"]["nms"] = "nms0"
-    spec["network"]["nms"].update(
-        {
-            "mode": "network",
-            "allowedApps": ["portal-lite"],
-            "destinationCIDR": "192.0.2.0/24",
-            "port": 8443,
-            "gatewayInternalIP": free_node_address(spec),
-            "interface": "nms0",
-            "gatewayIP": "172.20.0.10",
-            "nextHop": "172.20.0.1",
-            "internalDomain": "nms.internal",
-            "dnsServers": ["172.20.0.53:53"],
-        }
-    )
-
-
 def enable_identity_provider(spec: dict) -> None:
     spec["network"]["squid"]["identityProviderDomains"] = [
         ".idp.example.org",
@@ -199,61 +152,6 @@ def identity_provider_outputs(root: pathlib.Path) -> str:
         return "IdP CONNECT 허용 규칙 누락"
     if "idp_domains !CONNECT" in squid:
         return "IdP 평문 HTTP가 허용됨"
-    return ""
-
-
-def enabled_outputs(root: pathlib.Path) -> str:
-    squid = (root / "platform/network/squid/squid.conf").read_text(encoding="utf-8")
-    if "dns_provider_domains" in squid:
-        return "RFC2136 전용 구성에 DNS provider Squid ACL이 생성됨"
-    nms = (root / "platform/network/nms-egress.env").read_text(encoding="utf-8")
-    for required in (
-        "NMS_MODE=network",
-        "NMS_DESTINATION_CIDR=192.0.2.0/24",
-        "NMS_PORT=8443",
-        "NMS_INTERFACE=nms0",
-    ):
-        if required not in nms:
-            return f"NMS env 누락: {required}"
-    coredns = (root / "platform/dns/rke2-coredns-config.yaml").read_text(
-        encoding="utf-8"
-    )
-    if "nms.internal" not in coredns or "172.20.0.53:53" not in coredns:
-        return "CoreDNS NMS 조건부 forward 누락"
-    return ""
-
-
-def enable_api_nms(spec: dict) -> None:
-    spec["network"]["interfaces"]["nms"] = ""
-    spec["network"]["nms"].update(
-        {
-            "mode": "api",
-            "allowedApps": ["portal-lite"],
-            "destinationCIDR": "192.0.2.0/24",
-            "port": 8443,
-            "gatewayInternalIP": "",
-            "interface": "",
-            "gatewayIP": "",
-            "nextHop": "",
-            "internalDomain": "",
-            "dnsServers": [],
-            "apiBaseURL": "https://192.0.2.20:8443",
-        }
-    )
-
-
-def api_outputs(root: pathlib.Path) -> str:
-    nms = (root / "platform/network/nms-egress.env").read_text(encoding="utf-8")
-    for required in (
-        "NMS_MODE=api",
-        "NMS_DESTINATION_CIDR=192.0.2.0/24",
-        "NMS_PORT=8443",
-        "NMS_API_BASE_URL=https://192.0.2.20:8443",
-    ):
-        if required not in nms:
-            return f"NMS API env 누락: {required}"
-    if "NMS_INTERFACE=nms0" in nms:
-        return "API 모드가 전용 NMS interface를 렌더함"
     return ""
 
 
@@ -305,32 +203,8 @@ def rfc2136_outputs(root: pathlib.Path) -> str:
 
 case("NW-01 기본 계약은 최소 egress 산출물을 생성", None, True, default_outputs)
 case("NW-01a 선택한 IdP 도메인은 HTTPS 전용 ACL로 렌더", enable_identity_provider, True, identity_provider_outputs)
-case("NW-02 전용 망/포트 NMS 값 렌더", enable_network_nms, True, enabled_outputs)
-case(
-    "NW-03 NMS default route 거부",
-    lambda spec: (
-        enable_network_nms(spec),
-        spec["network"]["nms"].update({"destinationCIDR": "0.0.0.0/0"}),
-    ),
-    False,
-)
-case(
-    "NW-04 부분 NMS 입력 거부",
-    lambda spec: spec["network"]["nms"].update({"mode": "network"}),
-    False,
-)
 case("NW-05 미생성 상태의 --check 실패", None, False, arguments=("--check",))
 case("NW-06 RFC2136 DNS UPDATE 목적지만 허용", enable_rfc2136, True, rfc2136_outputs)
-case("NW-07 NMS API 직접 연결 값 렌더", enable_api_nms, True, api_outputs)
-case(
-    "NW-08 API 모드에서 전용 gateway 필드 거부",
-    lambda spec: (
-        enable_api_nms(spec),
-        spec["network"]["nms"].update({"gatewayIP": "192.0.2.10"}),
-    ),
-    False,
-)
-
 case(
     "NW-09 IdP 도메인과 package 도메인 중복 거부",
     lambda spec: spec["network"]["squid"]["identityProviderDomains"].append(

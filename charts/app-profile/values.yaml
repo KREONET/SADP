@@ -209,7 +209,3 @@ networkPolicy:
     # true 로 켜면 여기 적힌 앱과 (외부 노출이면) Gateway 외에는 이 앱에 닿지 못한다.
     enabled: null
     allowedApps: []
-  nms:
-    enabled: false
-    destinationCIDR: ""
-    port: 0

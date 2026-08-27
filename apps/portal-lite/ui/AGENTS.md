@@ -50,7 +50,6 @@ app/
 ├── globals.css                # 레거시 화면 전용 CSS (Tailwind 아님)
 ├── api/
 │   ├── auth/[...nextauth]/    # next-auth 핸들러
-│   └── nms/status/            # NMS 상태 프록시 (서버 전용, 역할 검사)
 ├── (legacy)/                  # 기존 운영 화면 — 건드리지 말 것
 │   ├── layout.tsx             #   globals.css 를 여기서만 로드
 │   ├── portal/ account/ login/
@@ -175,7 +174,6 @@ appGroups:          "/api/v1/app-groups",
 | `NEXT_PUBLIC_SSO_BASE_URL`, `NEXT_PUBLIC_SSO_REALM` | 화면4-5 Step4(OIDC), 화면7 카탈로그 |
 | `NEXT_PUBLIC_PAAS_APP_DOMAIN` | 배포 앱 호스트명 placeholder |
 | `AUTH_KEYCLOAK_ID/ISSUER/SECRET`, `AUTH_SECRET` | 서버 전용. 브라우저로 나가면 안 된다 |
-| `NMS_API_BASE_URL/STATUS_PATH/TOKEN/REQUIRED_ROLE` | `app/api/nms/status` (미설정 시 503) |
 | `PAAS_DEV_AUTH_BYPASS` / `PAAS_DEV_USER` / `PAAS_DEV_ROLES` | **개발 전용 로그인 우회**(아래 §6.1). 배포 values 에 넣으면 `ci-guard.sh` 가 막는다 |
 
 - `NEXT_PUBLIC_` 접두사가 없는 값은 **절대 클라이언트 컴포넌트에서 참조하지 마라.**

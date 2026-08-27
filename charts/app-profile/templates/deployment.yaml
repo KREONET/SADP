@@ -93,9 +93,6 @@ spec:
       labels:
         {{- include "app-profile.labels" . | nindent 8 }}
         platform.example.io/network-policy: managed
-        {{- if .Values.networkPolicy.nms.enabled }}
-        nms-access: "true"
-        {{- end }}
     spec:
       {{- if .Values.rbac.enabled }}
       serviceAccountName: {{ include "app-profile.serviceAccountName" . }}

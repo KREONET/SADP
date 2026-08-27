@@ -133,9 +133,5 @@ networkPolicy:
   - cidr: 10.20.30.11/32
     protocol: TCP
     port: 3128
-  nms:
-    enabled: false
-    destinationCIDR: ''
-    port: 0
 imagePullSecrets:
 - forgejo-registry-pull

@@ -80,7 +80,6 @@ spec:
     interfaces:
       internal: eth0
       external: eth1
-      nms: ''
       guarded: []
     allowedPorts:
       internalTCP:
@@ -148,22 +147,6 @@ spec:
       - prod-registry-k8s-io-ap-northeast-1.s3.dualstack.ap-northeast-1.amazonaws.com
       identityProviderDomains: []
       dnsProviderEndpoints: []
-    nms:
-      mode: disabled
-      allowedApps: []
-      destinationCIDR: ''
-      port: 0
-      gatewayInternalIP: ''
-      interface: ''
-      gatewayIP: ''
-      nextHop: ''
-      internalDomain: ''
-      dnsServers: []
-      apiBaseURL: ''
-      statusPath: /status
-      requiredRole: nms:read
-      tokenRequired: false
-      tokenSecretKey: NMS_API_TOKEN
     clusterUpstreamDNS: 10.20.30.11:53
   public:
     mode: nat

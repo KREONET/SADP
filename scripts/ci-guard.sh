@@ -1201,35 +1201,6 @@ if systems:
     else:
         ok(f"시스템 {len(systems)}개 도메인/Namespace/Keycloak 계약 정상")
 
-# NMS는 비활성, 전용 망/포트, API 호출 중 하나만 선택한다.
-nms = (contract["spec"].get("network") or {}).get("nms") or {}
-nms_mode = str(nms.get("mode") or "")
-if nms_mode not in ("disabled", "network", "api"):
-    bad("spec.network.nms.mode 는 disabled, network 또는 api 이어야 한다")
-else:
-    common_values = (
-        bool(nms.get("allowedApps")),
-        bool(str(nms.get("destinationCIDR") or "")),
-        1 <= int(nms.get("port") or 0) <= 65535,
-    )
-    common_populated = any(common_values)
-    common_complete = all(common_values)
-    network_values = tuple(
-        bool(str(nms.get(key) or ""))
-        for key in ("gatewayInternalIP", "interface", "gatewayIP", "nextHop")
-    )
-    network_populated = any(network_values)
-    network_complete = all(network_values)
-    api_populated = bool(str(nms.get("apiBaseURL") or ""))
-    if nms_mode == "disabled" and (common_populated or network_populated or api_populated):
-        bad("NMS disabled 모드에 활성 모드 필드가 남아 있다")
-    elif nms_mode == "network" and (not common_complete or not network_complete or api_populated):
-        bad("NMS network 모드는 목적지/port/전용망 필드만 완전하게 입력해야 한다")
-    elif nms_mode == "api" and (not common_complete or network_populated or not api_populated):
-        bad("NMS api 모드는 목적지/port/apiBaseURL만 입력하고 전용망 필드를 비워야 한다")
-    else:
-        ok(f"NMS 모드 계약 정상({nms_mode})")
-
 # 공인 DNS 레코드는 baseDomain 과 시스템 도메인을 벗어날 수 없고, 각 도메인의 wildcard 와
 # apex 를 모두 덮어야 한다. 시스템 도메인은 baseDomain 의 서브도메인이므로 같은 zone/TSIG 로
 # 발급되지만, A 레코드 자체는 각 도메인 이름으로 별도로 있어야 한다.

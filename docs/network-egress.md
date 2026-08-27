@@ -1,10 +1,10 @@
-# SADP 네트워크·egress·NMS 운영 안내
+# SADP 네트워크·egress 운영 안내
 
-> 대상: 다중 NIC, Squid, CoreDNS, cert-manager, NMS 경로를 운영하는 관리자
+> 대상: 다중 NIC, Squid, CoreDNS, cert-manager 경로를 운영하는 관리자
 > 입력 기준: `site.env` → 계약 → `render-network.py`
 
 SADP는 RKE2 Canal(Flannel VXLAN + Calico NetworkPolicy)을 사용합니다. Worker의 일반 인터넷
-직접 egress는 열지 않고 승인된 HTTP(S)는 Squid, NMS는 별도 고정 경로 또는 승인 API로 보냅니다.
+직접 egress는 열지 않고 승인된 HTTP(S)는 Squid로 보냅니다.
 
 ## 1. 통신 경계
 
@@ -17,14 +17,10 @@ cert-manager controller
   ├─ Kubernetes API/CoreDNS 직접
   ├─ Squid → ACME HTTPS
   └─ RFC2136 authoritative DNS IPv4:port 직접
-
-NMS 허용 Pod
-  ├─ network mode → 내부 NIC → NMS gateway → 고정 SNAT → 전용 NIC
-  └─ api mode     → 기존 route → 승인된 destination CIDR/port
 ```
 
-Squid와 NMS 경로는 섞지 않습니다. 기본 Kubernetes NetworkPolicy는 FQDN allowlist를 제공하지
-않으므로 앱의 `web` mode는 내부 대역을 제외한 TCP 80/443 포트 정책입니다.
+기본 Kubernetes NetworkPolicy는 FQDN allowlist를 제공하지 않으므로 앱의 `web` mode는 내부
+대역을 제외한 TCP 80/443 포트 정책입니다.
 
 ## 2. 설정과 생성
 
@@ -40,7 +36,6 @@ Squid와 NMS 경로는 섞지 않습니다. 기본 Kubernetes NetworkPolicy는 F
 - CoreDNS upstream 내부 `<IPv4>:<port>`
 - Gateway VIP/pool, public IP, NAT/direct mode
 - RFC2136 update endpoint와 DNS-01 recursive resolver
-- 선택한 NMS mode의 목적지 CIDR/port와 mode 전용 값
 
 ```bash
 ip -br link
@@ -59,11 +54,11 @@ bash ./sadp --test
 ## 3. 다중 NIC와 RKE2 identity
 
 `INTERNAL_INTERFACE` 이름은 RKE2 node IP, server bind/advertise address와 Canal
-`flannel.iface`에 사용됩니다. `EXTERNAL_INTERFACE`, NMS NIC, guarded NIC에는 Kubernetes
+`flannel.iface`에 사용됩니다. `EXTERNAL_INTERFACE`와 guarded NIC에는 Kubernetes
 관리 port 차단이 적용됩니다.
 
 이름이 실제 식별자이며 MAC으로 대체할 수 없습니다. MAC은 노드마다 다르므로 site.env에 넣지
-않고, 개별 스크립트를 진단할 때 `--internal-mac`, `--external-mac`, `--nms-mac`으로 이름과 실제
+않고, 개별 스크립트를 진단할 때 `--internal-mac`, `--external-mac`으로 이름과 실제
 NIC의 일치만 단언합니다. 노드별 이름이 다르면 `systemd.link`로 먼저 통일합니다.
 
 통합 적용:
@@ -80,10 +75,10 @@ node phase가 자동 역할 판별 후 수행하는 일:
 - 해당 노드가 담당하면 Squid를 가장 먼저 설치·검증
 - 계약 소유 RKE2 config field 병합
 - 내부 NIC/IP identity와 Canal interface 고정
-- external/NMS/guarded NIC 관리 port guard 설치
+- external/guarded NIC 관리 port guard 설치
 - embedded containerd proxy 설정
 - control-plane이면 monitoring pull용 Docker daemon proxy 설정
-- 해당 노드가 담당하면 DNS forwarder, NMS unit 설치
+- 해당 노드가 담당하면 DNS forwarder 설치
 
 `SQUID_INTERNAL_IP`를 가진 노드의 node phase를 먼저 적용하고 `--install-squid --check`와
 `--verify-squid`를 통과시킨 뒤 다른 노드와 cluster phase로 진행합니다. cluster phase는
@@ -122,7 +117,7 @@ agent에는 `--server-url https://<RKE2_SERVER_INTERNAL_IPV4>:9345`를 추가합
 
 ## 4. interface guard
 
-external/NMS/guarded NIC에서 API 6443, supervisor 9345, etcd 2379/2380, kubelet 10250 등 계약의
+external/guarded NIC에서 API 6443, supervisor 9345, etcd 2379/2380, kubelet 10250 등 계약의
 관리 TCP port를 IPv4/IPv6 모두 차단합니다. internal NIC은 guard 대상이 될 수 없습니다.
 
 ```bash
@@ -219,55 +214,7 @@ nameserver는 public `_acme-challenge` 권위 응답을 보기 위한 경로입�
 Squid와 DNS 경로를 먼저 준비하지 않으면 ACME Challenge가 실패합니다. 발급과 staging/production
 전환은 [DNS-01 안내](letsencrypt-dns01.md)에서 진행합니다.
 
-## 9. NMS mode
-
-`NMS_MODE`는 `disabled`, `network`, `api` 중 하나입니다.
-
-### disabled
-
-NMS allowed app, NIC, gateway, destination, URL 값을 비웁니다. 아직 역할이 없지만 public 주소를
-받을 수 있는 NMS 예정 NIC은 `GUARDED_INTERFACES`에 두고 실제 활성화 시 `NMS_INTERFACE`로
-옮깁니다.
-
-### network
-
-고정 destination CIDR/TCP port, NMS gateway node의 내부 IP, NMS NIC, 고정 SNAT IP, next-hop을
-모두 입력합니다. gateway unit은 policy route, loose rp_filter, 지정 port FORWARD와 고정 SNAT를
-적용하고 worker unit은 destination route와 Canal SNAT 예외를 적용합니다.
-
-통합 node apply가 해당 node IP에 따라 역할을 고릅니다. 개별 진단:
-
-```bash
-sudo bash ./sadp --install-nms-egress gateway
-sudo bash ./sadp --install-nms-egress worker
-
-systemctl status sadp-nms-egress@gateway.service
-systemctl status sadp-nms-egress@worker.service
-```
-
-기본 실행이 unit 설치입니다. RKE2/CNI upgrade로 iptables chain이 재생성되면 unit을 재시작해
-검증합니다. 단일 gateway는 장애 지점이며 HA는 이 installer 범위 밖입니다.
-
-### api
-
-전용 NIC/gateway/SNAT 값을 비우고 API base URL, destination CIDR, port를 입력합니다. 이 mode는
-NMS host unit을 설치하지 않고 AppProfile NetworkPolicy와 Portal 서버 전용 API 설정만 만듭니다.
-token이 필요하면 값은 OpenBao에 두고 site.env에는 Secret key 이름만 둡니다. 브라우저로 upstream
-URL이나 token을 반환하지 않습니다.
-
-### 앱 정책
-
-허용 앱에만 `nms-access: true` label과 목적지 CIDR/port NetworkPolicy가 생깁니다. 허용 Pod의
-성공뿐 아니라 미허용 Pod의 실패도 함께 검증합니다.
-
-```bash
-kubectl exec -n <NAMESPACE> <ALLOWED_POD> -- \
-  sh -c 'nc -z -w 5 <NMS_IPV4> <NMS_PORT>'
-kubectl exec -n <NAMESPACE> <DENIED_POD> -- \
-  sh -c '! nc -z -w 5 <NMS_IPV4> <NMS_PORT>'
-```
-
-## 10. 최종 검수
+## 9. 최종 검수
 
 control-plane에서:
 
@@ -291,8 +238,7 @@ systemctl status sadp-rke2-interface-guard.service
 | --- | --- | --- |
 | internal NIC | RKE2/etcd/API/kubelet/Canal, Squid | 승인되지 않은 경로 |
 | external NIC | Envoy TCP 80/443 | Kubernetes 관리 port, DB, 임의 ingress |
-| NMS NIC | 승인 destination/port와 반환 | 관리 port, 신규 inbound |
-| 앱 Pod | 선언한 DNS/internal/web/custom/NMS | 나머지 egress |
+| 앱 Pod | 선언한 DNS/internal/web/custom | 나머지 egress |
 
 NetworkPolicy는 Pod 정책일 뿐 node 자체의 direct 인터넷 차단을 대신하지 않습니다. 경계와 host
 방화벽에서 함께 검증합니다.

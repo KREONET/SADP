@@ -1,263 +1,36 @@
 # SADP 설치 가이드
 
-> 문서 경로: [문서 홈](README.md) → [관리자 가이드](administrator-guide.md) → 설치
-> 대상: 새 SADP 사이트를 구축하는 플랫폼 관리자
-> 결과: 기존 3노드 RKE2 위에 SADP 플랫폼과 기본 앱을 GitOps로 설치
+대상은 기존 3노드 RKE2 위에 SADP를 설치하는 플랫폼 관리자입니다. SADP는 운영체제와 RKE2 자체를
+설치하지 않습니다.
 
-이 문서는 `site.env` 기반 통합 설치기만 주 경로로 설명합니다. 개별 스크립트는 장애 복구와
-원인 분리를 위한 참조이며 정상 설치에서 순서대로 직접 조합하지 않습니다.
-
-> [!WARNING]
-> SADP는 운영체제와 RKE2 자체를 설치하지 않습니다. RKE2 server 1대와 worker 2대가 이미
-> `Ready`여야 합니다.
-
-## 설치 흐름
+## 전체 흐름
 
 ```text
 1. 선행 조건 확인
 2. site.env와 root 전용 Secret 파일 준비
+   ├─ 허용 주소 접속 테스트
+   └─ Squid 및 네트워크 패키지 설치 준비
 3. render 계획 → 생성 → 테스트 → commit/push
 4. Squid 담당 노드에 node phase를 먼저 적용하고 egress 검증
 5. 나머지 노드에 node phase 적용
-   → 사람이 노드별 RKE2 재시작/Ready 확인
-6. control-plane cluster phase에서 Squid 재검증
-   → Prometheus/Loki/Alloy 이미지 선배포
-   → Devtron/번들 Argo CD 보장 후 GitOps bootstrap
+   └─ 사람이 노드별 RKE2 재시작/Ready 확인
+6. control-plane cluster phase
+   ├─ Squid 재검증
+   ├─ Prometheus/Loki/Alloy 이미지 선배포
+   └─ Devtron/번들 Argo CD 보장 후 GitOps bootstrap
 7. staging → production TLS 진행값 반영
 8. 서비스 초기화·앱 배포
 9. acceptance와 인수인계
 ```
 
-`--phase all --apply`는 지원하지 않습니다. 노드 재시작 확인 전에 클러스터 단계를 실행하지
-못하도록 의도적으로 분리했습니다.
+`--apply`가 없으면 계획만 확인합니다. `--phase all --apply`는 node와 cluster 사이의 수동 재시작
+경계를 건너뛰므로 거부됩니다.
 
-## 1. 선행 조건
+## 설치 입력 방식 선택
 
-### 클러스터
+### 방법 A — site.env 기반 원툴 설치
 
-- RKE2 server 1대와 worker 2대가 모두 `Ready`
-- 기본 StorageClass 1개와 동작하는 dynamic provisioning
-- 각 노드의 내부 NIC 이름이 동일하거나 `systemd.link`로 통일됨
-- control-plane에서 worker로 관리자 작업이 가능한 네트워크 경로
-
-```bash
-kubectl get nodes -o wide
-kubectl get storageclass
-```
-
-클러스터 전체 선행 검사는 control-plane에서 실행합니다.
-
-```bash
-sudo bash ./sadp --preflight
-```
-
-이 검사는 RKE2 전용 kubeconfig와 kubectl을 사용해 server 1대와 worker 2대, 정확히 3대가 모두
-Ready인지와 기본 StorageClass가 정확히 1개인지 강제합니다. 자신이 만든 고유
-`sadp-preflight-*` Namespace/PVC와 임시 소비 Pod로 `WaitForFirstConsumer`를 포함한
-실제 provisioning을 확인하고 성공·실패 모두 해당 임시 Namespace만 정리합니다.
-
-#### StorageClass가 없을 때
-
-먼저 control-plane에서 RKE2 전용 kubectl로 현재 상태를 확인합니다.
-
-```bash
-sudo /var/lib/rancher/rke2/bin/kubectl \
-  --kubeconfig /etc/rancher/rke2/rke2.yaml \
-  get storageclass
-```
-
-- `(default)`가 정확히 1개면 새 provisioner를 설치하지 않고 그 이름을 `STORAGE_CLASS`에 씁니다.
-- 동적 provisioner가 있지만 기본 class가 아니면 운영 기준에 맞는 class 하나만 기본값으로
-  지정합니다.
-- 기본 class가 2개 이상이면 설치를 진행하지 말고 annotation을 정리해 정확히 1개만 남깁니다.
-- StorageClass가 전혀 없는 베타 테스트베드는 저장소의 고정 버전 local-path 예제를 사용할 수
-  있습니다.
-
-```bash
-sudo /var/lib/rancher/rke2/bin/kubectl \
-  --kubeconfig /etc/rancher/rke2/rke2.yaml \
-  apply -f docs/examples/local-path-storage.yaml
-
-sudo /var/lib/rancher/rke2/bin/kubectl \
-  --kubeconfig /etc/rancher/rke2/rke2.yaml \
-  rollout status deployment/local-path-provisioner \
-  -n local-path-storage --timeout=5m
-
-sudo /var/lib/rancher/rke2/bin/kubectl \
-  --kubeconfig /etc/rancher/rke2/rke2.yaml \
-  annotate storageclass local-path \
-  storageclass.kubernetes.io/is-default-class=true --overwrite
-
-sudo bash ./sadp --preflight
-```
-
-`docs/examples/local-path-storage.yaml`은
-[Rancher 공식 local-path-provisioner](https://github.com/rancher/local-path-provisioner)를 사용합니다.
-provisioner 버전은 `versions.lock.yaml`의 `platform.localPathProvisioner`와 CI가 대조합니다.
-이후 `/etc/sadp/site.env`에는 `STORAGE_CLASS=local-path`를 사용합니다.
-
-> [!WARNING]
-> local-path는 선택된 노드의 로컬 디스크를 사용하며 데이터를 노드 사이에 복제하지 않습니다.
-> 노드 장애에도 데이터 가용성이 필요한 운영 환경에서는 조직이 승인한 CSI를 설치하고 그 기본
-> StorageClass 이름을 사용하세요. 기존 PVC는 기본 class를 바꿔도 자동 이전되지 않습니다.
-
-Devtron과 번들 Argo CD는 원툴 cluster apply의 사전 설치 조건이 아닙니다. 둘이 완전히 없으면
-`versions.lock.yaml`의 Devtron app/chart 고정 버전으로 자동 설치합니다. 정확한 기존 설치는
-건드리지 않으며, 다른 버전이나 부분 설치는 자동 upgrade·downgrade·채택하지 않고 중단합니다.
-
-사람이 delivery controller를 먼저 준비하려는 경우에만 같은 control-plane에서 계획과 적용을
-분리합니다. raw `helm install`은 승인된 수동 경로가 아닙니다.
-
-```bash
-sudo bash ./sadp --install-devtron
-sudo bash ./sadp --install-devtron --apply
-
-kubectl -n devtroncd get deployment/devtron deployment/argocd-repo-server
-kubectl -n devtroncd get statefulset/argocd-application-controller
-kubectl -n devtroncd get installer/installer-devtron -o jsonpath='{.status.sync.status}'
-kubectl get crd applications.argoproj.io
-```
-
-현재 계약은 Devtron app `1.5.0`, 공식 chart `0.22.92`, Namespace `devtroncd`, Helm release
-`devtron`, `installer.modules={cicd}`, `argo-cd.enabled=true`입니다. 숫자의 SSOT는
-`versions.lock.yaml`이며 버전 변경은 설치기와 회귀 시험을 함께 갱신합니다. Devtron UI Service는
-별도 외부 진입점을 만들지 않도록 `ClusterIP`로 고정하고, installer/microservice는 렌더된
-Squid/NO_PROXY 계약을 사용합니다.
-
-첫 설치는 Helm hook, Devtron Installer, 핵심 Devtron/Argo CD rollout을 하나의 30분
-timeout 안에서 확인합니다. 같은 app/chart 버전의 Helm release 상태가 `failed`일
-때만 `--reuse-values`로 기존 values를 보존하며 위 SADP 관리 값을 다시 적용합니다.
-정상 release의 설정 불일치나 Ready 실패는 자동 덮어쓰기하지 않고 `devtroncd`
-상태 확인을 요구합니다.
-
-### control-plane 내부 Keycloak 올인원 설치
-
-외부 Keycloak VM 없이 RKE2 server에 Keycloak과 PostgreSQL을 함께 두려면 `site.env`를
-다음처럼 설정합니다.
-
-```dotenv
-KEYCLOAK_DEPLOYMENT=in-cluster
-KEYCLOAK_NODE_PLACEMENT=control-plane
-KEYCLOAK_EXTERNAL_ADDRESS=
-KEYCLOAK_EXTERNAL_PORT=8080
-```
-
-render 결과의 Keycloak Deployment와 PostgreSQL StatefulSet에는
-`node-role.kubernetes.io/control-plane=true` selector와 RKE2 server의
-`CriticalAddonsOnly=true:NoExecute`, `control-plane=true:NoSchedule` taint 두 개에 맞는
-toleration이 함께 생성됩니다. selector만 추가해 Pod가 `Pending`에 머무는 구성은 생성기와
-CI가 거부합니다.
-
-노드 phase 적용과 수동 RKE2 재시작/Ready 확인을 끝낸 뒤 control-plane에서 기존 통합 cluster
-명령을 실행합니다.
-
-```bash
-sudo bash ./sadp --install \
-  --env-file /etc/sadp/site.env \
-  --phase cluster \
-  --apply
-```
-
-이 한 단계가 내부 Keycloak/PostgreSQL 리소스, root-only bootstrap 값, Kubernetes runtime
-Secret, Keycloak realm/group/client/role, 선택적 SAML IdP, OpenBao 시드까지 순서대로 설치하고
-실제 두 Pod가 control-plane에 배치됐는지 확인합니다. 외부 VM 주소, SSH, 별도
-`--configure-keycloak` 실행은 필요하지 않습니다. `KEYCLOAK_NODE_PLACEMENT=any`이면 기존처럼
-일반 스케줄러가 노드를 선택하며, `KEYCLOAK_DEPLOYMENT=external`에서는 placement를 `any`로
-두고 [외부 Keycloak Runbook](keycloak-external.md)을 사용합니다.
-
-첫 cluster apply에서 운영 TLS가 아직 Ready가 아니면 기존 안전 경계대로 기반 리소스까지만
-설치하고 정상 종료합니다. 인증서 확인 후 `EXISTING_GATEWAY_TLS_READY=true`를 render·배포한 뒤
-같은 cluster 명령을 다시 실행해야 realm/client/OpenBao 초기화까지 완료됩니다.
-
-> [!WARNING]
-> 이미 worker의 `local-path` PVC를 쓰는 PostgreSQL을 `control-plane`으로 바꾸면 기존 PVC의
-> node affinity 때문에 자동 이동되지 않습니다. 이 값은 새 설치에서 선택하거나,
-> [복구 가이드](recovery.md)에 따라 DB를 백업하고 control-plane에서 새 PVC로 복원하는
-> 유지보수 작업과 함께 변경하세요. control-plane에는 Keycloak 요청 `250m/768Mi`, PostgreSQL
-> 요청 `100m/256Mi`와 운영 여유 자원이 있어야 합니다.
-
-### 설치된 Keycloak 사후 설정
-
-`--configure-keycloak`은 Keycloak을 설치하거나 재시작하지 않고, 이미 실행 중인
-Keycloak의 realm·group·client·role·선택적 SAML IdP를 SADP 계약에 맞게 반복
-수렴시키는 유지보수 명령입니다. 위 통합 cluster 설치의 내부 Keycloak 초기화에는 별도로
-실행하지 않습니다. 관리자 값은 Git, shell argv, Kubernetes Secret/ConfigMap에 넣지 않습니다.
-
-먼저 control-plane 노드에서 root 전용 파일을 만듭니다. 다음 명령은 터미널에서
-값을 묻고 stdin으로만 받습니다.
-
-```bash
-sudo install -d -o root -g root -m 0700 /etc/sadp/keycloak-admin
-sudo bash -c '
-  set -euo pipefail
-  umask 077
-  IFS= read -r -p "Keycloak admin ID: " admin_user
-  IFS= read -r -s -p "Keycloak admin password: " admin_password
-  printf "\n" >&2
-  printf %s "$admin_user" > /etc/sadp/keycloak-admin/username
-  printf %s "$admin_password" > /etc/sadp/keycloak-admin/password
-'
-sudo chown root:root /etc/sadp/keycloak-admin/username /etc/sadp/keycloak-admin/password
-sudo chmod 0600 /etc/sadp/keycloak-admin/username /etc/sadp/keycloak-admin/password
-```
-
-계획을 먼저 확인하고, 같은 명령 끝에 `--apply`를 붙여 실제 적용합니다.
-
-```bash
-sudo bash ./sadp --configure-keycloak \
-  --server-url https://<KEYCLOAK_HOST> \
-  --admin-user-file /etc/sadp/keycloak-admin/username \
-  --admin-password-file /etc/sadp/keycloak-admin/password
-
-sudo bash ./sadp --configure-keycloak \
-  --server-url https://<KEYCLOAK_HOST> \
-  --admin-user-file /etc/sadp/keycloak-admin/username \
-  --admin-password-file /etc/sadp/keycloak-admin/password \
-  --apply
-```
-
-`--server-url`을 생략하면 계약의 in-cluster Service 또는 external address를 사용합니다.
-임의 host는 관리자 자격증명 유출을 막기 위해 거부됩니다. external 배치도 SSH를
-요구하지 않고, `versions.lock.yaml` 버전의 일회성 Keycloak CLI Pod가 관리자 API에
-접속합니다. 성공·실패 모두 Pod와 kcadm session을 정리하며, 회수한 client
-Secret과 acceptance 계정 상태는 `/var/lib/sadp/credentials`의 root-only 파일에만 저장합니다.
-
-### 설치 호스트 도구
-
-- Bash 4+
-- Python 3와 PyYAML
-- `kubectl`, Helm `versions.lock.yaml`의 버전
-- `curl`, `jq`, `openssl`, `ssh`
-- 이미지 빌드/동기화를 사용할 경우 Docker
-
-```bash
-python3 --version
-kubectl version --client
-helm version --short
-bash ./sadp --list
-```
-
-`render-test.sh`는 Helm이 없으면 정상 profile을 검증하지 못합니다. Helm 없이 일부 금지 profile이
-`[OK]`로 보인 결과를 전체 통과로 기록하지 않습니다.
-
-### 네트워크와 외부 시스템
-
-설치 전에 다음 담당자와 값을 확정합니다.
-
-| 담당 | 필요한 결정 |
-| --- | --- |
-| 네트워크 | 내부/외부 NIC, 노드 IP, Gateway VIP/pool, NAT 또는 direct, 방화벽 |
-| DNS | base domain, wildcard/apex record, RFC2136 또는 `_acme-challenge` 위임 |
-| GitOps | Forgejo repository/revision, bot 계정 |
-| Registry | OCI host/project, push 계정과 pull 계정 분리 |
-| 인증 | Keycloak 외부/내부 배치, 내부 node placement, realm/client, 선택적 외부 SAML IdP |
-| 스토리지 | 기본 StorageClass, AppGroup volume 크기 |
-
-## 2. 입력과 Secret 준비
-
-### `site.env`
-
-실제 사이트 파일은 Git 밖에 둡니다.
+이미 사이트 값을 알고 있거나 반복 설치·자동화를 할 때 사용합니다.
 
 ```bash
 sudo install -d -m 0700 /etc/sadp /etc/sadp/secrets
@@ -265,49 +38,156 @@ sudo install -m 0600 environments/site.env.example /etc/sadp/site.env
 sudoedit /etc/sadp/site.env
 ```
 
-반드시 교체할 대표 값:
+### 방법 B — 질문·답변형 설치
 
-- `*.example.invalid` 주소
-- `192.0.2.0/24`, `198.51.100.0/24`, `203.0.113.0/24` 문서용 IP
-- control-plane/worker 이름과 내부 IP
-- NIC 이름, Pod/Service CIDR, Gateway VIP/pool
-- Forgejo/Registry endpoint와 project
-- DNS-01, Keycloak, StorageClass 설정
+처음 설치할 때 사용합니다. Enter는 현재값 유지, `-`는 선택값 비우기입니다. 마법사는 password,
+token, private key 본문을 묻지 않고 파일 경로만 받습니다.
 
-외부 Grafana는 기본 설치 완료 후 별도 Runbook으로 추가합니다. 최초 설치에서는
-`MACHINE_AUTH_SERVICES`, `MACHINE_AUTH_CLIENTS`, `MACHINE_AUTH_ALLOWED_CIDRS`를 모두 비워 둡니다.
+```bash
+sudo bash ./sadp --install-wizard
+```
 
-통합 설치기는 문서용 endpoint/IP가 남은 상태에서 `--apply`를 거부합니다. 전체 필드 설명은
-[사이트 설정 참조](site-configuration.md)를 사용합니다.
+답변으로 만든 파일도 동일한 검증기를 통과해야 `/etc/sadp/site.env`에 mode `0600`으로 저장됩니다.
+마법사에서 바로 계획을 보려면 다음처럼 실행할 수 있습니다.
+
+```bash
+sudo bash ./sadp --install-wizard --phase all
+```
+
+기존 파일이 있으면 그 값을 기본 답변으로 사용합니다. 고급 `SYSTEMS`, 외부 서비스, machine-auth,
+상위 SAML IdP 설정은 마법사 실행 후 [사이트 설정](site-configuration.md)에 따라 편집합니다.
+
+## 1. 선행 조건 확인
+
+### 관리 워크스테이션
+
+- 저장소의 사이트 branch에 commit/push할 수 있음
+- `bash`, Python 3, Git, Helm 사용 가능
+- dirty worktree의 기존 변경을 구분할 수 있음
+
+```bash
+git status --short
+bash ./sadp --list
+helm version --short
+```
+
+### RKE2 클러스터
+
+- server 1대 + worker 2대가 모두 `Ready`
+- 세 노드의 내부 NIC 이름이 같음
+- Pod CIDR, Service CIDR, Cluster DNS IP가 확정됨
+- control-plane에서 RKE2 kubeconfig와 kubectl 사용 가능
+- 기본 StorageClass가 정확히 하나 있음
+
+```bash
+sudo /var/lib/rancher/rke2/bin/kubectl \
+  --kubeconfig /etc/rancher/rke2/rke2.yaml get nodes -o wide
+
+sudo /var/lib/rancher/rke2/bin/kubectl \
+  --kubeconfig /etc/rancher/rke2/rke2.yaml get storageclass
+```
+
+StorageClass가 전혀 없는 테스트베드는 다음 계획을 확인한 뒤 적용합니다.
+
+```bash
+sudo bash ./sadp --install-local-path-storage
+sudo bash ./sadp --install-local-path-storage --apply
+```
+
+## 2. site.env와 root 전용 Secret 파일 준비
+
+`site.env`에는 비밀이 아닌 사이트 사실과 Secret 파일의 절대경로만 적습니다. 전체 key는
+[site.env 예제](../environments/site.env.example)와 [사이트 설정](site-configuration.md)을
+참조합니다.
 
 ### root 전용 파일
 
-`site.env`에는 Secret 본문 대신 파일 경로만 적습니다.
-
-| 변수 | 파일 내용 | 최소 권한 |
+| 파일 | 용도 | 권한 |
 | --- | --- | --- |
-| `SADP_ARGO_REPO_TOKEN_FILE` | Forgejo read token | root, `0400`/`0600` |
-| `SADP_DNS_TSIG_SECRET_FILE` | RFC2136 TSIG secret | root, `0400`/`0600` |
-| `SADP_REGISTRY_PULL_DOCKERCONFIG` | pull 전용 Docker config | root, `0400`/`0600` |
-| `SADP_REGISTRY_PUSH_DOCKERCONFIG` | push 전용 Docker config | root, `0400`/`0600` |
+| `/etc/sadp/secrets/forgejo-read-token` | Argo Git read | root, `0400` 또는 `0600` |
+| `/etc/sadp/secrets/rfc2136-tsig` | DNS-01 UPDATE | root, `0400` 또는 `0600` |
+| `/etc/sadp/secrets/registry-pull-dockerconfig.json` | 이미지 pull | root, `0400` 또는 `0600` |
+| `/etc/sadp/secrets/registry-push-dockerconfig.json` | 이미지 push | root, `0400` 또는 `0600` |
+
+파일을 만든 뒤 내용은 출력하지 않고 메타데이터만 확인합니다.
 
 ```bash
-sudo chown root:root /etc/sadp/secrets/*
-sudo chmod 0600 /etc/sadp/secrets/*
+sudo stat -c '%U %a %n' /etc/sadp/site.env /etc/sadp/secrets/*
 ```
 
-pull과 push credential은 서로 달라야 합니다. token과 Docker config를 문서나 명령행 인자로
-직접 붙이지 않습니다.
+### 허용 주소 접속 테스트
 
-### Portal UI 빌드 환경
+Squid 자체를 처음 설치하기 전에 Squid 담당 노드가 승인된 apt mirror 또는 기존 upstream proxy에
+접속할 수 있어야 합니다. 조직 방화벽에는 저장소의 Squid allowlist와 사이트에서 추가한 정확한
+hostname만 요청합니다. `*` wildcard나 전체 인터넷을 열지 않습니다.
 
-브라우저 번들에 들어가도 되는 공개값만 저장소 루트 `.env`에 선택적으로 둡니다.
+승인된 대표 주소를 실제 설치 경로와 같은 방식으로 시험합니다.
+
+```bash
+curl --fail --location --max-time 20 https://<APPROVED_APT_MIRROR>/
+curl --fail --location --max-time 20 https://<APPROVED_GIT_OR_REGISTRY>/
+```
+
+기존 upstream proxy로 bootstrap한다면 그 proxy를 명시합니다.
+
+```bash
+curl --fail --location --max-time 20 \
+  --proxy http://<UPSTREAM_PROXY>:<PORT> \
+  https://<APPROVED_APT_MIRROR>/
+```
+
+허용되지 않은 주소가 차단되는지도 조직의 승인된 테스트 대상과 방법으로 확인합니다. 실제 내부
+주소나 credential이 포함된 URL을 로그에 남기지 않습니다.
+
+### Squid 및 네트워크 패키지 설치 준비
+
+각 노드에서 다음 도구를 확인합니다.
+
+```bash
+command -v bash python3 curl ip ss systemctl
+```
+
+Squid 담당 노드는 `apt-get update`와 `squid` package 설치가 가능한 bootstrap 경로가 필요합니다.
+실제 Squid 설정, RKE2 containerd proxy, Docker proxy, interface guard는 render 결과가 나온 뒤
+4~5단계의 node phase가 적용합니다. 이 시점에 임의 설정 파일을 먼저 만들지 않습니다.
+
+### control-plane 내부 Keycloak 올인원 설치
+
+외부 Keycloak 없이 control-plane에 Keycloak과 PostgreSQL을 고정하려면 다음 값을 사용합니다.
+
+```dotenv
+KEYCLOAK_DEPLOYMENT=in-cluster
+KEYCLOAK_NODE_PLACEMENT=control-plane
+```
+
+일반 worker 스케줄링은 `KEYCLOAK_NODE_PLACEMENT=any`, 외부 Keycloak은
+`KEYCLOAK_DEPLOYMENT=external`을 사용합니다.
+
+이미 실행 중인 Keycloak만 별도로 진단할 때는 root 전용 파일을 사용해 계획을 먼저 확인합니다.
+정상 신규 설치에서는 cluster phase가 이 작업을 수행하므로 별도로 실행하지 않습니다.
+
+```bash
+sudo bash ./sadp --configure-keycloak \
+  --server-url https://<KEYCLOAK_HOST> \
+  --admin-user-file /etc/sadp/secrets/keycloak-admin-user \
+  --admin-password-file /etc/sadp/secrets/keycloak-admin-password
+
+sudo bash ./sadp --configure-keycloak \
+  --server-url https://<KEYCLOAK_HOST> \
+  --admin-user-file /etc/sadp/secrets/keycloak-admin-user \
+  --admin-password-file /etc/sadp/secrets/keycloak-admin-password \
+  --apply
+```
+
+### Portal UI 공개 빌드값
+
+필요한 사이트만 저장소 루트의 Git 밖 `.env`에 다음 공개값을 둡니다.
 
 ```dotenv
 NEXT_PUBLIC_PAAS_VERSION=<VERSION>
 NEXT_PUBLIC_PAAS_COPYRIGHT_YEAR=<YEAR>
-NEXT_PUBLIC_GIT_BASE_URL=https://<FORGEJO_HOST>
-NEXT_PUBLIC_GIT_DEFAULT_ORG=<FORGEJO_ORG>
+NEXT_PUBLIC_GIT_BASE_URL=https://<GIT_HOST>
+NEXT_PUBLIC_GIT_DEFAULT_ORG=<GIT_ORG>
 NEXT_PUBLIC_SSO_BASE_URL=https://<SSO_HOST>
 NEXT_PUBLIC_SSO_REALM=<REALM>
 NEXT_PUBLIC_PAAS_APP_DOMAIN=<BASE_DOMAIN>
@@ -317,18 +197,12 @@ NEXT_PUBLIC_RANCHER_BASE_URL=https://<RANCHER_HOST>
 NEXT_PUBLIC_LEGACY_SSO_BASE_URL=https://<LEGACY_SSO_HOST>
 ```
 
-허용 key의 SSOT는 `apps/portal-lite/ui/scripts/portal-ui-public-env-keys.json`입니다.
+`AUTH_SECRET`, Keycloak client Secret, Forgejo/Registry token은 넣지 않습니다. 값 변경 후에는 Portal
+이미지를 다시 빌드해야 합니다.
 
-```bash
-python3 scripts/site/portal-ui-build-env.py --env-file .env --format check
-```
+## 3. render 계획 → 생성 → 테스트 → commit/push
 
-`AUTH_SECRET`, Keycloak client secret, Forgejo/Registry/NMS token은 이 파일에 넣지 않습니다.
-`NEXT_PUBLIC_*` 변경은 이미지를 다시 빌드해야 반영됩니다.
-
-## 3. 설정 렌더와 Git 반영
-
-### 읽기 전용 계획
+먼저 읽기 전용 계획을 확인합니다.
 
 ```bash
 bash ./sadp --install \
@@ -336,16 +210,9 @@ bash ./sadp --install \
   --phase render
 ```
 
-이 단계는 입력, CIDR/port 충돌, URL, Secret 파일 경로 메타데이터를 검사하지만 저장소와
-클러스터를 바꾸지 않습니다.
-
-### 생성
-
-사이트 전용 branch의 깨끗한 checkout에서 실행합니다.
+사이트 branch의 깨끗한 checkout에서 생성합니다.
 
 ```bash
-git status --short
-
 bash ./sadp --install \
   --env-file /etc/sadp/site.env \
   --phase render \
@@ -353,34 +220,16 @@ bash ./sadp --install \
 
 git diff --check
 git diff -- contracts apps argocd platform rke
-```
-
-생성물에 실제 Secret 값이 없는지 확인하고 전체 회귀를 실행합니다.
-
-```bash
 bash ./sadp --test
 ```
 
-검토가 끝난 결과만 사이트 branch에 commit/push합니다. `node`와 `cluster` phase는 현재 checkout이
-`site.env`와 정확히 동기화되지 않으면 중단됩니다.
+생성물에 실제 Secret 값이나 다른 사이트 값이 없는지 검토한 뒤에만 commit/push합니다. node와
+cluster는 현재 checkout이 `site.env`와 정확히 일치하지 않으면 중단됩니다.
 
-> [!CAUTION]
-> `--allow-dirty`는 기존 변경을 확인하고 보존한 경우에만 사용합니다. 생성물 충돌을 무시하는
-> 일반 옵션이 아닙니다.
+## 4. Squid 담당 노드부터 node phase 적용
 
-## 4. Squid 선행 설치와 노드 설정 적용
-
-control-plane과 각 worker에서 같은 Git revision과 같은 `site.env`를 사용합니다. hostname이
-`CONTROL_PLANE_HOSTNAME` 또는 `WORKER_NODES`와 일치하면 역할과 내부 IP를 자동 판별합니다.
-
-패키지, Helm chart, container image를 받기 전에 `SQUID_INTERNAL_IP`를 가진 노드부터 적용합니다.
-통합 node phase는 env와 생성물 동기화를 먼저 검사하고, Squid 담당 노드에서는 Squid를 다른
-node 설정보다 먼저 설치합니다. Squid package 자체만 승인된 direct apt mirror 또는 이미 구성된
-upstream proxy로 bootstrap합니다.
-
-### 4.1 Squid 담당 노드
-
-Squid 담당 노드에서 계획과 적용을 순서대로 실행합니다.
+세 노드는 같은 Git revision과 같은 `/etc/sadp/site.env`를 사용합니다. `SQUID_INTERNAL_IP`를 가진
+노드에서 먼저 계획과 적용을 실행합니다.
 
 ```bash
 sudo bash ./sadp --install \
@@ -393,234 +242,135 @@ sudo bash ./sadp --install \
   --apply
 ```
 
-Squid 설치 직후 로컬 daemon/config와 실제 허용·차단 경로를 모두 확인합니다. 이 검사가 통과하기
-전에는 다른 노드 적용이나 패키지 설치로 넘어가지 않습니다.
+node phase는 Squid package와 계약 설정을 먼저 적용한 뒤 RKE2 설정, NIC identity, interface guard,
+containerd proxy를 적용합니다. 설치 직후 허용·차단 경로를 검증합니다.
 
 ```bash
 sudo bash ./sadp --install-squid --check
 bash ./sadp --verify-squid
 ```
 
-### 4.2 나머지 노드
+검증이 실패하면 다른 노드로 진행하지 않습니다.
 
-같은 계획·적용 명령을 control-plane과 각 worker에서 실행합니다. 이미 적용한 Squid 담당 노드는
-반복할 필요가 없습니다.
+## 5. 나머지 노드 적용과 수동 재시작
 
-node phase의 적용 순서와 항목은 다음과 같습니다.
+control-plane과 각 worker에서 같은 node 계획·적용 명령을 실행합니다. 설치기는 RKE2와 Docker를
+자동 재시작하지 않습니다.
 
-- 담당 노드이면 Squid 선행 설치·검증
-- RKE2 server/agent 계약 설정
-- 내부 NIC 기반 node identity와 Canal interface
-- 외부/NMS/guarded NIC 관리 포트 차단
-- RKE2 embedded containerd proxy
-- control-plane Docker daemon proxy(monitoring image pull용)
-- env에서 선택한 NMS route/SNAT
-- 지정 노드의 CoreDNS upstream listener
-
-### 수동 재시작 경계
-
-설치기는 RKE2를 자동 재시작하지 않습니다.
+권장 순서는 다음과 같습니다.
 
 1. worker 한 대를 drain합니다.
-2. 해당 노드의 `rke2-agent`를 재시작합니다.
-3. Node와 Canal이 Ready인지 확인하고 uncordon합니다.
-4. 나머지 worker를 한 대씩 반복합니다.
-5. 마지막에 control-plane 유지보수 창에서 `rke2-server`를 재시작합니다.
-6. control-plane의 Docker를 재시작하고 daemon proxy를 확인합니다.
+2. 그 노드에서 `rke2-agent`를 재시작합니다.
+3. Node와 Canal Ready를 확인한 뒤 uncordon합니다.
+4. 다른 worker를 반복합니다.
+5. 유지보수 창에서 control-plane의 `rke2-server`를 재시작합니다.
+6. control-plane의 Docker를 재시작하고 proxy를 확인합니다.
 
 ```bash
 sudo systemctl restart docker
 sudo bash ./sadp --install-docker-proxy --check
 ```
 
-실제 drain 정책과 PodDisruptionBudget은 사이트 운영 기준을 따릅니다. 모든 노드가 Ready가 되기
-전에는 cluster phase를 실행하지 않습니다.
+모든 노드가 Ready가 되기 전에는 cluster phase로 넘어가지 않습니다.
 
-## 5. Squid 이후 서드파티 이미지·패키지 준비
+## 6. control-plane cluster phase
 
-Squid 검증과 모든 노드의 Ready 확인이 끝난 뒤에만 외부 package/chart/image 작업을 시작합니다.
-원툴 cluster phase는 Devtron·Argo를 설치하기 전에 Squid 허용·차단 경로를 다시 확인한 다음
-`platform/monitoring/images.txt`의 Prometheus/Loki/Alloy 이미지를 control-plane에서 받아 모든
-노드의 containerd에 선배포합니다. 따라서 Argo Application이 만들어질 때 폐쇄망 worker가 외부
-Registry pull에 의존하지 않습니다.
-
-`docker pull`은 CLI가 아니라 Docker daemon이 네트워크 요청을 수행합니다. 따라서 node phase가
-설치한 `/etc/systemd/system/docker.service.d/sadp-proxy.conf`를 재시작으로 반영해야 하며, 원툴
-cluster phase는 daemon의 `HTTP_PROXY`/`HTTPS_PROXY`/`NO_PROXY`가 계약과 다르면 이미지 다운로드
-전에 중단합니다.
-
-기본 monitoring 이미지는 원툴 설치기가 자동 처리합니다. 사이트 전용 목록을 사용하려면
-`/var/lib/sadp/monitoring-images.txt`에 두며, 수동 명령은 원인 분리나 추가 이미지 준비에만
-사용합니다.
-
-```bash
-sudo bash scripts/cluster/sync-external-images.sh \
-  --image <REGISTRY>/<IMAGE>:<IMMUTABLE_TAG>
-```
-
-여러 이미지는 root 전용 목록 파일로 전달할 수 있습니다.
-
-```bash
-sudo bash scripts/cluster/sync-external-images.sh \
-  --image-list /etc/sadp/external-images.txt
-```
-
-tag나 digest가 반드시 있어야 하며 `latest`는 거부됩니다. 승인된 이미지 목록과 버전은
-`versions.lock.yaml` 및 Argo Application을 기준으로 검토합니다. Prometheus/Loki/Alloy workload는
-이미지만 이 경로로 선배포하고 실제 리소스는 Argo가 설치합니다. 개별 `helm install`로 겹쳐
-설치하지 않습니다.
-
-## 6. GitOps bootstrap
-
-control-plane에서 먼저 계획을 확인합니다.
+먼저 계획을 확인하고 적용합니다.
 
 ```bash
 sudo bash ./sadp --install \
   --env-file /etc/sadp/site.env \
   --phase cluster
-```
 
-적용:
-
-```bash
 sudo bash ./sadp --install \
   --env-file /etc/sadp/site.env \
   --phase cluster \
   --apply
 ```
 
-cluster phase는 env에 따라 다음을 순서대로 수행합니다.
+cluster phase는 다음 순서를 강제합니다.
 
-1. Squid 허용·차단 egress 실검증
-2. 클러스터 선행 조건 검사
-3. Prometheus/Loki/Alloy 이미지를 Squid 경유로 모든 노드에 선배포
-4. Devtron/번들 Argo CD 기존 계약 확인 또는 완전 부재 시 자동 설치
-5. RFC2136 TSIG Kubernetes Secret 적용(값 비출력)
-6. Argo repository 연결
-7. AppProject와 app-of-apps bootstrap 적용
+1. Squid의 허용·차단 egress 재검증
+2. StorageClass 준비와 3노드 RKE2 preflight
+3. Docker daemon proxy 계약 확인
+4. Prometheus/Loki/Alloy 이미지를 모든 노드에 선배포
+5. Devtron과 번들 Argo CD 확인, 완전 부재 시 고정 버전 설치
+6. RFC2136 TSIG Secret 적용
+7. Argo repository, AppProject, app-of-apps bootstrap
 8. child Application 생성 대기
-9. SADP 기반 플랫폼 설치와 monitoring rollout 확인
-10. TLS 진행 상태 판단
-11. 이미지 빌드, Keycloak/OpenBao 초기화, 앱 배포, acceptance
+9. SADP 기반 플랫폼 설치
 
-| env | 동작 |
-| --- | --- |
-| `SADP_INSTALL_GITOPS=true` | Argo repository와 bootstrap 구성 |
-| `SADP_BUILD_IMAGES=true` | Portal/test image 빌드와 노드 import |
-| `SADP_BUILD_NODE=<WORKER>` | 지정 worker에서 빌드, 비우면 자동 선택 |
-| `SADP_DEPLOY_APPS=true` | 기본 앱과 Portal 배포 |
-| `SADP_RUN_VERIFY=true` | Portal 인증과 핵심 acceptance 실행 |
+다른 Devtron 버전이나 불완전한 기존 설치는 자동 덮어쓰지 않고 중단합니다.
 
-## 7. wildcard TLS 전환
+## 7. staging → production TLS 진행값 반영
 
-`TLS_SOURCE=acme`이고 운영 인증서가 아직 준비되지 않았다면 cluster phase는 기반 플랫폼까지만
-설치하고 안전하게 멈춥니다.
+TLS 진행값은 설정이 아니라 완료한 단계의 기록입니다. cluster가 앞서 있는데 `site.env`가 뒤처지면
+다음 render가 HTTPS 경로를 과거 상태로 되돌릴 수 있습니다.
 
-### staging
-
-```bash
-kubectl get certificate,certificaterequest,order,challenge -A
-```
-
-staging 인증서가 Ready이고 DNS-01 경로를 검증한 뒤:
+### staging 발급 확인 후
 
 ```dotenv
 ACME_STAGING_VERIFIED=true
 TLS_ISSUER_MODE=production
 ```
 
-다시 render → test → commit/push → cluster를 수행합니다.
+3단계의 render → test → commit/push를 반복하고 cluster phase를 다시 실행합니다.
 
-### production
-
-운영 wildcard Secret이 Ready이면:
+### production wildcard Secret Ready 후
 
 ```dotenv
 EXISTING_GATEWAY_TLS_READY=true
 ```
 
-다시 render → test → commit/push → cluster를 수행합니다. 이때 HTTPS listener와 HTTP→HTTPS
-redirect가 활성화됩니다.
+다시 render → test → commit/push → cluster를 실행합니다. HTTPS listener와 HTTP → HTTPS redirect가
+활성화됩니다. 상세 절차는 [DNS-01 Runbook](letsencrypt-dns01.md)을 따릅니다.
 
-상세 DNS 위임, RFC2136, Challenge 정리는 [Let's Encrypt DNS-01 Runbook](letsencrypt-dns01.md)을
-따릅니다.
+## 8. 서비스 초기화·앱 배포
 
-## 8. 서비스 초기화와 앱 배포
+`EXISTING_GATEWAY_TLS_READY=true`인 cluster phase는 다음 작업을 이어서 실행합니다.
 
-TLS가 준비된 cluster phase는 다음을 자동으로 이어서 실행합니다.
-
-- Keycloak realm/client/group 정책 수렴
-- OpenBao 초기화와 Kubernetes auth/KV 정책 수렴
-- ESO/Reloader 상태 확인
-- Portal/test image 빌드 또는 import
-- Registry pull/push credential 분리 적용
+- SADP 이미지 build와 세 노드 import
+- Keycloak realm/client/group 수렴
+- OpenBao 초기화, auth, KV 정책 수렴
+- ESO와 Reloader 확인
 - hello, secure-demo, Portal 배포
 - Portal 인증과 핵심 acceptance
 
-특정 단계의 원인을 분리해야 할 때만 [scripts 명령 참조](../scripts/README.md)의 개별 명령을
-사용합니다. 정상 설치 절차를 개별 명령 목록으로 다시 조합하지 않습니다.
+`SADP_BUILD_IMAGES`, `SADP_DEPLOY_APPS`, `SADP_RUN_VERIFY`로 선택할 수 있습니다. 정상 설치에서는
+개별 스크립트를 임의 순서로 다시 조합하지 않습니다.
 
-## 9. 설치 검증과 인수인계
+## 9. acceptance와 인수인계
 
-### 클러스터
-
-```bash
-kubectl get nodes -o wide
-kubectl get applications -n devtroncd
-kubectl get gateway,httproute -A
-kubectl get certificate -A
-kubectl get externalsecret,secretstore,clustersecretstore -A
-```
-
-### acceptance
+control-plane에서 확인합니다.
 
 ```bash
 sudo bash ./sadp --verify-portal-auth
 sudo bash ./sadp --verify-testbed
 ```
 
-### 브라우저
+브라우저에서는 공개 앱이 미로그인 상태로 열리는지, SSO 앱과 Portal이 Keycloak 로그인 뒤 열리는지,
+internal 앱에 외부 Route가 없는지 확인합니다.
 
-| 대상 | 예상 결과 |
-| --- | --- |
-| 공개 앱 | 미로그인 `200` |
-| SSO 앱 | Keycloak redirect 후 접근 |
-| Portal | 로그인 후 대시보드 |
-| 내부 앱 | 외부 Route 없음 |
+인수인계에는 다음만 기록합니다.
 
-### 인수인계 항목
-
-- site/cluster 이름과 Git revision
+- site/cluster 이름과 배포 Git revision
 - Portal과 관리 서비스 주소
 - 운영 담당자와 장애 연락 경로
-- `site.env`와 root 전용 Secret 파일의 보관 위치·소유자
-- token/certificate 회전 일정
-- 마지막 백업과 복원 시험 시각
-- acceptance 결과
+- `site.env`와 root 전용 파일의 보관 위치·소유자
+- token·인증서 회전 일정
+- 마지막 백업·복원 시험과 acceptance 결과
 
-Secret 본문은 인수인계 문서에 복사하지 않습니다.
+Secret 본문은 인수인계 문서에 복사하지 않습니다. 설치 뒤 운영은
+[관리자 가이드](administrator-guide.md)를 따릅니다.
 
-### 설치 완료 후 Grafana 추가
+## 설치가 멈췄을 때
 
-외부 Grafana 연동값은 최초 설치의 `site.env`에 미리 넣지 않습니다. 이 절의 acceptance와
-인수인계를 완료한 뒤 [외부 Grafana 사후 연동 Runbook](external-observability.md)에 따라 기존
-`site.env`를 갱신하고 render → test → commit/push → cluster phase만 다시 실행합니다. 이 변경에는
-node phase나 RKE2 재시작이 필요하지 않습니다.
-
-## 설치 중 자주 멈추는 지점
-
-| 메시지/증상 | 의미 | 다음 문서 |
+| 증상 | 의미 | 다음 확인 |
 | --- | --- | --- |
-| 예제 domain/IP 적용 거부 | `site.env`에 문서값이 남음 | [사이트 설정](site-configuration.md) |
-| 생성물이 env와 다름 | render 결과를 commit/push하지 않음 | [3절](#3-설정-렌더와-git-반영) |
-| 현재 hostname이 노드 목록에 없음 | `site.env`의 이름 불일치 | `hostname -s`, `WORKER_NODES` 확인 |
-| Devtron release 계약 불일치 | 다른 버전 또는 부분 설치 감지 | 기존 소유권/버전을 확인하고 자동 덮어쓰지 않음 |
-| Argo Application 없음 | 단계 6 GitOps bootstrap 미완료 | [6절](#6-gitops-bootstrap) |
-| TLS 준비 단계에서 종료 | 정상적인 staged install | [7절](#7-wildcard-tls-전환) |
-| 인증서/Challenge 실패 | DNS-01/RFC2136 문제 | [DNS-01 Runbook](letsencrypt-dns01.md) |
-| 공인 URL 연결 거부 | NAT/direct/Gateway/NIC 문제 | [네트워크 Runbook](network-egress.md) |
-| `Assertion expired`/SAML 오류 | Audience 로그와 외부 SSO·Keycloak NTP/Assertion 시간 계약 분리 | [외부 Keycloak](keycloak-external.md#34-invalidsamlresponse--audience-오류와-실제-만료를-로그로-분리) |
-| Registry Secret 거부 | pull/push 파일 또는 권한 문제 | [관리자 가이드](administrator-guide.md#5-계정과-권한-운영) |
-
-설치 완료 후 일상 운영은 [관리자 가이드](administrator-guide.md), 사용자 onboarding은
-[사용자 가이드](usage.md), 앱 배포 준비는 [개발자 가이드](developer-guide.md)를 사용합니다.
+| 예제 domain/IP 적용 거부 | 문서용 값이 남음 | [사이트 설정](site-configuration.md) |
+| 생성물이 env와 다름 | render 결과 미반영 | 3단계 diff와 commit/push |
+| hostname을 찾지 못함 | 노드 이름 불일치 | `hostname -s`, `WORKER_NODES` |
+| Squid 허용 주소 실패 | bootstrap/allowlist/daemon 문제 | [네트워크](network-egress.md) |
+| TLS 준비 단계에서 종료 | 정상 staged install | 7단계 |
+| Challenge 실패 | DNS-01/RFC2136 문제 | [DNS-01](letsencrypt-dns01.md) |
+| 공개 URL 연결 실패 | NAT/direct/Gateway/NIC 문제 | [네트워크](network-egress.md) |

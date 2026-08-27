@@ -29,7 +29,3 @@ imagePullSecrets:
 - forgejo-registry-pull
 networkPolicy:
   egressMode: blocked
-  nms:
-    enabled: false
-    destinationCIDR: ''
-    port: 0

@@ -127,6 +127,23 @@ check(
 )
 
 check_order(
+    "SI-05b cluster prepares missing StorageClass before preflight",
+    [
+        "bash",
+        "./sadp",
+        "--install",
+        "--env-file",
+        str(ENV_FILE),
+        "--phase",
+        "cluster",
+        "--node-name",
+        "sadp-control-plane-1",
+    ],
+    "StorageClass 부재 시 local-path 준비",
+    "기존 RKE2 클러스터 선행 조건 검사",
+)
+
+check_order(
     "SI-06 Squid node installs egress before containerd proxy configuration",
     [
         "bash",

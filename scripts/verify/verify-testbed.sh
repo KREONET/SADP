@@ -26,15 +26,9 @@ print(spec["gateway"]["vip"])
 print(f'http://{squid["internalIP"]}:{squid["port"]}')
 print(public.get("mode") or "")
 print(public.get("ip") or "")
-nms = spec["network"].get("nms") or {}
-print(nms.get("mode") or "disabled")
-print(",".join(str(item) for item in nms.get("allowedApps") or []))
-print(nms.get("destinationCIDR") or "")
-print(nms.get("port") or 0)
 interfaces = spec["network"].get("interfaces") or {}
 print(interfaces.get("internal") or "")
 print(interfaces.get("external") or "")
-print(interfaces.get("nms") or "")
 print(",".join(str(item) for item in interfaces.get("guarded") or []))
 print(",".join(str(item) for item in spec["network"]["allowedPorts"]["internalTCP"]))
 # Gateway 이름과 realm 을 박아 두면 이름을 바꾼 사이트에서 멀쩡한 클러스터가
@@ -68,26 +62,21 @@ vip=${contract_values[1]}
 expected_proxy=${contract_values[2]}
 public_mode=${contract_values[3]}
 public_ip=${contract_values[4]}
-nms_mode=${contract_values[5]}
-nms_allowed_apps=${contract_values[6]}
-nms_destination_cidr=${contract_values[7]}
-nms_port=${contract_values[8]}
-internal_interface=${contract_values[9]}
-external_interface=${contract_values[10]}
-nms_interface=${contract_values[11]}
-guarded_interfaces=${contract_values[12]}
-blocked_tcp_ports=${contract_values[13]}
-gateway_name=${contract_values[14]}
-gateway_namespace=${contract_values[15]}
-keycloak_realm=${contract_values[16]}
-keycloak_idp_alias=${contract_values[17]}
-keycloak_saml_sp_entity_id=${contract_values[18]}
-keycloak_external_address=${contract_values[19]}
-keycloak_external_port=${contract_values[20]}
-portal_host=${contract_values[21]:?Portal values에 exposure.host가 없다}
-public_https_hosts=${contract_values[22]}
-app_group_namespace_prefix=${contract_values[23]:?AppGroup Namespace prefix가 없다}
-app_group_max_services=${contract_values[24]:?AppGroup 서비스 상한이 없다}
+internal_interface=${contract_values[5]}
+external_interface=${contract_values[6]}
+guarded_interfaces=${contract_values[7]}
+blocked_tcp_ports=${contract_values[8]}
+gateway_name=${contract_values[9]}
+gateway_namespace=${contract_values[10]}
+keycloak_realm=${contract_values[11]}
+keycloak_idp_alias=${contract_values[12]}
+keycloak_saml_sp_entity_id=${contract_values[13]}
+keycloak_external_address=${contract_values[14]}
+keycloak_external_port=${contract_values[15]}
+portal_host=${contract_values[16]:?Portal values에 exposure.host가 없다}
+public_https_hosts=${contract_values[17]}
+app_group_namespace_prefix=${contract_values[18]:?AppGroup Namespace prefix가 없다}
+app_group_max_services=${contract_values[19]:?AppGroup 서비스 상한이 없다}
 
 [[ $(kctl get nodes --no-headers | awk '$2=="Ready"' | wc -l) -eq 3 ]] \
   && ok "RKE2 노드 3/3 Ready" || { echo '[FAIL] RKE2 Ready 노드 수' >&2; fail=1; }
@@ -114,7 +103,7 @@ fi
 node_dropin=/etc/rancher/rke2/config.yaml.d/10-internal-network.yaml
 guard_unit=/etc/systemd/system/sadp-rke2-interface-guard.service
 
-for pair in "internal ${internal_interface}" "external ${external_interface}" "nms ${nms_interface}"; do
+for pair in "internal ${internal_interface}" "external ${external_interface}"; do
   role=${pair%% *}
   name=${pair#* }
   [[ -n ${name} ]] || continue
@@ -145,14 +134,13 @@ if [[ -s ${guard_unit} ]]; then
   systemctl is-active --quiet sadp-rke2-interface-guard.service \
     && ok "interface guard unit active" \
     || { echo '[FAIL] sadp-rke2-interface-guard.service 가 active 가 아니다(관리 포트가 열려 있을 수 있음)' >&2; fail=1; }
-  # 계약의 전체 차단 대상(external/NMS/guarded)과 정확한 포트로 기존 check 경로를
+  # 계약의 전체 차단 대상(external/guarded)과 정확한 포트로 기존 check 경로를
   # 재사용한다. check_family가 INPUT 연결과 각 DROP 규칙을 IPv4/IPv6 모두 검사하므로,
   # SLAAC만 받은 guarded NIC도 검수에서 빠지지 않는다.
   guard_args=(
     --external-interface "${external_interface}"
     --blocked-tcp-ports "${blocked_tcp_ports}"
   )
-  [[ -z ${nms_interface} ]] || guard_args+=(--nms-interface "${nms_interface}")
   IFS=, read -ra guarded_list <<<"${guarded_interfaces}"
   for guarded_name in ${guarded_list[@]+"${guarded_list[@]}"}; do
     [[ -z ${guarded_name} ]] || guard_args+=(--guarded-interface "${guarded_name}")
@@ -171,7 +159,7 @@ fi
 # guard unit의 ExecStart에 박힌 MAC과 현재 NIC의 MAC을 비교한다. 재부팅으로
 # interface 이름이 밀려 eth1이 다른 NIC을 가리키게 되면 여기서 잡힌다.
 if [[ -s ${guard_unit} ]]; then
-  for pair in "external ${external_interface}" "nms ${nms_interface}"; do
+  for pair in "external ${external_interface}"; do
     role=${pair%% *}
     name=${pair#* }
     [[ -n ${name} ]] || continue
@@ -341,49 +329,6 @@ if kctl exec -n "${WORKLOAD_NAMESPACE}" deploy/portal-lite -- node -e \
 else
   ok "일반 Portal Pod direct 인터넷 차단"
 fi
-if [[ ${nms_mode} == disabled ]]; then
-  if grep -q '^NMS_MODE=disabled$' platform/network/nms-egress.env \
-    && ! kctl get pod -n "${WORKLOAD_NAMESPACE}" -l nms-access=true -o name | grep -q .; then
-    ok "NMS 미입력 상태는 비활성이고 승인 라벨 Pod 없음"
-  else
-    echo '[FAIL] 미승인 NMS egress가 활성화됨' >&2
-    fail=1
-  fi
-else
-  # 활성 모드는 mode만 보는 것으로 부족하다. 계약에서 허용한 앱에만 라벨이 붙고,
-  # 그 앱의 NetworkPolicy가 같은 목적지 CIDR/단일 TCP port를 실제로 여는지 확인한다.
-  nms_policy_ok=true
-  for deployment in hello secure-demo portal-lite; do
-    nms_label=$(kctl get deployment -n "${WORKLOAD_NAMESPACE}" "${deployment}" \
-      -o jsonpath='{.spec.template.metadata.labels.nms-access}' 2>/dev/null || true)
-    if [[ ,${nms_allowed_apps}, == *,${deployment},* ]]; then
-      if [[ ${nms_label} != true ]]; then
-        echo "[FAIL] ${deployment}에 nms-access=true 라벨이 없음" >&2
-        nms_policy_ok=false
-        continue
-      fi
-      if ! kctl get networkpolicy -n "${WORKLOAD_NAMESPACE}" "${deployment}-egress" -o json | jq -e \
-        --arg cidr "${nms_destination_cidr}" --argjson port "${nms_port}" '
-          any(.spec.egress[]?;
-            any(.to[]?; .ipBlock.cidr == $cidr) and
-            any(.ports[]?; .protocol == "TCP" and .port == $port)
-          )
-        ' >/dev/null; then
-        echo "[FAIL] ${deployment} egress에 NMS ${nms_destination_cidr}:${nms_port}/TCP 허용이 없음" >&2
-        nms_policy_ok=false
-      fi
-    elif [[ ${nms_label} == true ]]; then
-      echo "[FAIL] 비허용 앱 ${deployment}에 nms-access=true 라벨이 있음" >&2
-      nms_policy_ok=false
-    fi
-  done
-  if [[ ${nms_policy_ok} == true ]]; then
-    ok "NMS 허용 앱이 계약 목적지 ${nms_destination_cidr}:${nms_port}/TCP에 연결 가능한 정책"
-  else
-    fail=1
-  fi
-fi
-
 IFS=, read -ra https_hosts <<<"${public_https_hosts}"
 for fqdn in ${https_hosts[@]+"${https_hosts[@]}"}; do
   code=$(curl -ksS --resolve "${fqdn}:443:${vip}" -o /dev/null -w '%{http_code}' \

@@ -180,12 +180,10 @@ if [[ ${PHASE} == node || ${PHASE} == all ]]; then
     --service-cidr "${SERVICE_CIDR}")
   [[ ${NODE_ROLE} != agent ]] \
     || identity+=(--server-url "https://${RKE2_SERVER_ENDPOINT}:9345")
-  [[ -z ${NMS_INTERFACE} ]] || identity+=(--nms-interface "${NMS_INTERFACE}")
 
   guard=(bash scripts/node/install-rke2-interface-guard.sh
     --external-interface "${EXTERNAL_INTERFACE}"
     --blocked-tcp-ports "${INTERNAL_ALLOWED_TCP_PORTS}")
-  [[ -z ${NMS_INTERFACE} ]] || guard+=(--nms-interface "${NMS_INTERFACE}")
   IFS=, read -ra guarded_entries <<<"${GUARDED_INTERFACES}"
   for guarded in "${guarded_entries[@]}"; do
     [[ -z ${guarded} ]] || guard+=(--guarded-interface "${guarded}")
@@ -202,18 +200,12 @@ if [[ ${PHASE} == node || ${PHASE} == all ]]; then
   fi
   step "RKE2 계약 소유 설정 병합" "${node_config[@]}"
   step "RKE2 내부망 identity 고정" "${identity[@]}"
-  step "외부/NMS interface 관리 포트 guard" "${guard[@]}"
+  step "외부/guarded interface 관리 포트 guard" "${guard[@]}"
   step "RKE2 embedded containerd proxy" "${containerd_proxy[@]}"
   if [[ ${NODE_ROLE} == server ]]; then
     step "monitoring image pull용 Docker daemon proxy" "${docker_proxy[@]}"
   fi
 
-  if [[ ${NMS_MODE} == network ]]; then
-    nms_role=worker
-    [[ ${NODE_IP} != "${NMS_GATEWAY_INTERNAL_IP}" ]] || nms_role=gateway
-    step "NMS network egress(${nms_role})" \
-      bash scripts/node/install-nms-egress.sh "${nms_role}"
-  fi
   upstream_address=${CLUSTER_UPSTREAM_DNS%:*}
   if [[ -n ${CLUSTER_UPSTREAM_DNS} && ${NODE_IP} == "${upstream_address}" ]]; then
     step "CoreDNS용 내부 DNS forwarder" bash scripts/node/install-dns-forwarder.sh
@@ -274,6 +266,9 @@ PY
 # Devtron Helm repository와 뒤의 외부 image pull을 시작하기 전에 실제 허용/차단 요청으로 Squid를
 # 확인한다. proxy.env 파일 존재만 검사하면 daemon 미기동이나 잘못된 allowlist를 늦게 발견한다.
 step "패키지·차트 설치 전 Squid egress 확인" bash scripts/verify/verify-squid-egress.sh
+
+step "StorageClass 부재 시 local-path 준비" \
+  bash scripts/cluster/install-local-path-storage.sh --apply
 
 step "기존 RKE2 클러스터 선행 조건 검사" bash scripts/cluster/preflight.sh
 

@@ -1,12 +1,10 @@
 #!/usr/bin/env bash
-# Block Kubernetes/RKE2 management ports on public and NMS interfaces.
+# Block Kubernetes/RKE2 management ports on non-internal interfaces.
 set -euo pipefail
 
 MODE=plan
 EXTERNAL_INTERFACE=
-NMS_INTERFACE=
 EXTERNAL_MAC=
-NMS_MAC=
 GUARDED_INTERFACES=()
 PORTS=2379,2380,6443,9345,10250
 CHAIN=SADP_RKE2_GUARD
@@ -14,9 +12,7 @@ CHAIN=SADP_RKE2_GUARD
 while (($#)); do
   case "$1" in
     --external-interface) EXTERNAL_INTERFACE=${2:-}; shift ;;
-    --nms-interface) NMS_INTERFACE=${2:-}; shift ;;
     --external-mac) EXTERNAL_MAC=${2:-}; shift ;;
-    --nms-mac) NMS_MAC=${2:-}; shift ;;
     --guarded-interface) GUARDED_INTERFACES+=("${2:-}"); shift ;;
     --blocked-tcp-ports) PORTS=${2:-}; shift ;;
     --apply) MODE=apply ;;
@@ -25,15 +21,13 @@ while (($#)); do
     -h|--help)
       cat <<'EOF'
 usage: sudo scripts/node/install-rke2-interface-guard.sh \
-  --external-interface eth1 [--nms-interface eth2] \
-  [--external-mac <MAC>] [--nms-mac <MAC>] \
+  --external-interface eth1 [--external-mac <MAC>] \
   [--guarded-interface <NAME>]... \
   [--blocked-tcp-ports 2379,2380,3128,6443,9345,10250] [--apply|--check]
 
---guarded-interface는 여러 번 줄 수 있다. NMS용으로 꽂아만 두고 아직 NMS_MODE를 켜지
-않은 NIC처럼, 계약상 역할이 비어 있는데 공인 주소를 갖는 NIC을 여기 넣어 external과
-같은 관리 포트를 막는다. 계약의 GUARDED_INTERFACES(=platform/network/firewall.env)가
-이 목록의 출처이며, NMS를 실제로 켜면 --nms-interface로 옮긴다.
+--guarded-interface는 여러 번 줄 수 있다. 계약상 역할이 비어 있는데 공인 주소를 갖는
+NIC을 여기 넣어 external과 같은 관리 포트를 막는다. 계약의 GUARDED_INTERFACES
+(=platform/network/firewall.env)가 이 목록의 출처다.
 
 기본 모드는 변경 없이 계획만 출력한다. --apply는 IPv4/IPv6 INPUT guard와 이를
 부팅 때 복원하는 systemd unit을 설치한다. --enforce는 unit 내부용이다.
@@ -102,25 +96,8 @@ ip link show "${EXTERNAL_INTERFACE}" >/dev/null 2>&1 || {
 assert_mac "${EXTERNAL_INTERFACE}" "${EXTERNAL_MAC}"
 
 interfaces=("${EXTERNAL_INTERFACE}")
-if [[ -n ${NMS_INTERFACE} ]]; then
-  valid_interface "${NMS_INTERFACE}" || {
-    echo "[FAIL] NMS interface 이름이 올바르지 않음" >&2
-    exit 2
-  }
-  [[ ${NMS_INTERFACE} != "${EXTERNAL_INTERFACE}" ]] || {
-    echo "[FAIL] 외부망과 NMS interface가 같음" >&2
-    exit 1
-  }
-  ip link show "${NMS_INTERFACE}" >/dev/null 2>&1 || {
-    echo "[FAIL] NMS interface가 없음: ${NMS_INTERFACE}" >&2
-    exit 1
-  }
-  assert_mac "${NMS_INTERFACE}" "${NMS_MAC}"
-  interfaces+=("${NMS_INTERFACE}")
-fi
 
-# NMS 용으로 꽂아만 두고 아직 활성화하지 않은 NIC 처럼, 계약상 역할이 비어 있는데
-# 공인 주소를 갖는 NIC 도 관리 포트는 막는다.
+# 계약상 역할이 비어 있는데 공인 주소를 갖는 NIC도 관리 포트는 막는다.
 # 이 스크립트는 내부망 NIC 이름을 받지 않으므로 여기서 걸러낼 수 없다. 내부망 NIC 을
 # 막으면 etcd/apiserver/kubelet 이 끊기므로, 그 검사는 계약 쪽
 # (configure-site.py 의 GUARDED_INTERFACES, render-network.py 의 interfaces.guarded)에서 한다.
@@ -186,7 +163,7 @@ case "${MODE}" in
     require_root
     enforce_family iptables
     enforce_family ip6tables
-    echo "[OK] 외부/NMS interface의 RKE2 관리 포트 차단 적용"
+    echo "[OK] 외부/guarded interface의 RKE2 관리 포트 차단 적용"
     ;;
   check)
     require_root
@@ -201,9 +178,7 @@ case "${MODE}" in
     temporary=$(mktemp)
     trap 'rm -f "${temporary}"' EXIT
     exec_start="/usr/local/sbin/sadp-rke2-interface-guard --enforce --external-interface ${EXTERNAL_INTERFACE}"
-    [[ -z ${NMS_INTERFACE} ]] || exec_start+=" --nms-interface ${NMS_INTERFACE}"
     [[ -z ${EXTERNAL_MAC} ]] || exec_start+=" --external-mac ${EXTERNAL_MAC}"
-    [[ -z ${NMS_MAC} ]] || exec_start+=" --nms-mac ${NMS_MAC}"
     for guarded in ${GUARDED_INTERFACES[@]+"${GUARDED_INTERFACES[@]}"}; do
       exec_start+=" --guarded-interface ${guarded}"
     done

@@ -10,6 +10,13 @@ bash ./sadp --list
 bash ./sadp --install --env-file /etc/sadp/site.env --phase all
 ```
 
+처음 설치할 때는 질문·답변으로 같은 `site.env`와 phase를 준비할 수 있습니다.
+
+```bash
+sudo bash ./sadp --install-wizard
+sudo bash ./sadp --install-wizard --phase all
+```
+
 `sadp`는 권한을 올리지 않습니다. node/cluster 적용은 호출자가 `sudo bash`로 실행합니다.
 
 ## 통합 설치
@@ -37,7 +44,7 @@ drain/restart/Ready 확인해야 하기 때문입니다. `render` 외 phase는 c
 | 명령 | 실제 역할 |
 | --- | --- |
 | `--configure-site` | `site.env` 검증·계약 생성. `--env-file` 필수, 쓰기는 `--write` |
-| `--render-network` | 계약에서 Squid, firewall, CoreDNS, NMS, cert-manager egress 생성 |
+| `--render-network` | 계약에서 Squid, firewall, CoreDNS, cert-manager egress 생성 |
 | `--render-exposure` | Gateway, HTTPRoute, TLS 리소스 생성 |
 | `--render-rancher` | Rancher Project와 RBAC 생성 |
 | `--render-quota` | ResourceQuota와 LimitRange 생성 |
@@ -62,14 +69,12 @@ bash ./sadp --render-all
 | --- | --- | --- |
 | `--install-node-config` | 계약이 소유한 RKE2 config field 병합 | 계획, `--apply` 시 쓰기 |
 | `--install-network-identity` | 내부 NIC/IP에 RKE2 identity 고정 | 계획, `--apply` 시 쓰기 |
-| `--install-interface-guard` | external/NMS/guarded NIC 관리 port 차단 | 계획, `--apply` 시 쓰기 |
+| `--install-interface-guard` | external/guarded NIC 관리 port 차단 | 계획, `--apply` 시 쓰기 |
 | `--install-containerd-proxy` | RKE2 embedded containerd proxy unit 생성 | 계획, `--apply` 시 쓰기 |
 | `--install-docker-proxy` | control-plane Docker daemon pull을 Squid로 고정 | 계획, `--apply` 시 쓰기, `--check` 검증 |
 | `--install-squid` | 렌더된 allowlist Squid 설치 | 실행 시 설치, `--check`는 검사 |
-| `--install-nms-egress` | `gateway`/`worker` NMS systemd unit 설치 | 실행 시 설치 |
-| `--configure-nms-egress` | 렌더된 route/rp_filter 적용 | 실행 시 적용 |
 
-앞의 다섯 스크립트는 `--apply` 2단계입니다. Squid/DNS/NMS 설치기는 통합 설치기의 node apply에서만
+앞의 다섯 스크립트는 `--apply` 2단계입니다. Squid/DNS 설치기는 통합 설치기의 node apply에서만
 자동 호출되며, 직접 호출할 때는 기본 동작이 실제 변경일 수 있으므로 각 `--help`를 먼저 봅니다.
 어떤 스크립트도 RKE2를 자동 재시작하지 않습니다.
 
@@ -84,6 +89,7 @@ daemon의 proxy 환경도 계약과 같은지 확인하며, 셸 환경변수만 
 | 명령 | 역할 |
 | --- | --- |
 | `--preflight` | 기존 3노드 RKE2와 도구·네트워크 선행 조건 검사 |
+| `--install-local-path-storage` | StorageClass가 전혀 없을 때 local-path 설치(기본 계획, `--apply` 시 설치) |
 | `--install-devtron` | Devtron/번들 Argo CD 상태 계획, `--apply` 시 부재 설치 또는 동일 버전 failed release 복구 |
 | `--configure-keycloak` | 이미 실행 중인 in-cluster/external Keycloak을 계약으로 수렴(`--apply` 전은 계획만) |
 | `--configure-argocd-repo` | Argo repository Secret과 per-repository proxy 설정 |

@@ -26,7 +26,7 @@ Argo CD가 적용하는 플랫폼 values입니다. 정상 설치는 `bash ./sadp
 
 | 경로 | 역할 | 주요 소유자 |
 | --- | --- | --- |
-| `network/` | host firewall/proxy/NMS, CoreDNS, cert-manager egress 입력 | `render-network.py` |
+| `network/` | host firewall/proxy, CoreDNS, cert-manager egress 입력 | `render-network.py` |
 | `dns/` | RKE2 CoreDNS split DNS | `render-network.py` |
 | `exposure/` | Gateway, Route, 외부 서비스, 내부 CA | `render-exposure.py`와 정적 리소스 |
 | `cert-manager/` | ClusterIssuer/Certificate | `render-exposure.py` |

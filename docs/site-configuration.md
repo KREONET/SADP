@@ -241,17 +241,6 @@ MACHINE_AUTH_ALLOWED_CIDRS=<SOURCE_IPV4_CIDR>
 거부합니다. 생성물이나 live 리소스를 직접 patch하지 말고
 [설치 완료 후 외부 Grafana 연동](external-observability.md)을 사용합니다.
 
-### NMS mode
-
-| mode | 필요한 경로 |
-| --- | --- |
-| `disabled` | NMS 상세값과 allowed app을 비움 |
-| `network` | 전용 NIC, gateway 내부 IP, SNAT IP, next-hop, destination CIDR/port |
-| `api` | API base URL, destination CIDR/port, 선택적 role/token key 이름 |
-
-세 mode는 상호 배타적입니다. actual NMS token은 OpenBao에 넣고 env에는 key 이름만 둡니다.
-설치와 검증은 [네트워크 안내](network-egress.md)를 따릅니다.
-
 ### 외부 SAML IdP
 
 alias, display name, provider ID, metadata URL, SSO URL 다섯 값을 모두 채우거나 모두 비웁니다.

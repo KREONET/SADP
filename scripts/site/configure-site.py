@@ -150,8 +150,6 @@ ALLOWED_SECRET_METADATA_KEYS = {
     "DNS_CREDENTIAL_SECRET_NAME",
     "DNS_CREDENTIAL_SECRET_KEY",
     "REGISTRY_PULL_SECRET",
-    "NMS_API_TOKEN_REQUIRED",
-    "NMS_API_TOKEN_SECRET_KEY",
     "PROVIDED_PRIVATE_KEY_PATH",
     "WILDCARD_TLS_SECRET",
     "SADP_ARGO_REPO_TOKEN_FILE",
@@ -201,12 +199,7 @@ KNOWN_KEYS = {
     "RFC2136_TSIG_ALGORITHM", "DNS_CREDENTIAL_SECRET_NAME",
     "DNS_CREDENTIAL_SECRET_KEY", "DNS_RECURSIVE_NAMESERVERS",
     "CERT_MANAGER_NODE_PLACEMENT",
-    "PROVIDED_CERTIFICATE_PATH", "PROVIDED_PRIVATE_KEY_PATH", "NMS_MODE",
-    "NMS_ALLOWED_APPS", "NMS_DESTINATION_CIDR", "NMS_PORT",
-    "NMS_GATEWAY_INTERNAL_IP", "NMS_INTERFACE", "NMS_GATEWAY_IP",
-    "NMS_NEXT_HOP", "NMS_INTERNAL_DOMAIN", "NMS_DNS_SERVERS",
-    "NMS_API_BASE_URL", "NMS_API_STATUS_PATH", "NMS_REQUIRED_ROLE",
-    "NMS_API_TOKEN_REQUIRED", "NMS_API_TOKEN_SECRET_KEY",
+    "PROVIDED_CERTIFICATE_PATH", "PROVIDED_PRIVATE_KEY_PATH",
     "SADP_INSTALL_GITOPS", "SADP_ARGO_REPO_USERNAME", "SADP_ARGO_REPO_TOKEN_FILE",
     "SADP_DNS_TSIG_SECRET_FILE", "SADP_BUILD_IMAGES", "SADP_BUILD_NODE",
     "SADP_DEPLOY_APPS", "SADP_REGISTRY_PULL_DOCKERCONFIG",
@@ -886,10 +879,8 @@ def validate(values: dict[str, str]) -> dict:
     if internal_interface == external_interface:
         raise ConfigError("INTERNAL_INTERFACE and EXTERNAL_INTERFACE must differ")
 
-    # NMS 용으로 미리 꽂아 두었지만 NMS_MODE 가 아직 disabled 라 NMS_INTERFACE 로는
-    # 적을 수 없는 NIC 을 여기 적는다. 그런 NIC 도 공인 주소를 갖고 있으면 관리 포트는
-    # 막아야 하고, 계약에 없으면 guard 재설치 때 조용히 보호가 빠진다.
-    # NMS 를 실제로 켜면 이 목록에서 빼고 NMS_INTERFACE 로 옮긴다.
+    # 계약상 역할이 없더라도 공인 주소를 받을 수 있는 NIC은 관리 포트를 막아야 한다.
+    # 계약에 없으면 guard 재설치 때 보호가 조용히 빠지므로 별도 목록으로 보존한다.
     guarded_interfaces: list[str] = []
     for item in (values.get("GUARDED_INTERFACES") or "").split(","):
         name = item.strip()
@@ -1030,138 +1021,6 @@ def validate(values: dict[str, str]) -> dict:
         if not existing_tls:
             raise ConfigError("TLS_SOURCE=provided requires EXISTING_GATEWAY_TLS_READY=true")
         email = optional(values, "ACME_EMAIL")
-
-    nms_mode = required(values, "NMS_MODE").lower()
-    if nms_mode not in {"disabled", "network", "api"}:
-        raise ConfigError("NMS_MODE must be disabled, network or api")
-    nms_network_keys = (
-        "NMS_GATEWAY_INTERNAL_IP", "NMS_INTERFACE", "NMS_GATEWAY_IP", "NMS_NEXT_HOP",
-    )
-    nms: dict[str, object] = {
-        "mode": nms_mode,
-        "enabled": nms_mode != "disabled",
-        "allowedApps": [],
-        "destinationCIDR": "",
-        "port": 0,
-        "gatewayInternalIP": "",
-        "interface": "",
-        "gatewayIP": "",
-        "nextHop": "",
-        "internalDomain": "",
-        "dnsServers": [],
-        "apiBaseURL": "",
-        "statusPath": required(values, "NMS_API_STATUS_PATH"),
-        "requiredRole": required(values, "NMS_REQUIRED_ROLE"),
-        "tokenRequired": boolean(values, "NMS_API_TOKEN_REQUIRED"),
-        "tokenSecretKey": required(values, "NMS_API_TOKEN_SECRET_KEY"),
-    }
-    if nms_mode != "disabled":
-        allowed_apps = set(csv(values, "NMS_ALLOWED_APPS", required_value=True))
-        unknown_apps = sorted(allowed_apps - KNOWN_APPS)
-        if unknown_apps:
-            raise ConfigError("NMS_ALLOWED_APPS contains unknown apps: " + ", ".join(unknown_apps))
-        destination = cidr(required(values, "NMS_DESTINATION_CIDR"), "NMS_DESTINATION_CIDR")
-        if destination.prefixlen == 0:
-            raise ConfigError("NMS_DESTINATION_CIDR must not be a default route")
-        selected_port = port(required(values, "NMS_PORT"), "NMS_PORT")
-        internal_domain = optional(values, "NMS_INTERNAL_DOMAIN")
-        dns_servers = csv(values, "NMS_DNS_SERVERS")
-        if internal_domain:
-            internal_domain = dns_name(internal_domain, "NMS_INTERNAL_DOMAIN")
-            if not dns_servers:
-                raise ConfigError("NMS_DNS_SERVERS is required with NMS_INTERNAL_DOMAIN")
-        for item in dns_servers:
-            address_raw, separator, port_raw = item.rpartition(":")
-            if not separator:
-                raise ConfigError("NMS_DNS_SERVERS entries must be IPv4:port")
-            ipv4(address_raw, "NMS_DNS_SERVERS")
-            port(port_raw, "NMS_DNS_SERVERS")
-
-        nms.update(
-            {
-                "allowedApps": sorted(allowed_apps),
-                "destinationCIDR": str(destination),
-                "port": selected_port,
-                "internalDomain": internal_domain,
-                "dnsServers": dns_servers,
-            }
-        )
-        if nms_mode == "network":
-            gateway_internal = ipv4(
-                required(values, "NMS_GATEWAY_INTERNAL_IP"),
-                "NMS_GATEWAY_INTERNAL_IP",
-                private=True,
-            )
-            if not any(gateway_internal in network for network in node_networks):
-                raise ConfigError("NMS_GATEWAY_INTERNAL_IP must be inside NODE_INTERNAL_CIDRS")
-            nms_interface = interface(required(values, "NMS_INTERFACE"), "NMS_INTERFACE")
-            if nms_interface in {internal_interface, external_interface}:
-                raise ConfigError("NMS_INTERFACE must differ from internal/external interfaces")
-            if optional(values, "NMS_API_BASE_URL"):
-                raise ConfigError("NMS_MODE=network requires NMS_API_BASE_URL to stay empty")
-            if nms["tokenRequired"]:
-                raise ConfigError("NMS_MODE=network cannot require an API token")
-            nms.update(
-                {
-                    "gatewayInternalIP": str(gateway_internal),
-                    "interface": nms_interface,
-                    "gatewayIP": str(ipv4(required(values, "NMS_GATEWAY_IP"), "NMS_GATEWAY_IP")),
-                    "nextHop": str(ipv4(required(values, "NMS_NEXT_HOP"), "NMS_NEXT_HOP")),
-                }
-            )
-        else:
-            populated_network = [key for key in nms_network_keys if optional(values, key)]
-            if populated_network:
-                raise ConfigError(
-                    "NMS_MODE=api requires network gateway/interface fields to stay empty: "
-                    + ", ".join(populated_network)
-                )
-            nms_base_url = required(values, "NMS_API_BASE_URL")
-            parsed_url = urlsplit(nms_base_url)
-            if (
-                parsed_url.scheme not in {"http", "https"}
-                or not parsed_url.hostname
-                or parsed_url.path not in {"", "/"}
-            ):
-                raise ConfigError("NMS_API_BASE_URL must be an http(s) origin")
-            if parsed_url.username or parsed_url.password or parsed_url.query or parsed_url.fragment:
-                raise ConfigError("NMS_API_BASE_URL must not contain credentials/query/fragment")
-            try:
-                effective_port = parsed_url.port or (443 if parsed_url.scheme == "https" else 80)
-            except ValueError as error:
-                raise ConfigError("NMS_API_BASE_URL contains an invalid port") from error
-            if effective_port != selected_port:
-                raise ConfigError("NMS_API_BASE_URL port must equal NMS_PORT")
-            try:
-                nms_url_ip = ipaddress.ip_address(parsed_url.hostname)
-            except ValueError:
-                nms_url_ip = None
-            if nms_url_ip is not None and nms_url_ip not in destination:
-                raise ConfigError("NMS_API_BASE_URL address must be inside NMS_DESTINATION_CIDR")
-            nms["apiBaseURL"] = nms_base_url
-            if not str(nms["statusPath"]).startswith("/"):
-                raise ConfigError("NMS_API_STATUS_PATH must start with /")
-            if nms["tokenRequired"] and nms["tokenSecretKey"] != "NMS_API_TOKEN":
-                raise ConfigError(
-                    "NMS_API_TOKEN_SECRET_KEY must be NMS_API_TOKEN because the server reads that key"
-                )
-    else:
-        populated = [
-            key
-            for key in (
-                "NMS_ALLOWED_APPS", "NMS_DESTINATION_CIDR", "NMS_PORT",
-                *nms_network_keys, "NMS_INTERNAL_DOMAIN", "NMS_DNS_SERVERS",
-                "NMS_API_BASE_URL",
-            )
-            if optional(values, key)
-        ]
-        if nms["tokenRequired"]:
-            populated.append("NMS_API_TOKEN_REQUIRED")
-        if populated:
-            raise ConfigError(
-                "NMS_MODE=disabled requires mode-specific fields to stay empty: "
-                + ", ".join(sorted(populated))
-            )
 
     public_ip = ipv4(required(values, "PUBLIC_IP"), "PUBLIC_IP")
     public_mode = required(values, "PUBLIC_EXPOSURE_MODE").lower()
@@ -1344,7 +1203,6 @@ def validate(values: dict[str, str]) -> dict:
         "interfaces": {
             "internal": internal_interface,
             "external": external_interface,
-            "nms": str(nms.get("interface") or "") if nms_mode == "network" else "",
             "guarded": guarded_interfaces,
         },
         "network": {
@@ -1403,7 +1261,6 @@ def validate(values: dict[str, str]) -> dict:
             "externalPort": keycloak_port,
             "identityProvider": identity_provider,
         },
-        "nms": nms,
         "installer": {
             "gitops": install_gitops,
             "argoRepoUsername": argo_username,
@@ -1548,24 +1405,6 @@ def build_contract(base: dict, cfg: dict) -> dict:
     squid["dnsProviderEndpoints"] = (
         cfg["tls"]["providerEndpoints"] if cfg["tls"]["source"] == "acme" else []
     )
-    network["nms"] = {
-        "mode": cfg["nms"]["mode"],
-        "allowedApps": cfg["nms"].get("allowedApps", []),
-        "destinationCIDR": cfg["nms"].get("destinationCIDR", ""),
-        "port": cfg["nms"].get("port", 0),
-        "gatewayInternalIP": cfg["nms"].get("gatewayInternalIP", ""),
-        "interface": cfg["nms"].get("interface", ""),
-        "gatewayIP": cfg["nms"].get("gatewayIP", ""),
-        "nextHop": cfg["nms"].get("nextHop", ""),
-        "internalDomain": cfg["nms"].get("internalDomain", ""),
-        "dnsServers": cfg["nms"].get("dnsServers", []),
-        "apiBaseURL": cfg["nms"].get("apiBaseURL", ""),
-        "statusPath": cfg["nms"].get("statusPath", "/status"),
-        "requiredRole": cfg["nms"].get("requiredRole", "nms:read"),
-        "tokenRequired": bool(cfg["nms"].get("tokenRequired")),
-        "tokenSecretKey": cfg["nms"].get("tokenSecretKey", "NMS_API_TOKEN"),
-    }
-
     # 현재 사용자 앱은 사이트당 단일 workload Namespace를 공유한다. Gateway/Rancher만
     # 새 Namespace로 바꾸고 quota 대상이 이전 사이트 값에 남으면 render-quota가 실패하고,
     # 더 나쁘게는 오래된 Namespace에만 제한이 걸릴 수 있으므로 같은 계약 변경에 묶는다.
@@ -1859,13 +1698,7 @@ def app_values(
             else OPENBAO_ESO_ROLES["zoneApp"]
         )
 
-    nms_allowed = cfg["nms"]["mode"] != "disabled" and app_name in cfg["nms"].get("allowedApps", [])
     policy = document.setdefault("networkPolicy", {})
-    policy["nms"] = {
-        "enabled": bool(nms_allowed),
-        "destinationCIDR": cfg["nms"].get("destinationCIDR", "") if nms_allowed else "",
-        "port": cfg["nms"].get("port", 0) if nms_allowed else 0,
-    }
 
     if app_name == "portal-lite":
         config = configuration["config"]
@@ -1976,13 +1809,6 @@ def app_values(
         policy["allowedCIDRs"] = allowed_cidrs
 
         portal_forgejo_config(config, cfg)
-        if nms_allowed and cfg["nms"]["mode"] == "api":
-            config["NMS_API_BASE_URL"] = cfg["nms"]["apiBaseURL"]
-            config["NMS_API_STATUS_PATH"] = cfg["nms"]["statusPath"]
-            config["NMS_REQUIRED_ROLE"] = cfg["nms"]["requiredRole"]
-        else:
-            for key in ("NMS_API_BASE_URL", "NMS_API_STATUS_PATH", "NMS_REQUIRED_ROLE"):
-                config.pop(key, None)
         auth_secret = next(
             (item for item in configuration.get("externalSecrets") or [] if item.get("name") == "auth"),
             None,
@@ -1991,10 +1817,8 @@ def app_values(
             keys = [
                 item
                 for item in auth_secret.get("keys") or []
-                if item not in {"NMS_API_TOKEN", "FORGEJO_BOT_TOKEN"}
+                if item != "FORGEJO_BOT_TOKEN"
             ]
-            if nms_allowed and cfg["nms"]["mode"] == "api" and cfg["nms"].get("tokenRequired"):
-                keys.append(cfg["nms"]["tokenSecretKey"])
             if cfg["forgejo"].get("api"):
                 # 봇 토큰은 OpenBao에만 있고 values/Git에는 키 이름만 남는다.
                 keys.append("FORGEJO_BOT_TOKEN")
@@ -2428,7 +2252,6 @@ def install_env(cfg: dict) -> str:
         "ACME_CLUSTER_ISSUER_NAME": cfg["tls"]["clusterIssuerName"],
         "INTERNAL_INTERFACE": cfg["interfaces"]["internal"],
         "EXTERNAL_INTERFACE": cfg["interfaces"]["external"],
-        "NMS_INTERFACE": cfg["interfaces"]["nms"],
         "GUARDED_INTERFACES": ",".join(cfg["interfaces"].get("guarded") or []),
         "CONTROL_PLANE_HOSTNAME": cfg["nodes"]["controlHostname"],
         "CONTROL_PLANE_IP": cfg["nodes"]["controlIP"],
@@ -2454,10 +2277,6 @@ def install_env(cfg: dict) -> str:
         "KEYCLOAK_NODE_PLACEMENT": cfg["keycloak"]["nodePlacement"],
         "DNS_CREDENTIAL_SECRET_NAME": cfg["tls"]["credentialSecretName"],
         "DNS_CREDENTIAL_SECRET_KEY": cfg["tls"]["credentialSecretKey"],
-        "NMS_MODE": cfg["nms"]["mode"],
-        "NMS_DESTINATION_CIDR": cfg["nms"].get("destinationCIDR", ""),
-        "NMS_PORT": cfg["nms"].get("port", ""),
-        "NMS_GATEWAY_INTERNAL_IP": cfg["nms"].get("gatewayInternalIP", ""),
         "SADP_INSTALL_GITOPS": str(cfg["installer"]["gitops"]).lower(),
         "SADP_ARGO_REPO_USERNAME": cfg["installer"]["argoRepoUsername"],
         "SADP_ARGO_REPO_TOKEN_FILE": cfg["installer"]["argoRepoTokenFile"],
@@ -2570,7 +2389,6 @@ GENERATED_PATHS = (
     ROOT / "platform/network/proxy.env",
     ROOT / "platform/network/firewall.env",
     ROOT / "platform/network/egress-policies.yaml",
-    ROOT / "platform/network/nms-egress.env",
     ROOT / "platform/dns/rke2-coredns-config.yaml",
     ROOT / "argocd/applications/cert-manager.yaml",
     ROOT / "platform/quota/resources.yaml",
@@ -2695,13 +2513,6 @@ def summary(cfg: dict) -> None:
             "[WARN] FORGEJO_REPO_URL이 https://host/owner/repo 형태가 아니라 portal-lite "
             "배포 신청 API가 503(forgejo_not_configured)으로 남는다"
         )
-    if cfg["nms"]["mode"] != "disabled":
-        print(
-            f"[OK] nms={cfg['nms']['mode']} destination={cfg['nms']['destinationCIDR']} "
-            f"port={cfg['nms']['port']} apps={','.join(cfg['nms']['allowedApps'])}"
-        )
-    else:
-        print("[OK] nms=disabled (no NMS route, API config, app label or egress rule)")
     print("[OK] no credential values accepted or generated")
 
 

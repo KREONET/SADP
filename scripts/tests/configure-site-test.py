@@ -104,21 +104,6 @@ DNS_CREDENTIAL_SECRET_KEY=tsig-secret
 DNS_RECURSIVE_NAMESERVERS=10.53.0.10:53
 PROVIDED_CERTIFICATE_PATH=wildcard/fullchain.pem
 PROVIDED_PRIVATE_KEY_PATH=wildcard/privkey.pem
-NMS_MODE=disabled
-NMS_ALLOWED_APPS=
-NMS_DESTINATION_CIDR=
-NMS_PORT=
-NMS_GATEWAY_INTERNAL_IP=
-NMS_INTERFACE=
-NMS_GATEWAY_IP=
-NMS_NEXT_HOP=
-NMS_INTERNAL_DOMAIN=
-NMS_DNS_SERVERS=
-NMS_API_BASE_URL=
-NMS_API_STATUS_PATH=/status
-NMS_REQUIRED_ROLE=nms:read
-NMS_API_TOKEN_REQUIRED=false
-NMS_API_TOKEN_SECRET_KEY=NMS_API_TOKEN
 """
 
 
@@ -220,7 +205,7 @@ def direct_case(label: str, check) -> None:
         print(f"[OK]   {label}")
 
 
-def verify_generated(workspace: pathlib.Path, *, expect_nms: bool, expected_mode: str) -> str:
+def verify_generated(workspace: pathlib.Path) -> str:
     contract = yaml.safe_load((workspace / "contracts/platform-production.yaml").read_text(encoding="utf-8"))
     spec = contract["spec"]
     if spec["baseDomain"] != "prod.company.kr":
@@ -250,8 +235,6 @@ def verify_generated(workspace: pathlib.Path, *, expect_nms: bool, expected_mode
         or interfaces.get("guarded") != []
     ):
         return "site interface names were not generated into the contract"
-    if spec["network"]["nms"]["mode"] != expected_mode:
-        return f"NMS mode mismatch: {spec['network']['nms']['mode']}"
     if spec["policy"]["userQuota"]["namespaces"] != ["research-prod"]:
         return "user quota workload Namespace was not generated"
     if spec["public"]["mode"] != "nat" or spec["public"]["ports"] != [80, 443]:
@@ -309,8 +292,6 @@ def verify_generated(workspace: pathlib.Path, *, expect_nms: bool, expected_mode
         return "Portal AppGroup Argo project config missing"
     if portal.get("portalPipeline", {}).get("argoNamespace") != "devtroncd":
         return "Portal pipeline Argo RBAC namespace missing"
-    if bool(portal["networkPolicy"]["nms"]["enabled"]) != expect_nms:
-        return f"NMS label/policy state mismatch: expected {expect_nms}"
     server = yaml.safe_load((workspace / "rke/control-node/config.yaml").read_text(encoding="utf-8"))
     if "rke2-ingress-nginx" not in (server.get("disable") or []):
         return "RKE2 ingress-nginx disable guard missing"
@@ -378,7 +359,7 @@ def verify_generated(workspace: pathlib.Path, *, expect_nms: bool, expected_mode
 
 
 def generated(workspace: pathlib.Path, _result: subprocess.CompletedProcess) -> str:
-    return verify_generated(workspace, expect_nms=False, expected_mode="disabled")
+    return verify_generated(workspace)
 
 
 def generated_custom_workload_namespace(
@@ -431,44 +412,6 @@ def generated_custom_workload_namespace(
     return ""
 
 
-def generated_network_nms(workspace: pathlib.Path, result: subprocess.CompletedProcess) -> str:
-    detail = verify_generated(workspace, expect_nms=True, expected_mode="network")
-    if detail:
-        return detail
-    portal = yaml.safe_load((workspace / "apps/portal-lite/values-beta.yaml").read_text(encoding="utf-8"))
-    if not portal["networkPolicy"]["nms"]["enabled"]:
-        return "NMS-enabled Portal policy was not generated"
-    if portal["networkPolicy"]["nms"]["destinationCIDR"] != "172.20.0.0/24":
-        return "NMS destination CIDR mismatch"
-    if portal["networkPolicy"]["nms"]["port"] != 9443:
-        return "NMS port mismatch"
-    if portal["configuration"]["config"].get("NMS_API_BASE_URL"):
-        return "network 모드가 Portal API endpoint를 주입함"
-    nms_env = (workspace / "platform/network/nms-egress.env").read_text(encoding="utf-8")
-    if "NMS_MODE=network" not in nms_env or "NMS_PORT=9443" not in nms_env:
-        return "NMS gateway environment was not rendered"
-    return ""
-
-
-def generated_api_nms(workspace: pathlib.Path, result: subprocess.CompletedProcess) -> str:
-    detail = verify_generated(workspace, expect_nms=True, expected_mode="api")
-    if detail:
-        return detail
-    portal = yaml.safe_load((workspace / "apps/portal-lite/values-beta.yaml").read_text(encoding="utf-8"))
-    if portal["configuration"]["config"].get("NMS_API_BASE_URL") != "https://172.20.0.20:9443":
-        return "API mode endpoint mismatch"
-    if portal["networkPolicy"]["nms"] != {
-        "enabled": True,
-        "destinationCIDR": "172.20.0.0/24",
-        "port": 9443,
-    }:
-        return "API mode app NetworkPolicy does not allow the configured NMS port"
-    nms_env = (workspace / "platform/network/nms-egress.env").read_text(encoding="utf-8")
-    if "NMS_MODE=api" not in nms_env or "NMS_INTERFACE=''" not in nms_env:
-        return "API mode rendered a dedicated NMS interface"
-    return ""
-
-
 def generated_direct_public(workspace: pathlib.Path, result: subprocess.CompletedProcess) -> str:
     contract = yaml.safe_load((workspace / "contracts/platform-production.yaml").read_text(encoding="utf-8"))
     if contract["spec"]["public"]["mode"] != "direct":
@@ -502,32 +445,6 @@ def generated_portal_apex(workspace: pathlib.Path, _result: subprocess.Completed
     return ""
 
 
-NMS_NETWORK_VALID = VALID
-for old, new in (
-    ("NMS_MODE=disabled", "NMS_MODE=network"),
-    ("NMS_ALLOWED_APPS=", "NMS_ALLOWED_APPS=portal-lite"),
-    ("NMS_DESTINATION_CIDR=", "NMS_DESTINATION_CIDR=172.20.0.0/24"),
-    ("NMS_PORT=", "NMS_PORT=9443"),
-    ("NMS_GATEWAY_INTERNAL_IP=", "NMS_GATEWAY_INTERNAL_IP=10.20.30.30"),
-    ("NMS_INTERFACE=", "NMS_INTERFACE=eth2"),
-    ("NMS_GATEWAY_IP=", "NMS_GATEWAY_IP=172.20.0.10"),
-    ("NMS_NEXT_HOP=", "NMS_NEXT_HOP=172.20.0.1"),
-    ("NMS_INTERNAL_DOMAIN=", "NMS_INTERNAL_DOMAIN=nms.internal.company.kr"),
-    ("NMS_DNS_SERVERS=", "NMS_DNS_SERVERS=172.20.0.53:53"),
-):
-    NMS_NETWORK_VALID = mutate(NMS_NETWORK_VALID, old, new)
-
-NMS_API_VALID = VALID
-for old, new in (
-    ("NMS_MODE=disabled", "NMS_MODE=api"),
-    ("NMS_ALLOWED_APPS=", "NMS_ALLOWED_APPS=portal-lite"),
-    ("NMS_DESTINATION_CIDR=", "NMS_DESTINATION_CIDR=172.20.0.0/24"),
-    ("NMS_PORT=", "NMS_PORT=9443"),
-    ("NMS_API_BASE_URL=", "NMS_API_BASE_URL=https://172.20.0.20:9443"),
-):
-    NMS_API_VALID = mutate(NMS_API_VALID, old, new)
-
-
 case("SC-01 valid Forgejo/OCI site.env check", VALID, True)
 case(
     "SC-02 external port expansion rejected",
@@ -545,12 +462,6 @@ case(
     False,
 )
 case(
-    "SC-04 half-configured NMS rejected",
-    mutate(VALID, "NMS_MODE=disabled", "NMS_MODE=network"),
-    False,
-)
-case("SC-05 complete NMS network selection accepted", NMS_NETWORK_VALID, True)
-case(
     "SC-06 credential-like env key rejected",
     VALID + "FORGEJO_TOKEN=do-not-store-this-here\n",
     False,
@@ -564,24 +475,9 @@ case(
     write=True,
 )
 case(
-    "SC-08 production write renders NMS network mode",
-    NMS_NETWORK_VALID,
-    True,
-    generated_network_nms,
-    write=True,
-)
-case(
     "SC-09 Cloudflare provider is rejected",
     mutate(VALID, "DNS_PROVIDER=rfc2136", "DNS_PROVIDER=cloudflare"),
     False,
-)
-case("SC-10 complete NMS API selection accepted", NMS_API_VALID, True)
-case(
-    "SC-11 production write renders NMS API mode",
-    NMS_API_VALID,
-    True,
-    generated_api_nms,
-    write=True,
 )
 case(
     "SC-12 direct public IP renders Envoy Service externalIPs",

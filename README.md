@@ -32,6 +32,14 @@ bash ./sadp --test     # 로컬 회귀 시험 (클러스터 불필요)
 
 다른 사이트에 배포할 때는 예제 env를 Git 밖으로 복사하고 실제 값으로 바꿉니다.
 
+처음 설치해 변수 의미가 익숙하지 않으면 질문·답변형 설치 준비를 사용할 수 있습니다.
+
+```bash
+sudo bash ./sadp --install-wizard
+```
+
+이 마법사도 검증된 `/etc/sadp/site.env`를 만든 뒤 아래와 같은 통합 설치 phase를 사용합니다.
+
 ```bash
 sudo install -d -m 0700 /etc/sadp /etc/sadp/secrets
 sudo install -m 0600 environments/site.env.example /etc/sadp/site.env
@@ -71,8 +79,7 @@ cluster phase는 Devtron과 번들 Argo CD가 완전히 없으면 승인된 고�
                                               └─ Reloader rollout
 
 사설 Worker
-  ├─ 승인 외부 HTTPS ── Squid allowlist
-  └─ 승인 NMS 앱 ────── 전용 망/port 고정 SNAT 또는 HTTP(S) API
+  └─ 승인 외부 HTTPS ── Squid allowlist
 ```
 
 외부 경로는 **Envoy Gateway 하나로 통일**합니다. 앱이 별도 NodePort나 Ingress를 만들지 않으며,
@@ -88,7 +95,7 @@ SSO 앱은 Gateway의 `SecurityPolicy`에서 인증을 강제합니다.
 | Secret | OpenBao KV v2 → ESO → Kubernetes Secret, 변경 시 Reloader rollout |
 | 이미지 배포 | Portal 신청 → kaniko build/push → GitOps tag 반영 → Argo 배포 |
 | GitOps | Forgejo PR 자동 merge, OCI Registry push/pull, Argo CD 동기화 |
-| 제한 egress | cert-manager·패키지는 Squid, NMS는 전용 망/port 또는 승인 API |
+| 제한 egress | cert-manager·패키지는 Squid, 앱은 선언한 NetworkPolicy로 제한 |
 | 외부 공개 | 경계 NAT 또는 노드 공인 NIC 직접 연결, 외부 TCP 80/443만 허용 |
 | 백업 | RKE2 etcd, OpenBao Raft, in-cluster Keycloak PostgreSQL |
 
