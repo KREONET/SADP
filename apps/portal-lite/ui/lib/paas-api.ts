@@ -34,7 +34,7 @@ import type {
 } from "@/types/domain";
 
 /**
- * 화면 ↔ 백엔드(Go `apps/portal-lite`) 사이의 유일한 접점.
+ * 화면 ↔ 백엔드(Go `apps/portal-lite/backend`) 사이의 유일한 접점.
  *
  * 같은 Pod 안의 Go API 를 고정 loopback origin으로 직접 호출한다. 세션에서 만든
  * X-Portal-User와 OpenBao 입력이 공개 build 변수의 외부 origin으로 나가면 안 된다.

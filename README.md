@@ -108,7 +108,7 @@ SSO 앱은 Gateway의 `SecurityPolicy`에서 인증을 강제합니다.
 | 문서 포털 | [SADP 문서 홈](docs/README.md) |
 | 역할별 가이드 | [사용자](docs/usage.md) · [개발자](docs/developer-guide.md) · [관리자](docs/administrator-guide.md) |
 | 설치와 이식 | [설치](docs/installation.md) · [사이트 설정](docs/site-configuration.md) |
-| 개발 참조 | [Portal API](docs/portal-api.md) · [OpenAPI](apps/portal-lite/openapi.yaml) |
+| 개발 참조 | [Portal API](docs/portal-api.md) · [OpenAPI](apps/portal-lite/backend/openapi.yaml) |
 | 운영 Runbook | [기동·종료·업데이트](docs/operations-lifecycle.md) · [네트워크](docs/network-egress.md) · [DNS-01](docs/letsencrypt-dns01.md) · [외부 Keycloak](docs/keycloak-external.md) · [외부 관측](docs/external-observability.md) · [복구](docs/recovery.md) |
 | AI 에이전트 | [AGENTS.md](AGENTS.md) |
 
@@ -149,7 +149,7 @@ Portal Lite 화면을 수정했다면:
 cd apps/portal-lite/ui
 npm ci && npm run lint && npm run typecheck && npm run test && npm run build
 
-cd ..
+cd ../backend
 gofmt -l *.go && go vet ./... && go test ./...
 ```
 

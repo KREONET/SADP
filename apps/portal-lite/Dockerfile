@@ -16,15 +16,15 @@ RUN if [ -n "${PORTAL_UI_PUBLIC_ENV_B64}" ]; then \
     rm -f .env.production.local
 
 FROM golang:1.24.5-alpine3.22 AS api-build
-WORKDIR /src
+WORKDIR /src/backend
 ENV GOPROXY=off \
     GOSUMDB=off \
     GOFLAGS=-mod=vendor
 COPY --from=helm /usr/bin/helm /usr/local/bin/helm
-COPY go.mod go.sum *.go openapi.yaml ./
+COPY backend/go.mod backend/go.sum backend/*.go backend/openapi.yaml ./
 # 테스트베드 빌더 Pod는 인터넷 egress를 전제로 하지 않는다. Helm 결과를 읽는 YAML
 # 모듈은 검토한 소스를 함께 넣어 빌드가 공개 Go proxy 상태에 좌우되지 않게 한다.
-COPY vendor ./vendor
+COPY backend/vendor ./vendor
 RUN test -z "$(gofmt -l *.go)" && \
     go vet ./... && \
     go test ./... && \

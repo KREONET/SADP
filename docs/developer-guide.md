@@ -92,7 +92,7 @@ Portal의 **내 앱**에서 신청 ID, PR, pipeline 상태를 확인합니다. �
 전달합니다.
 
 API 자동화가 필요하면 [Portal API](portal-api.md)와
-[OpenAPI](../apps/portal-lite/openapi.yaml)를 사용합니다.
+[OpenAPI](../apps/portal-lite/backend/openapi.yaml)를 사용합니다.
 
 ## 10. 저장소 개발 검증
 

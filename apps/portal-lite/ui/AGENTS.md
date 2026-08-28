@@ -69,7 +69,7 @@ lib/     # site-config, paas-api, format-date, env-parse, new-app-draft, keycloa
          # require-session(로그인 게이트 + 개발 우회), i18n/, utils
 types/domain.ts  # 화면 전체가 공유하는 도메인 타입 — 여기서 시작해라
 디자인파일/       # 확정 스크린샷. 스펙의 최종 근거(화면3 문서는 제거되어 해당 시안은 미사용).
-../openapi.yaml  # 백엔드 계약서 SSOT (§5 경고 반드시 읽을 것)
+../backend/openapi.yaml  # 백엔드 계약서 SSOT (§5 경고 반드시 읽을 것)
 ```
 
 ### 🔴 `(legacy)` 와 `(paas)` 의 CSS 분리는 의도적이다
@@ -126,7 +126,7 @@ types/domain.ts  →  lib/paas-api.ts  →  서버 컴포넌트(page.tsx)  →  
 
 ## 5. 🔴 백엔드 API 계약
 
-`../openapi.yaml`(OpenAPI 3.1.1)이 유일한 API 계약서다. UI 디렉터리에
+`../backend/openapi.yaml`(OpenAPI 3.1.1)이 유일한 API 계약서다. UI 디렉터리에
 복사본을 두면 백엔드 변경과 조용히 어긋나므로 별도 `ui/openapi.yaml`을 만들지 않는다.
 현재 구현된 주요 엔드포인트는 다음과 같다.
 
@@ -152,7 +152,7 @@ appGroupValidate:   "/api/v1/app-groups/validate",
 appGroups:          "/api/v1/app-groups",
 ```
 
-새 API를 추가할 때는 `../openapi.yaml` → Go handler → `paas-api.ts` DTO/매핑 →
+새 API를 추가할 때는 `../backend/openapi.yaml` → Go handler → `paas-api.ts` DTO/매핑 →
 `types/domain.ts` 순서로 함께 갱신한다. 화면 코드가 raw API 형태에 의존하게 만들지 마라.
 
 부가 규칙 (스펙 명시):

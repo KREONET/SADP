@@ -1,8 +1,8 @@
 # SADP Portal API 안내
 
 > 대상: Portal BFF/API 연동 개발자
-> 규격 원본: [apps/portal-lite/openapi.yaml](../apps/portal-lite/openapi.yaml)
-> 라우팅 원본: [apps/portal-lite/routes.go](../apps/portal-lite/routes.go)
+> 규격 원본: [apps/portal-lite/backend/openapi.yaml](../apps/portal-lite/backend/openapi.yaml)
+> 라우팅 원본: [apps/portal-lite/backend/routes.go](../apps/portal-lite/backend/routes.go)
 
 이 문서는 사람이 빠르게 확인하기 위한 요약입니다. 필드, required 여부, 응답 schema는 OpenAPI가
 기준이며 실행 중인 Portal에서도 `GET /api/v1/openapi.yaml`로 제공합니다.
@@ -206,24 +206,24 @@ API 로그와 장애 보고에는 password, token, cookie, `.env` 원문, privat
 
 | 파일 | 책임 |
 | --- | --- |
-| `routes.go` | 실제 method/path 등록 |
-| `openapi.yaml` | 외부 API schema |
-| `app_profile.go` | 단일 앱 검증과 계획 |
-| `appgroup_api.go` | AppGroup 검증·생성 |
-| `deployment_requests.go` | 단일 앱 생성 handler |
-| `runtime_state.go` | 중지·재개 |
-| `pipeline.go` | build/PR/Argo 상태 수렴 |
+| `backend/routes.go` | 실제 method/path 등록 |
+| `backend/openapi.yaml` | 외부 API schema |
+| `backend/app_profile.go` | 단일 앱 검증과 계획 |
+| `backend/appgroup_api.go` | AppGroup 검증·생성 |
+| `backend/deployment_requests.go` | 단일 앱 생성 handler |
+| `backend/runtime_state.go` | 중지·재개 |
+| `backend/pipeline.go` | build/PR/Argo 상태 수렴 |
 | `ui/` | Auth.js BFF와 화면 |
 
 변경 후 실행합니다.
 
 ```bash
-cd apps/portal-lite
+cd apps/portal-lite/backend
 gofmt -l *.go
 go vet ./...
 go test ./...
 
-cd ui
+cd ../ui
 npm run typecheck
 npm run lint
 npm run test

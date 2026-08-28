@@ -45,7 +45,7 @@ sudo bash ./sadp --install-wizard
 | 외부 Keycloak과 SAML IdP | [외부 Keycloak](keycloak-external.md) |
 | 외부 Grafana 연동 | [외부 관측](external-observability.md) |
 | 안전 기동·종료, SADP/RKE2 업데이트 | [운영 수명주기](operations-lifecycle.md) |
-| Portal API | [Portal API](portal-api.md) · [OpenAPI](../apps/portal-lite/openapi.yaml) |
+| Portal API | [Portal API](portal-api.md) · [OpenAPI](../apps/portal-lite/backend/openapi.yaml) |
 | 백업과 복원 | [복구](recovery.md) |
 | Forgejo token 회전 | [token 회전](runbooks/forgejo-token-rotation.md) |
 | 개별 명령 진단 | [스크립트 안내](../scripts/README.md) |

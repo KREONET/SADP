@@ -2213,7 +2213,7 @@ def runtime_updates(cfg: dict, old_contract: dict) -> dict[pathlib.Path, str]:
             yaml.safe_dump(item, allow_unicode=True, sort_keys=False) for item in system_documents
         )
 
-    openapi_path = ROOT / "apps/portal-lite/openapi.yaml"
+    openapi_path = ROOT / "apps/portal-lite/backend/openapi.yaml"
     openapi = yaml.safe_load(openapi_path.read_text(encoding="utf-8"))
     openapi = replace_strings(
         openapi,

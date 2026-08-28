@@ -152,12 +152,12 @@ def check_script_references() -> None:
 
 
 def source_routes() -> set[tuple[str, str]]:
-    routes = text(ROOT / "apps/portal-lite/routes.go")
+    routes = text(ROOT / "apps/portal-lite/backend/routes.go")
     return set(re.findall(r'mux\.HandleFunc\("(GET|POST|PUT|DELETE) ([^" ]+)"', routes))
 
 
 def openapi_routes() -> set[tuple[str, str]]:
-    document = yaml.safe_load(text(ROOT / "apps/portal-lite/openapi.yaml"))
+    document = yaml.safe_load(text(ROOT / "apps/portal-lite/backend/openapi.yaml"))
     result: set[tuple[str, str]] = set()
     for path, operations in document.get("paths", {}).items():
         for method in operations:

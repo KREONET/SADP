@@ -4,7 +4,7 @@
 사용자당 상한(3 CPU / 5Gi)은 세 곳에서 따로 판단된다.
 
   UI      신규 앱 위저드가 preset x replicas 를 더해 미리 막는다.
-  서버    배포 신청 POST 를 apps/portal-lite/quota.go 가 다시 계산해 거부한다.
+  서버    배포 신청 POST 를 apps/portal-lite/backend/quota.go 가 다시 계산해 거부한다.
   클러스터 이 스크립트가 만드는 ResourceQuota/LimitRange 가 마지막으로 막는다.
 
 앞의 둘은 포털을 거친 요청에만 걸린다. 포털을 우회해 kubectl/ArgoCD 로 직접 넣은 Pod 는
@@ -28,7 +28,7 @@ import yaml
 
 ROOT = pathlib.Path(__file__).resolve().parents[2]
 CONTRACT = ROOT / "contracts" / "platform-production.yaml"
-QUOTA_SOURCE = ROOT / "apps" / "portal-lite" / "quota.go"
+QUOTA_SOURCE = ROOT / "apps" / "portal-lite" / "backend" / "quota.go"
 UI_QUOTA_SOURCE = ROOT / "apps" / "portal-lite" / "ui" / "lib" / "quota.ts"
 OUTPUT = ROOT / "platform" / "quota" / "resources.yaml"
 
@@ -57,7 +57,7 @@ DEFAULT_CONTAINER_MEMORY_LIMIT = "512Mi"
 HEADER = (
     "# 자동 생성 파일. contracts/platform-production.yaml을 수정한 뒤 scripts/site/render-quota.py를 실행한다.\n"
     "# 사용자당 상한은 policy.userQuota 하나로 정한다. UI(위저드)와 서버 검증\n"
-    "# (apps/portal-lite/quota.go)이 같은 값을 쓰는지는 render-quota.py가 대조한다.\n"
+    "# (apps/portal-lite/backend/quota.go)이 같은 값을 쓰는지는 render-quota.py가 대조한다.\n"
 )
 
 
@@ -69,7 +69,7 @@ def load_contract() -> dict:
 
 
 def parse_cpu_milli(value: object) -> int:
-    """apps/portal-lite/quota.go 의 parseCPUMilli 와 같은 규칙으로 읽는다."""
+    """apps/portal-lite/backend/quota.go 의 parseCPUMilli 와 같은 규칙으로 읽는다."""
     text = str(value or "").strip()
     if not text:
         raise ValueError("empty cpu quantity")
@@ -85,7 +85,7 @@ def parse_cpu_milli(value: object) -> int:
 
 
 def parse_memory_bytes(value: object) -> int:
-    """apps/portal-lite/quota.go 의 parseMemoryBytes 와 같은 규칙으로 읽는다."""
+    """apps/portal-lite/backend/quota.go 의 parseMemoryBytes 와 같은 규칙으로 읽는다."""
     text = str(value or "").strip()
     if not text:
         raise ValueError("empty memory quantity")

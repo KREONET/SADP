@@ -16,7 +16,7 @@ export {
 } from "./new-app-draft-policy";
 
 /*
- * 검증 규칙은 서버(apps/portal-lite/app_profile.go validateInput)를 그대로 옮긴 것이다.
+ * 검증 규칙은 서버(apps/portal-lite/backend/app_profile.go validateInput)를 그대로 옮긴 것이다.
  * UI에서 통과한 값이 서버에서 거부되면 사용자는 이유를 알 수 없으므로 패턴·상한을
  * 서버와 같은 문자로 유지한다. 규칙을 바꿀 때는 양쪽을 함께 고친다.
  */

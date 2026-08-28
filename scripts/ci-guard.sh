@@ -600,7 +600,7 @@ else:
 
 # Portal API 문서는 현재 읽기/검증 API와 Forgejo cutover 후 쓰기 API의 기준 계약이다.
 try:
-    portal_api = yaml.safe_load(open("apps/portal-lite/openapi.yaml", encoding="utf-8"))
+    portal_api = yaml.safe_load(open("apps/portal-lite/backend/openapi.yaml", encoding="utf-8"))
     portal_paths = portal_api["paths"]
     portal_components = portal_api["components"]
     assert portal_api["openapi"] == "3.1.1"

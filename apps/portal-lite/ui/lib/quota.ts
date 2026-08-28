@@ -1,5 +1,5 @@
 /**
- * 사용자당 자원 상한 계산. 서버(apps/portal-lite/quota.go)와 같은 규칙을 쓴다.
+ * 사용자당 자원 상한 계산. 서버(apps/portal-lite/backend/quota.go)와 같은 규칙을 쓴다.
  * UI에서 통과한 입력이 서버에서 막히면 사용자는 이유를 알 수 없으므로,
  * 파싱·비교 방식(정수 millicore, 이진 접두사)을 서버와 동일하게 맞춘다.
  */
