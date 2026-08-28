@@ -12,7 +12,9 @@
 3노드 RKE2 클러스터(server 1 + worker 2) 위에 공개 웹 서비스와 SSO 보호 서비스를 올리는 베타 테스트베드다.
 Envoy Gateway + MetalLB가 외부 진입점이고, Keycloak / OpenBao / ESO / Reloader / Rancher / Argo CD가 인증·Secret·GitOps를 담당한다.
 
-**하지 않는 일:** OS 설치, RKE2 자체 설치. 이미 구성된 3노드 클러스터를 전제로 그 위의 서비스만 설치한다.
+**하지 않는 일:** OS 설치, RKE2 신규 설치. 이미 구성된 3노드 클러스터를 전제로 그 위의 서비스를
+설치한다. 기존 RKE2의 고정 버전 업데이트만 `scripts/node/upgrade-rke2.sh`의 별도 유지보수 경계로
+지원한다.
 
 ---
 

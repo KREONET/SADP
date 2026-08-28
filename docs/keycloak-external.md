@@ -599,7 +599,7 @@ sudo env \
   KEYCLOAK_IDP_METADATA_URL=https://<IDP_FQDN>/<METADATA_PATH> \
   KEYCLOAK_IDP_SSO_URL=https://<IDP_FQDN>/<SSO_PATH> \
   PORTAL_CLIENT_ID=<PORTAL_CLIENT_ID> \
-  PORTAL_POST_LOGOUT_REDIRECT_URI=https://<PORTAL_FQDN>/portal \
+  PORTAL_POST_LOGOUT_REDIRECT_URI=https://napp.kreonet.net/portal \
   /root/sadp-configure-keycloak-trusted-saml.sh
 ```
 

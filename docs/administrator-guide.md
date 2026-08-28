@@ -116,7 +116,23 @@ sudo bash ./sadp --verify-backups
 복원은 장애 중 쓰기를 멈추고 [복구 Runbook](recovery.md)을 따릅니다. 백업 성공 로그만 믿지 않고
 checksum과 실제 복원 시험 일시를 기록합니다.
 
-## 9. 인수인계 체크리스트
+## 9. 안전 기동·종료와 업데이트
+
+전체 테스트베드를 끌 때는 전체 백업과 worker drain을 먼저 완료하고 worker 두 대, server 순서로
+RKE2를 중지합니다. 켤 때는 server를 먼저 Ready로 만든 뒤 worker를 시작하고 마지막에 uncordon합니다.
+
+```bash
+sudo bash ./sadp --power prepare-off --role server
+bash ./sadp --update-sadp
+sudo bash ./sadp --upgrade-rke2 --role server
+```
+
+SADP 업데이트는 GitHub main의 루트 `VERSION`이 더 높을 때만 fast-forward하며, 패키지 목표와 RKE2
+목표는 `versions.lock.yaml`을 사용합니다. RKE2 업그레이드는 전체 전원 종료와 달리 server를 먼저
+업데이트한 뒤 worker를 한 대씩 처리합니다. 정확한 순서와 복구 경계는
+[기동·종료·업데이트 Runbook](operations-lifecycle.md)을 따릅니다.
+
+## 10. 인수인계 체크리스트
 
 - [ ] site/cluster 이름과 배포 Git revision
 - [ ] Portal과 관리 서비스 주소

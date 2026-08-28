@@ -73,6 +73,7 @@ bash ./sadp --render-all
 | `--install-containerd-proxy` | RKE2 embedded containerd proxy unit 생성 | 계획, `--apply` 시 쓰기 |
 | `--install-docker-proxy` | control-plane Docker daemon pull을 Squid로 고정 | 계획, `--apply` 시 쓰기, `--check` 검증 |
 | `--install-squid` | 렌더된 allowlist Squid 설치 | 실행 시 설치, `--check`는 검사 |
+| `--upgrade-rke2` | lock에 고정된 버전으로 기존 RKE2 업데이트 | 계획, `--apply` 시 package/binary 설치 후 수동 재시작 |
 
 앞의 다섯 스크립트는 `--apply` 2단계입니다. Squid/DNS 설치기는 통합 설치기의 node apply에서만
 자동 호출되며, 직접 호출할 때는 기본 동작이 실제 변경일 수 있으므로 각 `--help`를 먼저 봅니다.
@@ -137,12 +138,20 @@ apply가 Keycloak/PostgreSQL을 control-plane에 고정하고 runtime Secret과 
 | 백업 | `--verify-backups` |
 | 운영 백업 | `--backup` |
 | Portal on/off | `--toggle-portal` |
+| 테스트베드 안전 기동/종료 | `--power` |
+| GitHub main/VERSION 기반 SADP 업데이트 | `--update-sadp` |
+| 기존 RKE2 고정 버전 업데이트 | `--upgrade-rke2` |
 | Authentik Assertion 유효시간 | `--configure-authentik-saml` |
 | Forgejo token 회전 | `--rotate-forgejo-token` |
 | root-only 자격증명 내보내기 | `--export-credentials` |
 
 `--verify-testbed`는 control-plane 노드 한 대의 호스트 상태와 클러스터 상태를 검사합니다. 다른
 worker 호스트의 interface/systemd 상태까지 대신 검증하지 않습니다.
+
+전체 전원 작업과 업데이트는 [기동·종료·업데이트 Runbook](../docs/operations-lifecycle.md)을 사용합니다.
+`--power`는 OS 전원 자체를 조작하지 않고 RKE2 서비스와 Kubernetes scheduling 경계만 관리합니다.
+`--update-sadp`와 `--upgrade-rke2`도 기본은 계획이며, 사용자 변경을 stash하거나 서비스를 자동
+재시작하지 않습니다.
 
 ## 커밋 전 검사
 

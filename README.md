@@ -6,6 +6,7 @@ Envoy Gateway가 단일 외부 진입점을 맡고, Keycloak · OpenBao · Argo 
 > [!WARNING]
 > 이 저장소는 **운영체제와 RKE2 자체를 설치하지 않습니다.**
 > 이미 구성된 RKE2 클러스터 위에 플랫폼 서비스만 올립니다.
+> 기존 RKE2의 승인 버전 업데이트는 설치가 아니라 별도 유지보수 Runbook으로 지원합니다.
 > 처음 구축한다면 [설치 가이드](docs/installation.md)의 선행 조건부터 확인하세요.
 
 > [!IMPORTANT]
@@ -98,6 +99,7 @@ SSO 앱은 Gateway의 `SecurityPolicy`에서 인증을 강제합니다.
 | 제한 egress | cert-manager·패키지는 Squid, 앱은 선언한 NetworkPolicy로 제한 |
 | 외부 공개 | 경계 NAT 또는 노드 공인 NIC 직접 연결, 외부 TCP 80/443만 허용 |
 | 백업 | RKE2 etcd, OpenBao Raft, in-cluster Keycloak PostgreSQL |
+| 운영 수명주기 | 백업·drain 기반 안전 기동/종료, VERSION 기반 SADP/RKE2 업데이트 |
 
 ## 문서
 
@@ -107,7 +109,7 @@ SSO 앱은 Gateway의 `SecurityPolicy`에서 인증을 강제합니다.
 | 역할별 가이드 | [사용자](docs/usage.md) · [개발자](docs/developer-guide.md) · [관리자](docs/administrator-guide.md) |
 | 설치와 이식 | [설치](docs/installation.md) · [사이트 설정](docs/site-configuration.md) |
 | 개발 참조 | [Portal API](docs/portal-api.md) · [OpenAPI](apps/portal-lite/openapi.yaml) |
-| 운영 Runbook | [네트워크](docs/network-egress.md) · [DNS-01](docs/letsencrypt-dns01.md) · [외부 Keycloak](docs/keycloak-external.md) · [외부 관측](docs/external-observability.md) · [복구](docs/recovery.md) |
+| 운영 Runbook | [기동·종료·업데이트](docs/operations-lifecycle.md) · [네트워크](docs/network-egress.md) · [DNS-01](docs/letsencrypt-dns01.md) · [외부 Keycloak](docs/keycloak-external.md) · [외부 관측](docs/external-observability.md) · [복구](docs/recovery.md) |
 | AI 에이전트 | [AGENTS.md](AGENTS.md) |
 
 ## 저장소 구조
@@ -122,6 +124,7 @@ SSO 앱은 Gateway의 `SecurityPolicy`에서 인증을 강제합니다.
 | `scripts/` | 역할별 스크립트 (`site/ node/ cluster/ verify/ ops/ tests/ lib/`) |
 | `docs/` | 설치 · 사용 · API · 복구 문서 |
 | `sadp` | SADP 단일 진입점 (`kisti-RKE`는 기존 자동화 호환 wrapper) |
+| `VERSION` | GitHub main 배포본의 SADP 제품 버전(`x.y.z`) |
 | `versions.lock.yaml` | 승인된 플랫폼 · delivery 버전 |
 
 실제 사이트에서는 Git 밖의 `site.env`가 상류이고 `contracts/platform-production.yaml`은 검증된

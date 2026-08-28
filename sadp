@@ -38,6 +38,7 @@ install-interface-guard|bash|scripts/node/install-rke2-interface-guard.sh|공인
 install-containerd-proxy|bash|scripts/node/install-rke2-containerd-proxy.sh|containerd image pull만 Squid 경유
 install-docker-proxy|bash|scripts/node/install-docker-proxy.sh|control-plane Docker image pull을 Squid 경유
 install-squid|bash|scripts/node/install-squid-egress.sh|allowlist Squid proxy 설치
+upgrade-rke2|bash|scripts/node/upgrade-rke2.sh|versions.lock의 고정 버전으로 기존 RKE2 노드 업데이트
 GROUP:cluster — control-plane에서 root. 클러스터 전체
 bootstrap|bash|scripts/cluster/bootstrap-testbed.sh|전체 설치 진입점(아래 단계를 순서대로)
 preflight|bash|scripts/cluster/preflight.sh|3노드 RKE2와 기본 StorageClass 실검증
@@ -64,6 +65,8 @@ verify-backups|bash|scripts/verify/verify-backups.sh|백업 checksum/포맷과 �
 GROUP:ops — 운영
 backup|bash|scripts/ops/backup-testbed.sh|etcd, OpenBao Raft, Keycloak PostgreSQL
 toggle-portal|bash|scripts/ops/toggle-portal.sh|Portal 테스트 페이지 on/off/status
+power|bash|scripts/ops/manage-power.sh|백업·drain·Ready 순서를 지키는 테스트베드 기동/종료
+update-sadp|bash|scripts/ops/update-sadp.sh|GitHub main의 VERSION 확인 후 fast-forward 업데이트
 rotate-forgejo-token|bash|scripts/ops/rotate-forgejo-token.sh|Forgejo 봇 토큰 회전
 export-credentials|bash|scripts/ops/export-test-credentials.sh|자격증명을 Git 밖 root-only 경로로
 configure-authentik-saml|bash|scripts/ops/configure-authentik-saml.sh|Authentik Assertion 유효시간 공식 기본값 수렴

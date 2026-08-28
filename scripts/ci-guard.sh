@@ -145,7 +145,13 @@ for f in yaml_files("apps/**/*.yaml", "platform/**/*.yaml",
             secret_docs.append(f)
 bad("Secret manifest 존재: " + ", ".join(secret_docs)) if secret_docs else ok("Secret manifest 없음")
 
-# 2. versions.lock 무결성(leaf 값만 검사)
+# 2. 제품 VERSION과 versions.lock 무결성
+sadp_version = pathlib.Path("VERSION").read_text(encoding="utf-8").strip()
+if not re.fullmatch(r"(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)", sadp_version):
+    bad(f"VERSION은 x.y.z 형식이어야 함: {sadp_version!r}")
+else:
+    ok(f"SADP VERSION 형식 정상: {sadp_version}")
+
 def leaves(node, path=""):
     if isinstance(node, dict):
         for k, v in node.items():
