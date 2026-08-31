@@ -40,6 +40,13 @@ SUPPORTED_PROVIDERS = ("rfc2136",)
 TLS_SOURCES = ("acme", "provided")
 ISSUER_MODES = ("staging", "production")
 PUBLIC_MODES = ("nat", "direct")
+MACHINE_AUTH_MODES = ("keycloak", "api-key")
+MACHINE_AUTH_API_KEY_HEADER = "X-SADP-API-Key"
+MACHINE_AUTH_REMOTE_PATH_PREFIX = "platform/machine-auth"
+MACHINE_AUTH_SECRET_STORE = "machine-auth-openbao"
+MACHINE_AUTH_ESO_SERVICE_ACCOUNT = "eso-machine-auth"
+MACHINE_AUTH_ESO_ROLE = "machine-auth-eso"
+MACHINE_AUTH_SECRET_PREFIX = "machine-auth-"
 # DNS-01 은 두 가지로 운용한다. direct 는 BASE_DOMAIN 권한 DNS 를 직접 UPDATE 하고,
 # delegated 는 _acme-challenge 만 우리 ACME zone 으로 위임받아 우리 TSIG 로 UPDATE 한다.
 DNS01_MODES = ("direct-rfc2136", "delegated-rfc2136")
@@ -216,6 +223,73 @@ def route_namespace_documents(
     return "\n---\n".join(documents)
 
 
+def machine_auth_config(specification: dict) -> dict:
+    """기계 인증은 모드를 생략해 조용히 무인증이 되지 않도록 항상 검증한다."""
+    config = specification.get("machineAuth") or {}
+    mode = str(config.get("mode") or "").strip().lower()
+    if mode not in MACHINE_AUTH_MODES:
+        raise ValueError("spec.machineAuth.mode must be keycloak or api-key")
+    clients = [str(item).strip() for item in config.get("clients") or []]
+    if any(not NAME_PATTERN.match(client) for client in clients):
+        raise ValueError("spec.machineAuth.clients entries must be Kubernetes names")
+    if any(len(f"{MACHINE_AUTH_SECRET_PREFIX}{client}-api-keys") > 63 for client in clients):
+        raise ValueError("spec.machineAuth.clients entry is too long for the derived Secret name")
+    if len(clients) != len(set(clients)):
+        raise ValueError("spec.machineAuth.clients contains duplicate names")
+    cidrs = [str(item).strip() for item in config.get("allowedCIDRs") or []]
+    for entry in cidrs:
+        try:
+            network = ipaddress.ip_network(entry, strict=False)
+        except ValueError as error:
+            raise ValueError(
+                f"spec.machineAuth.allowedCIDRs entry is not a CIDR: {entry}"
+            ) from error
+        if not isinstance(network, ipaddress.IPv4Network):
+            raise ValueError("spec.machineAuth.allowedCIDRs must be IPv4")
+        if int(network.prefixlen) == 0:
+            raise ValueError("spec.machineAuth.allowedCIDRs must not be 0.0.0.0/0")
+    enabled_services = [
+        service for service in specification.get("platformServices") or []
+        if (service or {}).get("machineAuth")
+    ]
+    if (mode == "api-key" or enabled_services) and not clients:
+        raise ValueError(f"spec.machineAuth.clients must not be empty in {mode} mode")
+    if (mode == "api-key" or enabled_services) and not cidrs:
+        raise ValueError(f"spec.machineAuth.allowedCIDRs must not be empty in {mode} mode")
+
+    resolved = {**config, "mode": mode, "clients": clients, "allowedCIDRs": cidrs}
+    if mode == "keycloak":
+        keycloak = config.get("keycloak") or {}
+        issuer = str(keycloak.get("issuer") or "").strip()
+        jwks_uri = str(keycloak.get("jwksURI") or "").strip()
+        claim = str(keycloak.get("clientClaim") or "").strip()
+        if not issuer.startswith("https://"):
+            raise ValueError("spec.machineAuth.keycloak.issuer must be https")
+        if not jwks_uri.startswith("https://"):
+            raise ValueError("spec.machineAuth.keycloak.jwksURI must be https")
+        if not claim:
+            raise ValueError("spec.machineAuth.keycloak.clientClaim must not be empty")
+        resolved["keycloak"] = {"issuer": issuer, "jwksURI": jwks_uri, "clientClaim": claim}
+    else:
+        api_key = config.get("apiKey") or {}
+        expected = {
+            "header": MACHINE_AUTH_API_KEY_HEADER,
+            "remotePathPrefix": MACHINE_AUTH_REMOTE_PATH_PREFIX,
+            "secretStoreName": MACHINE_AUTH_SECRET_STORE,
+            "esoServiceAccount": MACHINE_AUTH_ESO_SERVICE_ACCOUNT,
+            "esoRole": MACHINE_AUTH_ESO_ROLE,
+            "credentialSecretPrefix": MACHINE_AUTH_SECRET_PREFIX,
+        }
+        for field, value in expected.items():
+            if str(api_key.get(field) or "").strip() != value:
+                raise ValueError(
+                    f"spec.machineAuth.apiKey.{field} must be {value!r}; "
+                    "this name is shared by the renderer and bootstrap"
+                )
+        resolved["apiKey"] = expected
+    return resolved
+
+
 def platform_service_documents(specification: dict, replacements: dict[str, str]) -> str:
     """[A/D6] 플랫폼 UI 의 HTTPRoute 와 ReferenceGrant. 사용자 앱은 app-profile chart 가 담당한다."""
     services = specification.get("platformServices") or []
@@ -232,6 +306,8 @@ def platform_service_documents(specification: dict, replacements: dict[str, str]
         backend_service = str(service.get("service") or name).strip()
         if not NAME_PATTERN.match(name):
             raise ValueError(f"invalid platformServices name: {name!r}")
+        if service.get("machineAuth") and len(f"{name}-machine-auth") > 63:
+            raise ValueError(f"platformServices machineAuth name is too long: {name!r}")
         if not NAME_PATTERN.match(namespace):
             raise ValueError(f"invalid platformServices namespace for {name}: {namespace!r}")
         if not NAME_PATTERN.match(backend_service):
@@ -249,13 +325,14 @@ def platform_service_documents(specification: dict, replacements: dict[str, str]
         port = int(service.get("port") or 0)
         if not 1 <= port <= 65535:
             raise ValueError(f"platformServices port out of range for {name}: {port}")
-        machine_auth = service.get("machineAuth") or {}
+        machine_auth = service.get("machineAuth") or False
         if machine_auth:
-            # Grafana 같은 기계 클라이언트는 브라우저 OIDC 흐름을 못 탄다. Keycloak
-            # client_credentials 로 받은 JWT 를 Bearer 로 보내면 Envoy 가 JWKS 로 검증하고,
-            # 출발지 CIDR 까지 함께 확인한다. 토큰 값은 Git 에 들어가지 않는다.
             documents.append(
-                machine_auth_document(name, machine_auth, replacements["__REDIRECT_ROUTE_NAMESPACE__"])
+                machine_auth_document(
+                    name,
+                    machine_auth_config(specification),
+                    replacements["__REDIRECT_ROUTE_NAMESPACE__"],
+                )
             )
         external = service.get("external") or {}
         if external:
@@ -280,96 +357,164 @@ def platform_service_documents(specification: dict, replacements: dict[str, str]
 
 
 def machine_auth_document(name: str, machine_auth: dict, route_namespace: str) -> str:
-    """기계 클라이언트 전용 SecurityPolicy. Bearer JWT 검증과 출발지 CIDR 제한을 함께 건다.
-
-    브라우저 로그인을 못 하는 datasource 를 위해 OIDC 대신 JWT provider 를 쓴다. 토큰은
-    Keycloak client_credentials 로 발급되므로 client secret 은 OpenBao/Keycloak 에만 있고
-    이 저장소에는 issuer 와 허용 client 이름만 남는다.
-    """
-    issuer = str(machine_auth.get("issuer") or "").strip()
-    if not issuer.startswith("https://"):
-        raise ValueError(f"platformServices[{name}].machineAuth.issuer must be https: {issuer!r}")
-    jwks_uri = str(machine_auth.get("jwksURI") or "").strip()
-    if not jwks_uri.startswith("https://"):
-        raise ValueError(f"platformServices[{name}].machineAuth.jwksURI must be https")
-    claim = str(machine_auth.get("clientClaim") or "azp").strip()
-    if not claim:
-        raise ValueError(f"platformServices[{name}].machineAuth.clientClaim must not be empty")
-    clients = [str(item).strip() for item in machine_auth.get("allowedClients") or []]
-    if not clients:
-        raise ValueError(
-            f"platformServices[{name}].machineAuth.allowedClients must not be empty; "
-            "an empty list would let every realm client read this endpoint"
-        )
-    cidrs = [str(item).strip() for item in machine_auth.get("allowedCIDRs") or []]
-    if not cidrs:
-        raise ValueError(
-            f"platformServices[{name}].machineAuth.allowedCIDRs must not be empty; "
-            "these endpoints expose cluster internals and need a source restriction"
-        )
-    for entry in cidrs:
-        try:
-            network = ipaddress.ip_network(entry, strict=False)
-        except ValueError as error:
-            raise ValueError(
-                f"platformServices[{name}].machineAuth.allowedCIDRs entry is not a CIDR: {entry}"
-            ) from error
-        if not isinstance(network, ipaddress.IPv4Network):
-            raise ValueError(f"platformServices[{name}].machineAuth.allowedCIDRs must be IPv4")
-        if int(network.prefixlen) == 0:
-            raise ValueError(
-                f"platformServices[{name}].machineAuth.allowedCIDRs must not be 0.0.0.0/0"
-            )
+    """선택한 인증 방식과 출발지 CIDR을 한 SecurityPolicy에 함께 건다."""
+    mode = machine_auth["mode"]
+    principal: dict = {"clientCIDRs": machine_auth["allowedCIDRs"]}
+    policy_spec: dict = {
+        "targetRefs": [
+            {
+                "group": "gateway.networking.k8s.io",
+                "kind": "HTTPRoute",
+                "name": name,
+            }
+        ],
+    }
+    if mode == "keycloak":
+        keycloak = machine_auth["keycloak"]
+        policy_spec["jwt"] = {
+            "providers": [
+                {
+                    "name": "keycloak",
+                    "issuer": keycloak["issuer"],
+                    "remoteJWKS": {"uri": keycloak["jwksURI"]},
+                }
+            ]
+        }
+        principal["jwt"] = {
+            "provider": "keycloak",
+            "claims": [
+                {
+                    "name": keycloak["clientClaim"],
+                    "valueType": "String",
+                    "values": machine_auth["clients"],
+                }
+            ],
+        }
+    else:
+        api_key = machine_auth["apiKey"]
+        policy_spec["apiKeyAuth"] = {
+            "credentialRefs": [
+                {
+                    "group": "",
+                    "kind": "Secret",
+                    "name": f"{api_key['credentialSecretPrefix']}{client}-api-keys",
+                }
+                for client in machine_auth["clients"]
+            ],
+            "extractFrom": [{"headers": [api_key["header"]]}],
+            # 기계 인증용 헤더가 Prometheus/Loki/Wazuh backend 로그나 플러그인까지
+            # 흘러가면 Secret 경계가 무너지므로 Envoy에서 인증 직후 제거한다.
+            "sanitize": True,
+        }
+    policy_spec["authorization"] = {
+        "defaultAction": "Deny",
+        "rules": [
+            {
+                "name": "allowed-machine-sources",
+                "action": "Allow",
+                "principal": principal,
+            }
+        ],
+    }
     return yaml.safe_dump(
         {
             "apiVersion": "gateway.envoyproxy.io/v1alpha1",
             "kind": "SecurityPolicy",
             "metadata": {"name": f"{name}-machine-auth", "namespace": route_namespace},
-            "spec": {
-                "targetRefs": [
-                    {
-                        "group": "gateway.networking.k8s.io",
-                        "kind": "HTTPRoute",
-                        "name": name,
-                    }
-                ],
-                "jwt": {
-                    "providers": [
-                        {
-                            "name": "keycloak",
-                            "issuer": issuer,
-                            "remoteJWKS": {"uri": jwks_uri},
-                        }
-                    ]
-                },
-                "authorization": {
-                    # 허용 목록에 없으면 막는다. 이 엔드포인트는 클러스터 내부가 다 보인다.
-                    "defaultAction": "Deny",
-                    "rules": [
-                        {
-                            "name": "allowed-machine-clients",
-                            "action": "Allow",
-                            "principal": {
-                                "clientCIDRs": cidrs,
-                                "jwt": {
-                                    "provider": "keycloak",
-                                    "claims": [
-                                        {
-                                            "name": claim,
-                                            "valueType": "String",
-                                            "values": clients,
-                                        }
-                                    ],
-                                },
-                            },
-                        }
-                    ],
-                },
-            },
+            "spec": policy_spec,
         },
         allow_unicode=True,
         sort_keys=False,
     ).rstrip("\n")
+
+
+def machine_auth_credentials_documents(specification: dict, route_namespace: str) -> str:
+    """API key 이름만 Git에 두고 OpenBao -> ESO -> Secret 공급 경로를 만든다."""
+    config = machine_auth_config(specification)
+    if config["mode"] != "api-key":
+        return ""
+    api_key = config["apiKey"]
+    openbao = specification.get("openbao") or {}
+    required_fields = ("server", "kvMount", "authMount", "audience", "caConfigMap")
+    for field in required_fields:
+        if not str(openbao.get(field) or "").strip():
+            raise ValueError(f"spec.openbao.{field} is required for machine api-key ESO")
+    documents: list[dict] = [
+        {
+            "apiVersion": "v1",
+            "kind": "ServiceAccount",
+            "metadata": {
+                "name": api_key["esoServiceAccount"],
+                "namespace": route_namespace,
+                "labels": {"platform.example.io/component": "machine-auth"},
+            },
+        },
+        {
+            "apiVersion": "external-secrets.io/v1",
+            "kind": "SecretStore",
+            "metadata": {"name": api_key["secretStoreName"], "namespace": route_namespace},
+            "spec": {
+                "provider": {
+                    "vault": {
+                        "server": str(openbao["server"]),
+                        "path": str(openbao["kvMount"]),
+                        "version": "v2",
+                        "caProvider": {
+                            "type": "ConfigMap",
+                            "name": str(openbao["caConfigMap"]),
+                            "key": "ca.crt",
+                        },
+                        "auth": {
+                            "kubernetes": {
+                                "mountPath": str(openbao["authMount"]),
+                                "role": api_key["esoRole"],
+                                "serviceAccountRef": {
+                                    "name": api_key["esoServiceAccount"],
+                                    "audiences": [str(openbao["audience"])],
+                                },
+                            }
+                        },
+                    }
+                }
+            },
+        },
+    ]
+    for client in config["clients"]:
+        documents.append(
+            {
+                "apiVersion": "external-secrets.io/v1",
+                "kind": "ExternalSecret",
+                "metadata": {
+                    "name": f"{api_key['credentialSecretPrefix']}{client}",
+                    "namespace": route_namespace,
+                    "labels": {"platform.example.io/component": "machine-auth"},
+                },
+                "spec": {
+                    "refreshInterval": "1m",
+                    "secretStoreRef": {
+                        "name": api_key["secretStoreName"],
+                        "kind": "SecretStore",
+                    },
+                    "target": {
+                        "name": f"{api_key['credentialSecretPrefix']}{client}-api-keys",
+                        "creationPolicy": "Owner",
+                    },
+                    # OpenBao 문서에는 평상시 <client>, 회전 중에는 <client>-next가
+                    # 함께 존재한다. extract를 써야 두 키가 동시에 Gateway에 반영된다.
+                    "dataFrom": [
+                        {
+                            "extract": {
+                                "key": f"{api_key['remotePathPrefix']}/{client}"
+                            }
+                        }
+                    ],
+                },
+            }
+        )
+    return "\n---\n".join(
+        yaml.safe_dump(document, allow_unicode=True, sort_keys=False).rstrip("\n")
+        for document in documents
+    )
 
 
 def external_backend_documents(
@@ -663,6 +808,9 @@ def public_service_config(specification: dict, vip: ipaddress.IPv4Address) -> st
     )
 
 def render_exposure(specification: dict, tls_ready: bool) -> str:
+    # 서비스가 아직 없더라도 모드 누락과 api-key의 빈 client/CIDR는 렌더 단계에서
+    # 실패해야 한다. 리소스가 조용히 사라지는 fail-open을 허용하지 않는다.
+    machine_auth_config(specification)
     gateway = specification["gateway"]
     address = validate_vip(gateway.get("vip"))
     pool_range = validate_pool_range(gateway.get("addressPoolRange"), address)
@@ -713,6 +861,9 @@ def render_exposure(specification: dict, tls_ready: bool) -> str:
     platform_services = platform_service_documents(specification, replacements)
     if platform_services:
         rendered += "---\n" + platform_services + "\n"
+    credentials = machine_auth_credentials_documents(specification, redirect_namespace)
+    if credentials:
+        rendered += "---\n" + credentials + "\n"
     systems = specification.get("systems") or []
     if systems:
         rendered = append_system_exposure(rendered, specification, tls_ready, label_key, label_value)

@@ -160,6 +160,14 @@ spec:
       type: A
     - name: sadp.example.invalid
       type: A
+  machineAuth:
+    mode: keycloak
+    clients: []
+    allowedCIDRs: []
+    keycloak:
+      issuer: https://sso.sadp.example.invalid/realms/sadp
+      jwksURI: https://sso.sadp.example.invalid/realms/sadp/protocol/openid-connect/certs
+      clientClaim: azp
   platformServices:
   - name: rancher
     host: rancher.sadp.example.invalid

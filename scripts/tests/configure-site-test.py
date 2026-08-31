@@ -37,6 +37,7 @@ SSO_HOST=
 RANCHER_HOST=
 OPENBAO_HOST=
 EXTERNAL_SERVICES=
+MACHINE_AUTH_MODE=keycloak
 MACHINE_AUTH_SERVICES=
 MACHINE_AUTH_CLIENTS=
 MACHINE_AUTH_ALLOWED_CIDRS=
@@ -818,9 +819,13 @@ def generated_machine_auth(workspace: pathlib.Path, _result) -> str:
     )
     if entry is None:
         return "machineAuth platformServices 가 계약에 없다"
-    auth = entry["machineAuth"]
-    if auth["allowedClients"] != ["grafana-central"]:
-        return f"allowedClients 불일치: {auth['allowedClients']}"
+    auth = contract.get("machineAuth") or {}
+    if entry["machineAuth"] is not True:
+        return "platformServices.machineAuth는 전역 계약을 가리키는 marker여야 한다"
+    if auth.get("mode") != "keycloak":
+        return f"mode 불일치: {auth.get('mode')}"
+    if auth["clients"] != ["grafana-central"]:
+        return f"clients 불일치: {auth['clients']}"
     if auth["allowedCIDRs"] != ["203.0.113.10/32"]:
         return f"allowedCIDRs 불일치: {auth['allowedCIDRs']}"
     # 계약에 토큰/비밀이 들어가면 안 된다. issuer 와 이름만 남아야 한다.
@@ -868,6 +873,94 @@ case(
 case(
     "SC-24 MACHINE_AUTH client 목록 없이 서비스 선언 거부",
     mutate(MACHINE_AUTH_VALID, "MACHINE_AUTH_CLIENTS=grafana-central", "MACHINE_AUTH_CLIENTS="),
+    False,
+)
+
+MACHINE_API_KEY_VALID = mutate(
+    mutate(
+        MACHINE_AUTH_VALID,
+        "MACHINE_AUTH_MODE=keycloak",
+        "MACHINE_AUTH_MODE=api-key",
+    ),
+    "MACHINE_AUTH_CLIENTS=grafana-central",
+    "MACHINE_AUTH_CLIENTS=grafana-central,wazuh-connector",
+)
+
+
+def generated_machine_api_key(workspace: pathlib.Path, _result) -> str:
+    contract = yaml.safe_load(
+        (workspace / "contracts/platform-production.yaml").read_text(encoding="utf-8")
+    )["spec"]
+    auth = contract.get("machineAuth") or {}
+    if auth.get("mode") != "api-key":
+        return f"api-key mode 미반영: {auth.get('mode')!r}"
+    if "keycloak" in auth:
+        return "api-key mode 계약에 machine-auth Keycloak 설정이 남았다"
+    if set((auth.get("apiKey") or {})) != {
+        "header", "remotePathPrefix", "secretStoreName", "esoServiceAccount",
+        "esoRole", "credentialSecretPrefix",
+    }:
+        return f"apiKey 메타데이터 불일치: {auth.get('apiKey')!r}"
+    documents = [
+        item for item in yaml.safe_load_all(
+            (workspace / "platform/exposure/resources.yaml").read_text(encoding="utf-8")
+        ) if item
+    ]
+    policy = next(item for item in documents if item.get("kind") == "SecurityPolicy")
+    api_key = policy["spec"].get("apiKeyAuth") or {}
+    if policy["spec"].get("jwt"):
+        return "api-key mode SecurityPolicy에 JWT가 남았다"
+    if api_key.get("extractFrom") != [{"headers": ["X-SADP-API-Key"]}]:
+        return f"API key header 불일치: {api_key.get('extractFrom')!r}"
+    if api_key.get("sanitize") is not True:
+        return "API key header sanitize=true가 아니다"
+    names = [item["name"] for item in api_key.get("credentialRefs") or []]
+    if names != [
+        "machine-auth-grafana-central-api-keys",
+        "machine-auth-wazuh-connector-api-keys",
+    ]:
+        return f"credentialRefs 불일치: {names!r}"
+    external_secrets = [item for item in documents if item.get("kind") == "ExternalSecret"]
+    if len(external_secrets) != 2:
+        return f"machine-auth ExternalSecret 수 불일치: {len(external_secrets)}"
+    paths = {
+        item["spec"]["dataFrom"][0]["extract"]["key"] for item in external_secrets
+    }
+    if paths != {
+        "platform/machine-auth/grafana-central",
+        "platform/machine-auth/wazuh-connector",
+    }:
+        return f"OpenBao remote path 불일치: {paths!r}"
+    if any(item.get("kind") == "Secret" for item in documents):
+        return "렌더 결과가 Secret을 직접 만들었다"
+    return ""
+
+
+case(
+    "SC-24a api-key 모드는 OpenBao/ESO/APIKeyAuth+CIDR를 렌더한다",
+    MACHINE_API_KEY_VALID,
+    True,
+    generated_machine_api_key,
+    write=True,
+)
+case(
+    "SC-24b MACHINE_AUTH_MODE 누락 거부",
+    mutate(VALID, "MACHINE_AUTH_MODE=keycloak", "MACHINE_AUTH_MODE="),
+    False,
+)
+case(
+    "SC-24c 잘못된 MACHINE_AUTH_MODE 거부",
+    mutate(VALID, "MACHINE_AUTH_MODE=keycloak", "MACHINE_AUTH_MODE=basic"),
+    False,
+)
+case(
+    "SC-24d api-key client 목록 누락 거부",
+    mutate(MACHINE_API_KEY_VALID, "MACHINE_AUTH_CLIENTS=grafana-central,wazuh-connector", "MACHINE_AUTH_CLIENTS="),
+    False,
+)
+case(
+    "SC-24e api-key CIDR 목록 누락 거부",
+    mutate(MACHINE_API_KEY_VALID, "MACHINE_AUTH_ALLOWED_CIDRS=203.0.113.10/32", "MACHINE_AUTH_ALLOWED_CIDRS="),
     False,
 )
 

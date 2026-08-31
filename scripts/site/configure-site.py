@@ -54,6 +54,13 @@ SUPPORTED_CERT_MANAGER_PLACEMENTS = {"any", "control-plane"}
 # control-plane 은 관리 taint 두 개를 쓰므로 selector만 붙이면 Keycloak과 DB가 영원히
 # Pending이다. placement를 계약으로 두고 두 워크로드의 selector/toleration을 함께 만든다.
 SUPPORTED_KEYCLOAK_PLACEMENTS = {"any", "control-plane"}
+SUPPORTED_MACHINE_AUTH_MODES = {"keycloak", "api-key"}
+MACHINE_AUTH_API_KEY_HEADER = "X-SADP-API-Key"
+MACHINE_AUTH_REMOTE_PATH_PREFIX = "platform/machine-auth"
+MACHINE_AUTH_SECRET_STORE = "machine-auth-openbao"
+MACHINE_AUTH_ESO_SERVICE_ACCOUNT = "eso-machine-auth"
+MACHINE_AUTH_ESO_ROLE = "machine-auth-eso"
+MACHINE_AUTH_SECRET_PREFIX = "machine-auth-"
 CONTROL_PLANE_LABEL = "node-role.kubernetes.io/control-plane"
 # _acme-challenge 처럼 밑줄로 시작하는 label 도 위임 zone 이름이 될 수 있다.
 DNS_ZONE = re.compile(
@@ -168,7 +175,8 @@ KNOWN_KEYS = {
     "WILDCARD_TLS_SECRET", "ACME_CLUSTER_ISSUER_NAME", "ACME_ACCOUNT_SECRET_NAME",
     "PORTAL_HOST", "HELLO_HOST", "SECURE_DEMO_HOST", "SSO_HOST",
     "RANCHER_HOST", "OPENBAO_HOST", "SYSTEMS", "EXTERNAL_SERVICES",
-    "MACHINE_AUTH_SERVICES", "MACHINE_AUTH_CLIENTS", "MACHINE_AUTH_ALLOWED_CIDRS",
+    "MACHINE_AUTH_MODE", "MACHINE_AUTH_SERVICES", "MACHINE_AUTH_CLIENTS",
+    "MACHINE_AUTH_ALLOWED_CIDRS",
     "KEYCLOAK_REALM",
     "PORTAL_KEYCLOAK_CLIENT_ID", "KEYCLOAK_DEPLOYMENT", "KEYCLOAK_NODE_PLACEMENT",
     "KEYCLOAK_EXTERNAL_ADDRESS", "KEYCLOAK_EXTERNAL_PORT",
@@ -403,26 +411,35 @@ def parse_keycloak_node_placement(values: dict[str, str], deployment: str) -> st
     return placement
 
 
-def parse_machine_auth_services(
+def parse_machine_auth(
     values: dict[str, str], base_domain: str, realm: str, sso_host: str
-) -> list[dict]:
-    """`MACHINE_AUTH_SERVICES=<name>=<ns>/<svc>:<port>,...` 를 기계 접근용 노출로 바꾼다.
+) -> dict:
+    """기계 인증의 전역 모드와 노출 서비스를 실제 값 없는 계약으로 바꾼다.
 
-    외부 Grafana 처럼 브라우저 로그인을 못 하는 클라이언트가 Prometheus/Loki 를 읽어가는
-    경로다. Keycloak client_credentials 로 받은 JWT 를 Bearer 로 검증하고 출발지 CIDR 도
-    함께 제한한다. client secret 은 Keycloak/OpenBao 에만 있고 계약에는 이름만 남는다.
+    keycloak은 기존 client_credentials JWT를 검증한다. api-key는 클라이언트 이름과
+    OpenBao/ESO가 사용할 경로·Secret 이름만 계약에 두며 실제 키는 절대 받지 않는다.
     """
+    mode = required(values, "MACHINE_AUTH_MODE").lower()
+    if mode not in SUPPORTED_MACHINE_AUTH_MODES:
+        raise ConfigError("MACHINE_AUTH_MODE must be keycloak or api-key")
     entries = csv(values, "MACHINE_AUTH_SERVICES")
-    if not entries:
-        return []
     clients = csv(values, "MACHINE_AUTH_CLIENTS")
-    if not clients:
-        raise ConfigError("MACHINE_AUTH_SERVICES requires MACHINE_AUTH_CLIENTS")
     cidrs = csv(values, "MACHINE_AUTH_ALLOWED_CIDRS")
-    if not cidrs:
+    if mode == "api-key" and not clients:
+        raise ConfigError("MACHINE_AUTH_MODE=api-key requires MACHINE_AUTH_CLIENTS")
+    if mode == "api-key" and not cidrs:
+        raise ConfigError("MACHINE_AUTH_MODE=api-key requires MACHINE_AUTH_ALLOWED_CIDRS")
+    if entries and not clients:
+        raise ConfigError("MACHINE_AUTH_SERVICES requires MACHINE_AUTH_CLIENTS")
+    if entries and not cidrs:
         raise ConfigError(
             "MACHINE_AUTH_SERVICES requires MACHINE_AUTH_ALLOWED_CIDRS; these endpoints "
             "expose cluster internals"
+        )
+    if not entries and mode == "keycloak" and (clients or cidrs):
+        raise ConfigError(
+            "MACHINE_AUTH_CLIENTS and MACHINE_AUTH_ALLOWED_CIDRS require "
+            "MACHINE_AUTH_SERVICES in keycloak mode"
         )
     for entry in cidrs:
         try:
@@ -435,6 +452,13 @@ def parse_machine_auth_services(
             raise ConfigError("MACHINE_AUTH_ALLOWED_CIDRS must not be 0.0.0.0/0")
     for client in clients:
         kube_name(client, f"MACHINE_AUTH_CLIENTS entry '{client}'")
+        if len(f"{MACHINE_AUTH_SECRET_PREFIX}{client}-api-keys") > 63:
+            raise ConfigError(
+                f"MACHINE_AUTH_CLIENTS entry '{client}' is too long for the derived Secret name"
+            )
+
+    if len(clients) != len(set(clients)):
+        raise ConfigError("MACHINE_AUTH_CLIENTS contains duplicate names")
 
     issuer = f"https://{sso_host}/realms/{realm}"
     services: list[dict] = []
@@ -445,6 +469,10 @@ def parse_machine_auth_services(
                 f"MACHINE_AUTH_SERVICES entry must be <name>=<namespace>/<service>:<port>: {entry}"
             )
         name = kube_name(name_part, f"MACHINE_AUTH_SERVICES name '{name_part}'")
+        if len(f"{name}-machine-auth") > 63:
+            raise ConfigError(
+                f"MACHINE_AUTH_SERVICES name '{name}' is too long for the SecurityPolicy name"
+            )
         namespace_part, slash, rest = target.partition("/")
         if not slash:
             raise ConfigError(
@@ -465,19 +493,34 @@ def parse_machine_auth_services(
                 "namespace": namespace,
                 "service": backend,
                 "port": service_port,
-                "machineAuth": {
-                    "issuer": issuer,
-                    "jwksURI": f"{issuer}/protocol/openid-connect/certs",
-                    "clientClaim": "azp",
-                    "allowedClients": clients,
-                    "allowedCIDRs": cidrs,
-                },
+                "machineAuth": True,
             }
         )
     names = [item["name"] for item in services]
     if len(names) != len(set(names)):
         raise ConfigError("MACHINE_AUTH_SERVICES contains duplicate names")
-    return services
+    result = {
+        "mode": mode,
+        "clients": clients,
+        "allowedCIDRs": cidrs,
+    }
+    if mode == "keycloak":
+        result["keycloak"] = {
+            "issuer": issuer,
+            "jwksURI": f"{issuer}/protocol/openid-connect/certs",
+            "clientClaim": "azp",
+        }
+    else:
+        result["apiKey"] = {
+            "header": MACHINE_AUTH_API_KEY_HEADER,
+            "remotePathPrefix": MACHINE_AUTH_REMOTE_PATH_PREFIX,
+            "secretStoreName": MACHINE_AUTH_SECRET_STORE,
+            "esoServiceAccount": MACHINE_AUTH_ESO_SERVICE_ACCOUNT,
+            "esoRole": MACHINE_AUTH_ESO_ROLE,
+            "credentialSecretPrefix": MACHINE_AUTH_SECRET_PREFIX,
+        }
+    result["services"] = services
+    return result
 
 
 def parse_external_services(
@@ -1133,7 +1176,7 @@ def validate(values: dict[str, str]) -> dict:
     systems = parse_systems(values, environment, base_domain, {
         workload_namespace, platform_namespace, gateway_namespace,
     })
-    machine_auth_services = parse_machine_auth_services(
+    machine_auth = parse_machine_auth(
         values, base_domain, realm, hosts["sso"]
     )
     external_services = parse_external_services(
@@ -1169,7 +1212,7 @@ def validate(values: dict[str, str]) -> dict:
         },
         "systems": systems,
         "externalServices": external_services,
-        "machineAuthServices": machine_auth_services,
+        "machineAuth": machine_auth,
         "hosts": hosts,
         "storageClass": storage_class,
         "appGroups": {
@@ -1439,7 +1482,9 @@ def build_contract(base: dict, cfg: dict) -> dict:
         for service in spec.get("platformServices") or []
         if not (service or {}).get("external") and not (service or {}).get("machineAuth")
     ]
-    for entry in cfg["machineAuthServices"]:
+    spec["machineAuth"] = copy.deepcopy(cfg["machineAuth"])
+    spec["machineAuth"].pop("services", None)
+    for entry in cfg["machineAuth"]["services"]:
         spec["platformServices"].append(copy.deepcopy(entry))
     for entry in cfg["externalServices"]:
         spec["platformServices"].append(
@@ -2486,6 +2531,11 @@ def summary(cfg: dict) -> None:
     print(
         f"[OK] forgejo={cfg['forgejo']['repoURL']} revision={cfg['forgejo']['revision']} "
         f"registry={cfg['registry']['host']}/{cfg['registry']['project']}"
+    )
+    print(
+        f"[OK] machine-auth mode={cfg['machineAuth']['mode']} "
+        f"clients={len(cfg['machineAuth']['clients'])} "
+        f"services={len(cfg['machineAuth']['services'])}"
     )
     api = cfg["forgejo"].get("api")
     if api:

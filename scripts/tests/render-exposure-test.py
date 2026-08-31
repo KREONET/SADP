@@ -552,6 +552,84 @@ case(
     ),
     False,
 )
+
+
+def api_key_machine_auth(spec: dict, status: dict) -> None:
+    ready(spec, status)
+    spec["machineAuth"] = {
+        "mode": "api-key",
+        "clients": ["grafana-central", "wazuh-connector"],
+        "allowedCIDRs": ["203.0.113.10/32", "198.51.100.20/32"],
+        "apiKey": {
+            "header": "X-SADP-API-Key",
+            "remotePathPrefix": "platform/machine-auth",
+            "secretStoreName": "machine-auth-openbao",
+            "esoServiceAccount": "eso-machine-auth",
+            "esoRole": "machine-auth-eso",
+            "credentialSecretPrefix": "machine-auth-",
+        },
+    }
+    spec["platformServices"].append(
+        {
+            "name": "metrics",
+            "host": f"metrics.{spec['baseDomain']}",
+            "namespace": "monitoring",
+            "service": "prometheus",
+            "port": 9090,
+            "machineAuth": True,
+        }
+    )
+
+
+def verify_api_key_machine_auth(root: pathlib.Path, _result) -> str:
+    rendered = documents(root, EXPOSURE)
+    policy = next(
+        (item for item in rendered if item.get("kind") == "SecurityPolicy"
+         and item["metadata"]["name"] == "metrics-machine-auth"),
+        None,
+    )
+    if policy is None:
+        return "api-key SecurityPolicy가 없다"
+    auth = policy["spec"].get("apiKeyAuth") or {}
+    if auth.get("sanitize") is not True:
+        return "API key header를 backend 전에 제거하지 않는다"
+    if auth.get("extractFrom") != [{"headers": ["X-SADP-API-Key"]}]:
+        return f"API key header 불일치: {auth.get('extractFrom')!r}"
+    if policy["spec"].get("jwt"):
+        return "api-key 정책에 Keycloak JWT가 함께 켜졌다"
+    principal = policy["spec"]["authorization"]["rules"][0]["principal"]
+    if principal != {"clientCIDRs": ["203.0.113.10/32", "198.51.100.20/32"]}:
+        return f"CIDR principal 불일치: {principal!r}"
+    external_secrets = [item for item in rendered if item.get("kind") == "ExternalSecret"]
+    if len(external_secrets) != 2:
+        return f"클라이언트별 ExternalSecret 수 불일치: {len(external_secrets)}"
+    if any(item.get("kind") == "Secret" for item in rendered):
+        return "실제 Secret을 렌더했다"
+    return ""
+
+
+case("EX-26 machine-auth mode 누락 거부", lambda spec, status: (
+    ready(spec, status), spec.pop("machineAuth", None)
+), False)
+case("EX-27 machine-auth mode 오타 거부", lambda spec, status: (
+    ready(spec, status), spec["machineAuth"].update({"mode": "apikey"})
+), False)
+case("EX-28 api-key client 누락 거부", lambda spec, status: (
+    api_key_machine_auth(spec, status), spec["machineAuth"].update({"clients": []})
+), False)
+case("EX-29 api-key CIDR 누락 거부", lambda spec, status: (
+    api_key_machine_auth(spec, status), spec["machineAuth"].update({"allowedCIDRs": []})
+), False)
+case("EX-30 api-key 전체 인터넷 CIDR 거부", lambda spec, status: (
+    api_key_machine_auth(spec, status),
+    spec["machineAuth"].update({"allowedCIDRs": ["0.0.0.0/0"]}),
+), False)
+case(
+    "EX-31 api-key는 OpenBao/ESO/APIKeyAuth/CIDR/header sanitize를 렌더",
+    api_key_machine_auth,
+    True,
+    verify_api_key_machine_auth,
+)
 case(
     "EX-26 기존 Gateway Secret을 보존하며 staging probe를 분리한다",
     lambda spec, status: (

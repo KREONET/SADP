@@ -2,6 +2,7 @@
 # Keycloak realm/client/user와 OpenBao auth/policy/KV를 값 노출 없이 초기화한다.
 set -euo pipefail
 source "$(dirname "$0")/../lib/testbed-common.sh"
+source "$(dirname "$0")/../lib/machine-auth.sh"
 
 ROTATE_TEST_PASSWORD=false
 while (($#)); do
@@ -659,6 +660,11 @@ seed_kv_file_key "${kv_prefix}/portal-lite" AUTH_KEYCLOAK_SECRET \
   "${CREDENTIAL_DIR}/keycloak-portal-client-secret"
 seed_kv_file_key "${kv_prefix}/portal-lite" AUTH_SECRET \
   "${CREDENTIAL_DIR}/portal-auth-secret"
+
+# 기계 API 키는 OpenBao KV와 ESO role이 모두 준비된 뒤에만 만든다. keycloak 모드는
+# 이 함수가 값 생성 없이 반환하므로 일반 bootstrap이 인증 모드를 넘나들며 키를 만들거나
+# 회전시키지 않는다.
+machine_auth_bootstrap
 
 if ! bao auth list -format=json | jq -e 'has("oidc/")' >/dev/null; then
   bao auth enable oidc >/dev/null

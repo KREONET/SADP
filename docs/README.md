@@ -43,7 +43,7 @@ sudo bash ./sadp --install-wizard
 | NIC, 방화벽, Squid, DNS | [네트워크·egress](network-egress.md) |
 | wildcard staging → production | [Let's Encrypt DNS-01](letsencrypt-dns01.md) |
 | 외부 Keycloak과 SAML IdP | [외부 Keycloak](keycloak-external.md) |
-| 외부 Grafana 연동 | [외부 관측](external-observability.md) |
+| 외부 Grafana/Wazuh 기계 인증 | [기계 인증](external-observability.md) |
 | 안전 기동·종료, SADP/RKE2 업데이트 | [운영 수명주기](operations-lifecycle.md) |
 | Portal API | [Portal API](portal-api.md) · [OpenAPI](../apps/portal-lite/backend/openapi.yaml) |
 | 백업과 복원 | [복구](recovery.md) |

@@ -243,7 +243,7 @@ kctl wait -n openbao certificate/openbao-server --for=condition=Ready --timeout=
 ca_file=$(mktemp "${TESTBED_STATE_DIR}/openbao-ca.XXXXXX")
 temporary_paths+=("${ca_file}")
 kctl get secret -n cert-manager beta-internal-ca-keypair -o jsonpath='{.data.ca\.crt}' | base64 -d >"${ca_file}"
-for namespace in openbao "$(workload_namespace)"; do
+for namespace in openbao "$(workload_namespace)" "$(platform_route_namespace)"; do
   ensure_namespace "${namespace}"
   kctl create configmap openbao-ca -n "${namespace}" --from-file=ca.crt="${ca_file}" \
     --dry-run=client -o yaml | kctl apply -f - >/dev/null

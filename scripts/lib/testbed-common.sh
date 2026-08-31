@@ -81,6 +81,23 @@ print(namespaces[0])
 PY
 }
 
+# machine-auth SecretStore는 HTTPRoute/SecurityPolicy와 같은 플랫폼 route Namespace에 있다.
+# CA를 workload Namespace에만 복사하면 ESO가 OpenBao TLS를 검증하지 못한다.
+platform_route_namespace() {
+  python3 - "${TESTBED_ROOT}/contracts/platform-production.yaml" <<'PY'
+import sys
+
+import yaml
+
+document = yaml.safe_load(open(sys.argv[1], encoding="utf-8")) or {}
+gateway = ((document.get("spec") or {}).get("gateway") or {})
+namespace = str(gateway.get("redirectRouteNamespace") or "")
+if not namespace:
+    raise SystemExit("[FAIL] gateway.redirectRouteNamespace 가 비어 있음")
+print(namespace)
+PY
+}
+
 # Keycloak 배포 위치를 계약에서 읽는다. external 이면 Keycloak과 PostgreSQL이 클러스터 밖에
 # 있으므로 설치, bootstrap, 백업에서 in-cluster 전용 단계를 건너뛴다.
 keycloak_deployment() {

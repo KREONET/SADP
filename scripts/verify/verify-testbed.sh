@@ -2,6 +2,7 @@
 # 값 자체를 출력하지 않고 테스트베드의 핵심 acceptance를 검증한다.
 set -euo pipefail
 source "$(dirname "$0")/../lib/testbed-common.sh"
+source "$(dirname "$0")/../lib/machine-auth.sh"
 
 require_root
 require_command curl
@@ -691,6 +692,61 @@ status=$(kctl exec -n openbao openbao-0 -- env \
   bao status -format=json 2>/dev/null || true)
 jq -e '.initialized == true and .sealed == false and .storage_type == "raft"' <<<"${status}" >/dev/null \
   && ok "OpenBao initialized/unsealed/Raft" || { echo '[FAIL] OpenBao status' >&2; fail=1; }
+
+# 실제 키 값은 읽거나 출력하지 않는다. Secret의 key 이름, ExternalSecret Ready, 정책의
+# 인증 방식과 sanitize 여부만 확인한다.
+machine_auth_load_contract
+if [[ ${MACHINE_AUTH_MODE} == api-key ]]; then
+  if machine_auth_validate_api_key_contract; then
+    for client in "${MACHINE_AUTH_CLIENTS[@]}"; do
+      credential_file=$(machine_auth_export_path "${client}")
+      if [[ -s ${credential_file} && $(stat -c '%a' "${credential_file}") == 600 \
+          && $(stat -c '%u' "${credential_file}") == 0 ]]; then
+        ok "${client} machine-auth 전달 파일 root:0600"
+      else
+        echo "[FAIL] ${client} machine-auth 전달 파일 권한/소유자" >&2
+        fail=1
+      fi
+      external_secret="${MACHINE_AUTH_SECRET_PREFIX}${client}"
+      ready=$(kctl -n "${MACHINE_AUTH_NAMESPACE}" get externalsecret "${external_secret}" \
+        -o jsonpath='{.status.conditions[?(@.type=="Ready")].status}' 2>/dev/null || true)
+      [[ ${ready} == True ]] && ok "${client} machine-auth ExternalSecret Ready" \
+        || { echo "[FAIL] ${client} machine-auth ExternalSecret" >&2; fail=1; }
+      kctl -n "${MACHINE_AUTH_NAMESPACE}" get secret \
+        "${MACHINE_AUTH_SECRET_PREFIX}${client}-api-keys" -o json 2>/dev/null |
+        jq -e --arg client "${client}" '.data | has($client)' >/dev/null \
+        && ok "${client} Gateway credential key 이름 존재" \
+        || { echo "[FAIL] ${client} Gateway credential key 이름" >&2; fail=1; }
+    done
+    for service in "${MACHINE_AUTH_SERVICES[@]}"; do
+      kctl -n "${MACHINE_AUTH_NAMESPACE}" get securitypolicy "${service}-machine-auth" \
+        -o json 2>/dev/null | jq -e --arg header "${MACHINE_AUTH_HEADER}" '
+          .spec.apiKeyAuth.sanitize == true
+          and .spec.apiKeyAuth.extractFrom[0].headers == [$header]
+          and (.spec.jwt | not)
+          and .spec.authorization.defaultAction == "Deny"
+        ' >/dev/null \
+        && ok "${service} API key/CIDR 정책 및 header sanitize" \
+        || { echo "[FAIL] ${service} API key/CIDR 정책" >&2; fail=1; }
+    done
+  else
+    fail=1
+  fi
+elif [[ ${MACHINE_AUTH_MODE} == keycloak ]]; then
+  for service in "${MACHINE_AUTH_SERVICES[@]}"; do
+    kctl -n "${MACHINE_AUTH_NAMESPACE}" get securitypolicy "${service}-machine-auth" \
+      -o json 2>/dev/null | jq -e '
+        (.spec.jwt.providers | length) > 0
+        and (.spec.apiKeyAuth | not)
+        and .spec.authorization.defaultAction == "Deny"
+      ' >/dev/null \
+      && ok "${service} Keycloak JWT/CIDR machine-auth 정책" \
+      || { echo "[FAIL] ${service} Keycloak machine-auth 정책" >&2; fail=1; }
+  done
+else
+  echo '[FAIL] machine-auth mode 계약 오류' >&2
+  fail=1
+fi
 
 http_code=$(curl -sS --resolve "hello.${base_domain}:80:${vip}" -o /dev/null \
   -w '%{http_code}' --max-time 10 "http://hello.${base_domain}/" || true)
