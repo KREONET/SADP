@@ -70,8 +70,8 @@ func run() error {
 		logger.Printf("카탈로그 상태 프로브 비활성(정적 상태 사용): %v", kubeErr)
 	} else {
 		api.prober = newStatusProber(kubeClient)
-		logger.Printf("카탈로그 상태 프로브 활성: ns=%s,%s,%s,%s",
-			workloadNamespace, rancherNamespace, keycloakNamespace, openbaoNamespace)
+		logger.Printf("카탈로그 상태 프로브 활성: ns=%s,%s,%s",
+			workloadNamespace, rancherNamespace, openbaoNamespace)
 		// 같은 kube 접속 정보로 빌드 파이프라인도 켠다. 클러스터 밖에서는 꺼진 채로 둔다.
 		if api.forgejo != nil && autoApprove {
 			api.forgejo.builder = newBuildPipeline(kubeClient, logger)

@@ -1,7 +1,7 @@
 # SADP — RKE2 자동 앱 배포 플랫폼
 
 RKE2 클러스터 위에서 **공개 웹 서비스와 SSO 보호 서비스를 함께 운영**하기 위한 GitOps 플랫폼입니다.
-Envoy Gateway가 단일 외부 진입점을 맡고, Keycloak · OpenBao · Argo CD가 인증 · Secret · 배포를 담당합니다.
+Envoy Gateway가 단일 외부 진입점을 맡고, 외부 OIDC IdP · OpenBao · Argo CD가 인증 · Secret · 배포를 담당합니다.
 
 > [!WARNING]
 > 이 저장소는 **운영체제와 RKE2 자체를 설치하지 않습니다.**
@@ -71,9 +71,11 @@ cluster phase는 Devtron과 번들 Argo CD가 완전히 없으면 승인된 고�
   └─ HTTPS
       └─ Envoy Gateway (MetalLB VIP)
           ├─ public 앱      hello
-          ├─ Portal Lite    사용자 화면 로그인 필수 ── Auth.js → Keycloak
-          ├─ OIDC 앱        secure-demo ──────── Keycloak
-          └─ 관리 UI        Rancher, OpenBao, Keycloak
+          ├─ Portal Lite    사용자 화면 로그인 필수 ── Auth.js → 외부 OIDC
+          ├─ OIDC 앱        secure-demo ──────── 외부 OIDC
+          └─ 관리 UI        Rancher, OpenBao
+
+SAML 전용 IdP ── 외부 SAML→OIDC broker ── 위 OIDC 경로
 
 애플리케이션 Secret
   └─ OpenBao ── External Secrets Operator ── Kubernetes Secret
@@ -92,13 +94,13 @@ SSO 앱은 Gateway의 `SecurityPolicy`에서 인증을 강제합니다.
 | --- | --- |
 | 클러스터 | RKE2 server 1대 + worker 2대(3노드) Ready 기준 |
 | 외부 진입점 | MetalLB VIP + Envoy Gateway, HTTP → HTTPS 전환 |
-| 인증 | Keycloak realm, Portal Auth.js 세션, public/OIDC 앱 구분 |
+| 인증 | 외부 OIDC 연결, Portal Auth.js 세션, public/OIDC 앱 구분 |
 | Secret | OpenBao KV v2 → ESO → Kubernetes Secret, 변경 시 Reloader rollout |
 | 이미지 배포 | Portal 신청 → kaniko build/push → GitOps tag 반영 → Argo 배포 |
 | GitOps | Forgejo PR 자동 merge, OCI Registry push/pull, Argo CD 동기화 |
 | 제한 egress | cert-manager·패키지는 Squid, 앱은 선언한 NetworkPolicy로 제한 |
 | 외부 공개 | 경계 NAT 또는 노드 공인 NIC 직접 연결, 외부 TCP 80/443만 허용 |
-| 백업 | RKE2 etcd, OpenBao Raft, in-cluster Keycloak PostgreSQL |
+| 백업 | RKE2 etcd, OpenBao Raft |
 | 운영 수명주기 | 백업·drain 기반 안전 기동/종료, VERSION 기반 SADP/RKE2 업데이트 |
 
 ## 문서
@@ -109,7 +111,7 @@ SSO 앱은 Gateway의 `SecurityPolicy`에서 인증을 강제합니다.
 | 역할별 가이드 | [사용자](docs/usage.md) · [개발자](docs/developer-guide.md) · [관리자](docs/administrator-guide.md) |
 | 설치와 이식 | [설치](docs/installation.md) · [사이트 설정](docs/site-configuration.md) |
 | 개발 참조 | [Portal API](docs/portal-api.md) · [OpenAPI](apps/portal-lite/backend/openapi.yaml) |
-| 운영 Runbook | [기동·종료·업데이트](docs/operations-lifecycle.md) · [네트워크](docs/network-egress.md) · [DNS-01](docs/letsencrypt-dns01.md) · [외부 Keycloak](docs/keycloak-external.md) · [기계 인증](docs/external-observability.md) · [복구](docs/recovery.md) |
+| 운영 Runbook | [기동·종료·업데이트](docs/operations-lifecycle.md) · [네트워크](docs/network-egress.md) · [DNS-01](docs/letsencrypt-dns01.md) · [외부 인증](docs/identity-provider.md) · [기계 인증](docs/external-observability.md) · [복구](docs/recovery.md) |
 | AI 에이전트 | [AGENTS.md](AGENTS.md) |
 
 ## 저장소 구조
@@ -119,7 +121,7 @@ SSO 앱은 Gateway의 `SecurityPolicy`에서 인증을 강제합니다.
 | `contracts/` | `site.env`에서 생성되는 저장소 내부 환경 계약과 공통 values |
 | `charts/app-profile/` | public/OIDC 앱 공통 Helm chart |
 | `apps/` | 테스트 앱, Portal Lite, 신규 앱 values 템플릿 |
-| `platform/` | Gateway, DNS, Keycloak, OpenBao 등 플랫폼 리소스 |
+| `platform/` | Gateway, DNS, OpenBao 등 플랫폼 리소스 |
 | `argocd/` | 플랫폼과 앱 Argo CD Application |
 | `scripts/` | 역할별 스크립트 (`site/ node/ cluster/ verify/ ops/ tests/ lib/`) |
 | `docs/` | 설치 · 사용 · API · 복구 문서 |

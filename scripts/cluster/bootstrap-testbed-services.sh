@@ -1,15 +1,22 @@
 #!/usr/bin/env bash
-# Keycloak realm/client/user와 OpenBao auth/policy/KV를 값 노출 없이 초기화한다.
+# 외부 IdP는 변경하지 않고 OpenBao auth/policy/KV만 값 비노출 방식으로 초기화한다.
 set -euo pipefail
 source "$(dirname "$0")/../lib/testbed-common.sh"
 source "$(dirname "$0")/../lib/machine-auth.sh"
+source "$(dirname "$0")/../lib/openbao-eso.sh"
 
-ROTATE_TEST_PASSWORD=false
+SKIP_OPENBAO_OIDC=false
 while (($#)); do
   case "$1" in
-    --rotate-test-password) ROTATE_TEST_PASSWORD=true ;;
+    --skip-openbao-oidc) SKIP_OPENBAO_OIDC=true ;;
     -h|--help)
-      echo "usage: sudo $0 [--rotate-test-password]"
+      cat <<'EOF'
+usage: sudo scripts/cluster/bootstrap-testbed-services.sh [--skip-openbao-oidc]
+
+SADP는 IdP, realm, client, 사용자 또는 그룹을 만들거나 변경하지 않는다.
+OIDC client secret 세 개는 docs/identity-provider.md에 따라 외부 IdP에서 발급한 뒤
+/var/lib/sadp/credentials 아래 root:root 0600 파일로 먼저 배치한다.
+EOF
       exit 0
       ;;
     *) die "알 수 없는 인자: $1" ;;
@@ -18,419 +25,38 @@ while (($#)); do
 done
 
 require_root
-for command in jq openssl python3; do require_command "${command}"; done
+for command in jq openssl python3 stat; do require_command "${command}"; done
 ensure_state_dirs
 cd "${TESTBED_ROOT}"
 
-if [[ ${ROTATE_TEST_PASSWORD} == true ]]; then
-  rotated_password=$(openssl rand -hex 32)
-  rotated_file=$(mktemp "${CREDENTIAL_DIR}/.keycloak-test-password.XXXXXX")
-  printf '%s' "${rotated_password}" >"${rotated_file}"
-  install -m 0600 "${rotated_file}" "${CREDENTIAL_DIR}/keycloak-test-password"
-  rm -f "${rotated_file}"
-  unset rotated_password
-  ok "Keycloak test user credential file 회전(값은 출력하지 않음)"
-fi
-
-mapfile -t contract_values < <(python3 - <<'PY'
-import re
-import shlex
+mapfile -t identity_values < <(python3 - <<'PY'
 import yaml
-doc = yaml.safe_load(open("contracts/platform-production.yaml", encoding="utf-8"))
-keycloak = doc["spec"]["keycloak"]
-idp = keycloak.get("identityProvider") or {}
-print(doc["spec"]["baseDomain"])
-for key in ("alias", "displayName", "providerId", "metadataDescriptorUrl", "singleSignOnServiceUrl"):
-    print(str(idp.get(key) or ""))
-# realm/client/issuer 를 박아 두면 다른 realm 을 쓰는 사이트에서 없는 realm 을 만들거나
-# 앱이 못 쓰는 issuer 를 OpenBao 에 넣는다. 계약이 정한 값을 그대로 쓴다.
-print(str(keycloak.get("realm") or ""))
-print(str(keycloak.get("portalClientID") or ""))
-print(str(keycloak.get("issuer") or ""))
-print(str(keycloak.get("samlSpEntityId") or keycloak.get("issuer") or ""))
-portal = yaml.safe_load(open("apps/portal-lite/values-beta.yaml", encoding="utf-8"))
-print(str((portal.get("exposure") or {}).get("host") or ""))
+
+spec = yaml.safe_load(open("contracts/platform-production.yaml", encoding="utf-8"))["spec"]
+identity = spec.get("identityProvider") or {}
+print(str(spec.get("baseDomain") or ""))
+print(str(identity.get("groupsClaim") or "groups"))
+print(str(identity.get("sourceProtocol") or ""))
 PY
 )
-BASE_DOMAIN=${contract_values[0]}
-IDP_ALIAS=${contract_values[1]}
-IDP_DISPLAY_NAME=${contract_values[2]}
-IDP_PROVIDER_ID=${contract_values[3]}
-IDP_METADATA_URL=${contract_values[4]}
-IDP_SSO_URL=${contract_values[5]}
-KEYCLOAK_REALM=${contract_values[6]:?계약에 keycloak.realm 이 없다}
-PORTAL_CLIENT_ID=${contract_values[7]:?계약에 keycloak.portalClientID 가 없다}
-KEYCLOAK_ISSUER=${contract_values[8]:?계약에 keycloak.issuer 가 없다}
-KEYCLOAK_SAML_SP_ENTITY_ID=${contract_values[9]:?계약에 keycloak.samlSpEntityId 가 없다}
-PORTAL_HOST=${contract_values[10]:?Portal values에 exposure.host가 없다}
-SECURE_DEMO_HOST=secure-demo.${BASE_DOMAIN}
+BASE_DOMAIN=${identity_values[0]:?계약에 baseDomain이 없다}
+OIDC_GROUPS_CLAIM=${identity_values[1]:?계약에 identityProvider.groupsClaim이 없다}
+IDENTITY_SOURCE_PROTOCOL=${identity_values[2]:?계약에 identityProvider.sourceProtocol이 없다}
 OPENBAO_HOST=openbao.${BASE_DOMAIN}
 
-if keycloak_is_external; then
-  # 외부 Keycloak의 최초 realm/client/IdP 생성은 VM 책임이다. 이후 보안 정책은 SSH로
-  # 원격 수렴시키고, in-cluster 전용 test user/client 생성만 건너뛴다.
-  note "Keycloak deployment=external: 기존 realm 정책을 외부 VM에 원격 수렴한다"
-  note "절차는 docs/keycloak-external.md 를 따른다"
-  # 외부 VM의 관리자 Secret은 VM 밖으로 복사하지 않는다. SSH로 최신 수렴 스크립트만
-  # 보내 원격 EnvironmentFile을 읽게 한다. client secret은 현재 Keycloak 값을 수렴 성공
-  # 뒤 암호화된 SSH 응답으로 회수하므로 stale 로컬 파일이나 임의 생성값을 시드하지 않는다.
-  bash scripts/cluster/configure-external-keycloak.sh --apply
-  for credential in keycloak-secure-demo-client-secret keycloak-portal-client-secret \
-    keycloak-openbao-client-secret; do
-    [[ -s ${CREDENTIAL_DIR}/${credential} ]] || die \
-      "외부 Keycloak 현재 client secret 회수 실패: ${CREDENTIAL_DIR}/${credential}"
-    [[ $(stat -c '%a' "${CREDENTIAL_DIR}/${credential}") == 600 ]] \
-      || die "외부 Keycloak client secret 파일 mode가 0600이 아님: ${credential}"
-  done
-  # Auth.js 서명 키는 Keycloak 과 무관한 클러스터 자체 값이라 여기서 만들어도 된다.
-  ensure_random_file "${CREDENTIAL_DIR}/portal-auth-secret"
-else
-kctl rollout status -n keycloak deployment/keycloak --timeout=15m >/dev/null
-
-kc() { kctl exec -n keycloak deploy/keycloak -- /opt/keycloak/bin/kcadm.sh "$@"; }
-kc_input() { kctl exec -i -n keycloak deploy/keycloak -- /opt/keycloak/bin/kcadm.sh "$@"; }
-# kcadm의 --password는 파일 입력 옵션이 없다. host의 kubectl exec command에 값을 넣으면
-# apiserver audit requestURI와 프로세스 목록에 남으므로, 고정된 Pod-side shell에만 stdin으로
-# 넘긴다. Pod 안에서 짧게 argv가 되는 것은 kcadm 자체 제약이며 host/API에는 값이 보이지 않는다.
-kc_login_from_files() {
-  local user_file=$1 password_file=$2 legacy_newline=${3:-false}
-  {
-    tr -d '\r\n' <"${user_file}" | base64 -w0
-    printf '\n'
-    tr -d '\r\n' <"${password_file}" | base64 -w0
-    printf '\n'
-  } | kctl exec -i -n keycloak deploy/keycloak -- sh -ceu '
-    IFS= read -r encoded_user
-    IFS= read -r encoded_password
-    user=$(printf "%s" "$encoded_user" | base64 -d)
-    password=$(printf "%s" "$encoded_password" | base64 -d)
-    if [ "$1" = true ]; then
-      password="${password}
-"
-    fi
-    exec /opt/keycloak/bin/kcadm.sh config credentials \
-      --server http://localhost:8080 --realm master --user "$user" --password "$password"
-  ' sh "${legacy_newline}"
+require_oidc_client_secret() {
+  local name=$1 path="${CREDENTIAL_DIR}/$1" owner mode
+  [[ -f ${path} && ! -L ${path} && -s ${path} ]] || die "외부 IdP client secret 파일 없음: ${path}"
+  owner=$(stat -c '%u:%g' "${path}")
+  mode=$(stat -c '%a' "${path}")
+  [[ ${owner} == 0:0 && ${mode} == 600 ]] \
+    || die "외부 IdP client secret은 root:root 0600이어야 함: ${path}"
 }
-
-set_user_password() {
-  local realm=$1 user_id=$2 password_file=$3
-  jq -nc --rawfile value "${password_file}" \
-    '{type:"password", value:($value | sub("[\\r\\n]+$"; "")), temporary:false}' |
-    kc_input update "users/${user_id}/reset-password" -r "${realm}" -f - >/dev/null
-}
-if ! kc_login_from_files "${CREDENTIAL_DIR}/keycloak-admin-user" \
-  "${CREDENTIAL_DIR}/keycloak-admin-password" false >/dev/null 2>&1; then
-  # Older bootstrap runs wrote openssl output with a trailing LF and Kubernetes
-  # correctly preserved that byte in the environment variable. Recover once,
-  # then normalize both Keycloak and the root-only credential file.
-  kc_login_from_files "${CREDENTIAL_DIR}/keycloak-admin-user" \
-    "${CREDENTIAL_DIR}/keycloak-admin-password" true >/dev/null
-  admin_user_id=$(kc get users -r master |
-    jq -r --rawfile username "${CREDENTIAL_DIR}/keycloak-admin-user" \
-      '($username | sub("[\\r\\n]+$"; "")) as $wanted | .[] | select(.username == $wanted) | .id' |
-    head -n1)
-  [[ -n ${admin_user_id} ]] || die "Keycloak master admin user를 찾지 못함"
-  normalized_password=$(mktemp "${CREDENTIAL_DIR}/.keycloak-admin-password.XXXXXX")
-  tr -d '\r\n' <"${CREDENTIAL_DIR}/keycloak-admin-password" >"${normalized_password}"
-  set_user_password master "${admin_user_id}" "${normalized_password}"
-  install -m 0600 "${normalized_password}" "${CREDENTIAL_DIR}/keycloak-admin-password"
-  rm -f "${normalized_password}"
-  apply_generic_secret_from_files keycloak keycloak-bootstrap \
-    --from-file=username="${CREDENTIAL_DIR}/keycloak-admin-user" \
-    --from-file=password="${CREDENTIAL_DIR}/keycloak-admin-password"
-  ok "legacy Keycloak bootstrap 비밀번호의 trailing newline 정규화"
-fi
-if ! kc get realms/${KEYCLOAK_REALM} >/dev/null 2>&1; then
-  kc create realms -s realm="${KEYCLOAK_REALM}" -s enabled=true -s sslRequired=external \
-    -s registrationAllowed=false -s duplicateEmailsAllowed=false -s editUsernameAllowed=false \
-    -s bruteForceProtected=true -s failureFactor=5 >/dev/null
-else
-  kc update realms/${KEYCLOAK_REALM} -s enabled=true -s sslRequired=external \
-    -s registrationAllowed=false -s duplicateEmailsAllowed=false -s editUsernameAllowed=false \
-    -s bruteForceProtected=true -s failureFactor=5 >/dev/null
-fi
-
-for group in platform-admin app-admin developer viewer; do
-  groups=$(kc get groups -r "${KEYCLOAK_REALM}" -q search="${group}")
-  if ! jq -e --arg group "${group}" '.[] | select(.name == $group)' <<<"${groups}" >/dev/null; then
-    kc create groups -r "${KEYCLOAK_REALM}" -s name="${group}" >/dev/null
-  fi
+for credential in oidc-secure-demo-client-secret oidc-portal-client-secret oidc-openbao-client-secret; do
+  require_oidc_client_secret "${credential}"
 done
-
-# 연합 IdP로 처음 들어온 사용자는 realm에 새로 import된다. developer Realm Default
-# Group은 최초 생성 경계를 지키고, 아래 IdP mapper는 기존 연합 사용자도 다음 로그인 때
-# 같은 그룹으로 수렴시킨다. defaultGroups 배열 전체를 바꾸면 운영자가 추가한 기본 그룹을
-# 덮어쓸 수 있으므로 여기서는 group ID 전용 endpoint만 반복 안전하게 호출한다.
-developer_groups=$(kc get groups -r "${KEYCLOAK_REALM}" -q search=developer)
-developer_group_id=$(jq -er '
-  [.[] | select(.name == "developer")] as $matches
-  | select(($matches | length) == 1)
-  | $matches[0].id
-' <<<"${developer_groups}") || die "Keycloak developer group을 정확히 하나 찾지 못함"
-kc update "default-groups/${developer_group_id}" -r "${KEYCLOAK_REALM}" -n >/dev/null
-default_groups=$(kc get default-groups -r "${KEYCLOAK_REALM}")
-jq -e --arg id "${developer_group_id}" \
-  '.[] | select(.id == $id and .name == "developer")' <<<"${default_groups}" >/dev/null \
-  || die "Keycloak developer 기본 그룹 적용 후 검증 실패"
-ok "Keycloak 신규 사용자 기본 그룹 developer 적용"
-
-ensure_client() {
-  local client_id=$1 secret_file=$2 redirects=$3 origins=$4 post_logout=${5:-}
-  local clients id
-  clients=$(kc get clients -r "${KEYCLOAK_REALM}" -q clientId="${client_id}")
-  id=$(jq -r '.[0].id // empty' <<<"${clients}")
-  client_document() {
-    jq -nc --arg client_id "${client_id}" --rawfile secret "${secret_file}" \
-      --argjson redirects "${redirects}" --argjson origins "${origins}" \
-      --arg post_logout "${post_logout}" '{
-        clientId:$client_id, enabled:true, publicClient:false,
-        clientAuthenticatorType:"client-secret", standardFlowEnabled:true,
-        directAccessGrantsEnabled:false,
-        secret:($secret | sub("[\\r\\n]+$"; "")),
-        redirectUris:$redirects, webOrigins:$origins
-      } + (if $post_logout == "" then {} else {
-        attributes:{"post.logout.redirect.uris":$post_logout}
-      } end)'
-  }
-  if [[ -z ${id} ]]; then
-    id=$(client_document | kc_input create clients -r "${KEYCLOAK_REALM}" -i -f -)
-  else
-    client_document | kc_input update "clients/${id}" -r "${KEYCLOAK_REALM}" -f - >/dev/null
-  fi
-  mappers=$(kc get "clients/${id}/protocol-mappers/models" -r "${KEYCLOAK_REALM}")
-  if ! jq -e '.[] | select(.name == "groups")' <<<"${mappers}" >/dev/null; then
-    kc create "clients/${id}/protocol-mappers/models" -r "${KEYCLOAK_REALM}" \
-      -s name=groups -s protocol=openid-connect -s protocolMapper=oidc-group-membership-mapper \
-      -s 'config."full.path"=false' -s 'config."claim.name"=groups' \
-      -s 'config."id.token.claim"=true' -s 'config."access.token.claim"=true' \
-      -s 'config."userinfo.token.claim"=true' >/dev/null
-  fi
-  ENSURED_CLIENT_UUID=${id}
-}
-
-# redirect URI 는 반드시 큰따옴표로 감싼다. 작은따옴표면 ${..._HOST} 가 확장되지 않아
-# 리터럴 문자열이 client 에 등록되고 로그인이 조용히 깨진다.
-#
-# clientId 는 charts/app-profile/templates/securitypolicy.yaml 이 만드는
-# "<app.name>-<app.environment>" 와 반드시 같아야 한다. 다르면 SecurityPolicy 는
-# discovery 만 보고 Accepted 가 되고, 실제 로그인에서야 Keycloak 이 client 를 못 찾는다.
-ensure_client secure-demo-prod "${CREDENTIAL_DIR}/keycloak-secure-demo-client-secret" \
-  "[\"https://${SECURE_DEMO_HOST}/oauth2/callback\"]" \
-  "[\"https://${SECURE_DEMO_HOST}\"]"
-ensure_client openbao "${CREDENTIAL_DIR}/keycloak-openbao-client-secret" \
-  "[\"https://${OPENBAO_HOST}/ui/vault/auth/oidc/oidc/callback\",\"http://localhost:8250/oidc/callback\"]" \
-  "[\"https://${OPENBAO_HOST}\"]"
-ensure_client "${PORTAL_CLIENT_ID}" "${CREDENTIAL_DIR}/keycloak-portal-client-secret" \
-  "[\"https://${PORTAL_HOST}/api/auth/callback/keycloak\"]" \
-  "[\"https://${PORTAL_HOST}\"]" \
-  "https://${PORTAL_HOST}/portal"
-portal_client_uuid=${ENSURED_CLIENT_UUID}
-
-# 그룹명과 같은 realm/client role을 매핑해 토큰의 realm_access와
-# resource_access.portal-beta를 모두 서버 세션에서 검증할 수 있게 한다.
-for role in platform-admin viewer; do
-  if ! kc get "roles/${role}" -r "${KEYCLOAK_REALM}" >/dev/null 2>&1; then
-    kc create roles -r "${KEYCLOAK_REALM}" -s name="${role}" >/dev/null
-  fi
-  if ! kc get "clients/${portal_client_uuid}/roles/${role}" -r "${KEYCLOAK_REALM}" >/dev/null 2>&1; then
-    kc create "clients/${portal_client_uuid}/roles" -r "${KEYCLOAK_REALM}" -s name="${role}" >/dev/null
-  fi
-  kc add-roles -r "${KEYCLOAK_REALM}" --gname "${role}" --rolename "${role}" >/dev/null 2>&1 || true
-  kc add-roles -r "${KEYCLOAK_REALM}" --gname "${role}" --cclientid "${PORTAL_CLIENT_ID}" \
-    --rolename "${role}" >/dev/null 2>&1 || true
-done
-
-# First Broker Login은 client별 가입이 아니라 realm의 IdP 연결 경계다. 이 flow를 IdP에
-# 한 번 묶으면 이후 설치하는 모든 OIDC 앱도 같은 LIFE 계정을 재사용한다. 서명된 사내 IdP와
-# 가입/중복/이름 변경이 닫힌 realm에서만 이메일 자동 연결을 허용한다.
-TRUSTED_FIRST_LOGIN_FLOW=sadp-trusted-saml-first-login
-STABLE_SAML_USERNAME_TEMPLATE='${ATTRIBUTE.http://schemas.goauthentik.io/2021/02/saml/username}'
-ensure_trusted_first_login_flow() {
-  local flows flow_count flow_document executions provider execution_count execution_id
-  flows=$(kc get authentication/flows -r "${KEYCLOAK_REALM}")
-  flow_count=$(jq --arg alias "${TRUSTED_FIRST_LOGIN_FLOW}" \
-    '[.[] | select(.alias == $alias)] | length' <<<"${flows}")
-  ((flow_count <= 1)) || die "Keycloak trusted SAML first login flow가 둘 이상임"
-  if ((flow_count == 0)); then
-    flow_document=$(jq -nc --arg alias "${TRUSTED_FIRST_LOGIN_FLOW}" '{
-      alias:$alias,
-      description:"서명된 LIFE SAML 사용자를 입력 화면 없이 생성하거나 기존 계정에 연결한다.",
-      providerId:"basic-flow", topLevel:true, builtIn:false
-    }')
-    kc_input create authentication/flows -r "${KEYCLOAK_REALM}" -f - \
-      <<<"${flow_document}" >/dev/null
-  fi
-
-  for provider in idp-create-user-if-unique idp-auto-link; do
-    executions=$(kc get "authentication/flows/${TRUSTED_FIRST_LOGIN_FLOW}/executions" \
-      -r "${KEYCLOAK_REALM}")
-    execution_count=$(jq --arg provider "${provider}" \
-      '[.[] | select(.providerId == $provider)] | length' <<<"${executions}")
-    ((execution_count <= 1)) \
-      || die "Keycloak first login execution '${provider}'가 둘 이상임"
-    if ((execution_count == 0)); then
-      jq -nc --arg provider "${provider}" '{provider:$provider}' |
-        kc_input create \
-          "authentication/flows/${TRUSTED_FIRST_LOGIN_FLOW}/executions/execution" \
-          -r "${KEYCLOAK_REALM}" -f - >/dev/null
-      executions=$(kc get "authentication/flows/${TRUSTED_FIRST_LOGIN_FLOW}/executions" \
-        -r "${KEYCLOAK_REALM}")
-    fi
-    execution_id=$(jq -er --arg provider "${provider}" \
-      '.[] | select(.providerId == $provider) | .id' <<<"${executions}") \
-      || die "Keycloak first login execution '${provider}' 생성 실패"
-    jq -nc --arg id "${execution_id}" '{id:$id, requirement:"ALTERNATIVE"}' |
-      kc_input update "authentication/flows/${TRUSTED_FIRST_LOGIN_FLOW}/executions" \
-        -r "${KEYCLOAK_REALM}" -f - >/dev/null
-  done
-
-  executions=$(kc get "authentication/flows/${TRUSTED_FIRST_LOGIN_FLOW}/executions" \
-    -r "${KEYCLOAK_REALM}")
-  jq -e '
-    length == 2
-    and ([.[] | select(
-      .providerId == "idp-create-user-if-unique" and .requirement == "ALTERNATIVE"
-    )] | length == 1)
-    and ([.[] | select(
-      .providerId == "idp-auto-link" and .requirement == "ALTERNATIVE"
-    )] | length == 1)
-  ' <<<"${executions}" >/dev/null \
-    || die "Keycloak trusted SAML first login flow 검증 실패"
-}
-ensure_trusted_first_login_flow
-
-# 선택적 상위 SAML IdP. alias는 로그인 URL에 박히므로 다음 서버에서도
-# 계약의 값을 그대로 쓴다. 서명 검증은 metadata descriptor에서 받아오므로
-# 인증서를 스크립트에 박지 않는다.
-ensure_identity_provider() {
-  local alias=$1 display=$2 provider=$3 metadata_url=$4 sso_url=$5 sp_entity_id=$6
-  [[ -z ${alias} || -z ${metadata_url} ]] && return 0
-  local args=(
-    -r "${KEYCLOAK_REALM}"
-    -s alias="${alias}"
-    -s displayName="${display}"
-    -s providerId="${provider}"
-    -s enabled=true
-    -s trustEmail=true
-    -s firstBrokerLoginFlowAlias="${TRUSTED_FIRST_LOGIN_FLOW}"
-    -s 'config."useMetadataDescriptorUrl"=true'
-    -s "config.\"metadataDescriptorUrl\"=${metadata_url}"
-    -s "config.\"singleSignOnServiceUrl\"=${sso_url}"
-    -s "config.\"entityId\"=${sp_entity_id}"
-    -s 'config."validateSignature"=true'
-    -s 'config."wantAssertionsSigned"=true'
-    -s 'config."wantAuthnRequestsSigned"=false'
-    -s 'config."principalType"=SUBJECT'
-    -s 'config."nameIDPolicyFormat"=urn:oasis:names:tc:SAML:2.0:nameid-format:persistent'
-    -s 'config."syncMode"=IMPORT'
-    -s 'config."postBindingResponse"=false'
-    -s 'config."postBindingAuthnRequest"=false'
-  )
-  if kc get "identity-provider/instances/${alias}" -r "${KEYCLOAK_REALM}" >/dev/null 2>&1; then
-    kc update "identity-provider/instances/${alias}" "${args[@]}" >/dev/null
-  else
-    kc create identity-provider/instances "${args[@]}" >/dev/null
-  fi
-}
-ensure_identity_provider "${IDP_ALIAS}" "${IDP_DISPLAY_NAME}" "${IDP_PROVIDER_ID}" \
-  "${IDP_METADATA_URL}" "${IDP_SSO_URL}" "${KEYCLOAK_SAML_SP_ENTITY_ID}"
-
-# Realm default group은 최초 import 뒤에는 다시 적용되지 않는다. Hardcoded Group
-# mapper의 FORCE sync가 매 SAML 로그인에서 /developer를 보장해야 기존 사용자도 포털에
-# 들어올 수 있다. mapper가 IdP보다 먼저 만들어질 수 없어서 IdP 구성 직후에 둔다.
-if [[ -n ${IDP_ALIAS} ]]; then
-  [[ ${IDP_PROVIDER_ID} == saml ]] \
-    || die "trusted username mapper는 SAML IdP에서만 적용 가능"
-  mapper_rows=$(kc get "identity-provider/instances/${IDP_ALIAS}/mappers" -r "${KEYCLOAK_REALM}")
-  username_mapper_count=$(jq \
-    '[.[] | select(.identityProviderMapper == "saml-username-idp-mapper")] | length' \
-    <<<"${mapper_rows}")
-  ((username_mapper_count <= 1)) \
-    || die "Keycloak SAML username mapper가 둘 이상이라 대상을 결정할 수 없음"
-  username_mapper_id=$(jq -r \
-    '.[] | select(.identityProviderMapper == "saml-username-idp-mapper") | .id' \
-    <<<"${mapper_rows}")
-  username_mapper_name=$(jq -r \
-    '.[] | select(.identityProviderMapper == "saml-username-idp-mapper") | .name' \
-    <<<"${mapper_rows}")
-  username_mapper_name=${username_mapper_name:-sadp-stable-saml-username}
-  username_mapper_document=$(jq -nc --arg name "${username_mapper_name}" \
-    --arg alias "${IDP_ALIAS}" --arg template "${STABLE_SAML_USERNAME_TEMPLATE}" '{
-      name:$name,
-      identityProviderAlias:$alias,
-      identityProviderMapper:"saml-username-idp-mapper",
-      config:{syncMode:"IMPORT", template:$template, target:"LOCAL"}
-    }')
-  if [[ -z ${username_mapper_id} ]]; then
-    username_mapper_id=$(kc_input create "identity-provider/instances/${IDP_ALIAS}/mappers" \
-      -r "${KEYCLOAK_REALM}" -i -f - <<<"${username_mapper_document}")
-  else
-    username_mapper_update=$(jq --arg id "${username_mapper_id}" '. + {id:$id}' \
-      <<<"${username_mapper_document}")
-    kc_input update "identity-provider/instances/${IDP_ALIAS}/mappers/${username_mapper_id}" \
-      -r "${KEYCLOAK_REALM}" -f - <<<"${username_mapper_update}" >/dev/null
-  fi
-  kc get "identity-provider/instances/${IDP_ALIAS}/mappers/${username_mapper_id}" \
-    -r "${KEYCLOAK_REALM}" | jq -e --arg template "${STABLE_SAML_USERNAME_TEMPLATE}" '
-      .identityProviderMapper == "saml-username-idp-mapper"
-      and .config.syncMode == "IMPORT"
-      and .config.template == $template
-      and .config.target == "LOCAL"
-  ' >/dev/null || die "Keycloak SAML Authentik username URI mapper 검증 실패"
-
-  mapper_name=portal-default-developer
-  mapper_rows=$(kc get "identity-provider/instances/${IDP_ALIAS}/mappers" -r "${KEYCLOAK_REALM}")
-  mapper_count=$(jq --arg name "${mapper_name}" \
-    '[.[] | select(.name == $name)] | length' <<<"${mapper_rows}")
-  ((mapper_count <= 1)) || die "Keycloak developer IdP mapper가 둘 이상이라 대상을 결정할 수 없음"
-  mapper_id=$(jq -r --arg name "${mapper_name}" \
-    '.[] | select(.name == $name) | .id' <<<"${mapper_rows}")
-  mapper_document=$(jq -nc --arg name "${mapper_name}" --arg alias "${IDP_ALIAS}" '{
-    name:$name,
-    identityProviderAlias:$alias,
-    identityProviderMapper:"oidc-hardcoded-group-idp-mapper",
-    config:{syncMode:"FORCE", group:"/developer"}
-  }')
-  if [[ -z ${mapper_id} ]]; then
-    mapper_id=$(kc_input create "identity-provider/instances/${IDP_ALIAS}/mappers" \
-      -r "${KEYCLOAK_REALM}" -i -f - <<<"${mapper_document}")
-  else
-    kc_input update "identity-provider/instances/${IDP_ALIAS}/mappers/${mapper_id}" \
-      -r "${KEYCLOAK_REALM}" -f - <<<"${mapper_document}" >/dev/null
-  fi
-  kc get "identity-provider/instances/${IDP_ALIAS}/mappers/${mapper_id}" \
-    -r "${KEYCLOAK_REALM}" | jq -e '
-      .identityProviderMapper == "oidc-hardcoded-group-idp-mapper"
-      and .config.syncMode == "FORCE"
-      and .config.group == "/developer"
-    ' >/dev/null || die "Keycloak developer IdP mapper 적용 후 검증 실패"
-  ok "Keycloak SAML Authentik username URI/developer 그룹 매퍼 적용"
-fi
-
-users=$(kc get users -r "${KEYCLOAK_REALM}")
-user_id=$(jq -r --rawfile username "${CREDENTIAL_DIR}/keycloak-test-user" \
-  '($username | sub("[\\r\\n]+$"; "")) as $wanted | .[] | select(.username == $wanted) | .id' \
-  <<<"${users}" | head -n1)
-if [[ -z ${user_id} ]]; then
-  user_id=$(jq -nc --rawfile username "${CREDENTIAL_DIR}/keycloak-test-user" \
-    --arg domain "${BASE_DOMAIN}" '{
-      username:($username | sub("[\\r\\n]+$"; "")), enabled:true, emailVerified:true,
-      email:(($username | sub("[\\r\\n]+$"; "")) + "@" + $domain)
-    }' | kc_input create users -r "${KEYCLOAK_REALM}" -i -f -)
-fi
-jq -nc --rawfile username "${CREDENTIAL_DIR}/keycloak-test-user" --arg domain "${BASE_DOMAIN}" '{
-  username:($username | sub("[\\r\\n]+$"; "")), enabled:true, emailVerified:true,
-  email:(($username | sub("[\\r\\n]+$"; "")) + "@" + $domain),
-  firstName:"SADP", lastName:"Tester"
-}' | kc_input update "users/${user_id}" -r "${KEYCLOAK_REALM}" -f - >/dev/null
-set_user_password "${KEYCLOAK_REALM}" "${user_id}" "${CREDENTIAL_DIR}/keycloak-test-password"
-for group in platform-admin viewer; do
-  group_id=$(kc get groups -r "${KEYCLOAK_REALM}" -q search="${group}" | jq -r --arg group "${group}" '.[] | select(.name == $group) | .id' | head -n1)
-  kc update "users/${user_id}/groups/${group_id}" -r "${KEYCLOAK_REALM}" -n >/dev/null 2>&1 || true
-done
-ok "Keycloak ${KEYCLOAK_REALM} realm, realm/client role, confidential client 3개, test user 구성"
-fi
+ensure_random_file "${CREDENTIAL_DIR}/portal-auth-secret"
+note "외부 IdP 연결(source=${IDENTITY_SOURCE_PROTOCOL})의 사전 발급 client secret 확인; IdP 설정은 변경하지 않음"
 
 openbao_pod=openbao-0
 kctl wait -n openbao pod/${openbao_pod} --for=jsonpath='{.status.phase}'=Running --timeout=10m >/dev/null
@@ -455,19 +81,12 @@ if [[ ${initialized} != true ]]; then
   mv "${init_tmp}" "${init_file}"
   ok "OpenBao 초기화(3 shares, threshold 2); 복구 재료는 root-only 상태 디렉터리에 저장"
 elif [[ ! -s ${init_file} ]]; then
-  die "OpenBao는 이미 초기화됐지만 ${init_file}이 없어 자동 unseal/bootstrap 불가"
+  die "OpenBao는 이미 초기화됐지만 ${init_file}이 없어 unseal/bootstrap 불가"
 fi
 
-for index in 0 1; do
-  # unseal key를 kubectl exec 인자에 넣으면 apiserver audit request와 host 프로세스
-  # 목록에 복구 재료가 남는다. 고정된 Pod-side shell이 stdin에서만 읽게 한다.
-  jq -er ".unseal_keys_b64[${index}]" "${init_file}" |
-    kctl exec -i -n openbao "${openbao_pod}" -- sh -ceu '
-      IFS= read -r unseal_key
-      export BAO_ADDR="$1" BAO_CACERT=/openbao/tls/ca.crt
-      exec bao operator unseal "$unseal_key"
-    ' sh "${bao_addr}" >/dev/null
-done
+# 초기화 직후나 재기동 뒤 sealed 상태를 bootstrap이 암묵적으로 풀면 운영자가 복구 재료 사용을
+# 승인할 경계가 사라진다. 상태만 확인하고 별도 --apply 명령을 명시한 뒤 다시 실행하게 한다.
+openbao_require_unsealed 5m
 bao() {
   # root token은 kubectl exec 인자/환경에 넣지 않는다. 고정된 shell이 stdin 첫 줄을
   # 받아 Pod 안에서만 환경변수로 올리고, 실제 bao에는 EOF를 전달한다.
@@ -655,13 +274,13 @@ seed_kv_file_key "${kv_prefix}/secure-demo" DB_PASSWORD \
 seed_kv_file_key "${kv_prefix}/secure-demo" API_TOKEN \
   "${CREDENTIAL_DIR}/app-api-token"
 seed_kv_file_key "${kv_prefix}/secure-demo" OIDC_CLIENT_SECRET \
-  "${CREDENTIAL_DIR}/keycloak-secure-demo-client-secret"
-seed_kv_file_key "${kv_prefix}/portal-lite" AUTH_KEYCLOAK_SECRET \
-  "${CREDENTIAL_DIR}/keycloak-portal-client-secret"
+  "${CREDENTIAL_DIR}/oidc-secure-demo-client-secret"
+seed_kv_file_key "${kv_prefix}/portal-lite" AUTH_OIDC_SECRET \
+  "${CREDENTIAL_DIR}/oidc-portal-client-secret"
 seed_kv_file_key "${kv_prefix}/portal-lite" AUTH_SECRET \
   "${CREDENTIAL_DIR}/portal-auth-secret"
 
-# 기계 API 키는 OpenBao KV와 ESO role이 모두 준비된 뒤에만 만든다. keycloak 모드는
+# 기계 API 키는 OpenBao KV와 ESO role이 모두 준비된 뒤에만 만든다. oidc 모드는
 # 이 함수가 값 생성 없이 반환하므로 일반 bootstrap이 인증 모드를 넘나들며 키를 만들거나
 # 회전시키지 않는다.
 machine_auth_bootstrap
@@ -694,7 +313,7 @@ path "sys/mounts" { capabilities = ["read", "list"] }
 path "auth/token/lookup-self" { capabilities = ["read"] }
 HCL
 
-# role 마다 bound_claims 로 Keycloak group 을 묶는다. 이것이 없으면 realm 에 로그인할 수
+# role마다 bound_claims로 외부 IdP group을 묶는다. 이것이 없으면 IdP에 로그인할 수
 # 있는 사람은 누구나 그 role 을 그대로 assume 한다(groups_claim 은 claim 위치만 알려 줄 뿐
 # 접근을 제한하지 않는다). 일반 사용자 role 만 의도적으로 묶지 않는다.
 #
@@ -702,8 +321,9 @@ HCL
 # 조용히 실패한다). 반드시 JSON 본문으로 쓴다.
 oidc_role() {
   local role=$1 policy=$2
-  jq -n --arg r "${role}" --arg p "${policy}" --arg h "${OPENBAO_HOST}" '{
-    role_type:"oidc", user_claim:"preferred_username", groups_claim:"groups",
+  jq -n --arg r "${role}" --arg p "${policy}" --arg h "${OPENBAO_HOST}" \
+    --arg groups_claim "${OIDC_GROUPS_CLAIM}" '{
+    role_type:"oidc", user_claim:"preferred_username", groups_claim:$groups_claim,
     bound_audiences:["openbao"], token_policies:[$p], token_ttl:"1h",
     bound_claims_type:"string", bound_claims:{groups:[$r]},
     allowed_redirect_uris:[
@@ -716,21 +336,20 @@ oidc_role app-admin app-user
 oidc_role developer app-user
 
 # 일반 사용자 role: bound_claims 없음. group 이 없어도 로그인하면 이 role 을 받는다.
-jq -n --arg h "${OPENBAO_HOST}" '{
-  role_type:"oidc", user_claim:"preferred_username", groups_claim:"groups",
+jq -n --arg h "${OPENBAO_HOST}" --arg groups_claim "${OIDC_GROUPS_CLAIM}" '{
+  role_type:"oidc", user_claim:"preferred_username", groups_claim:$groups_claim,
   bound_audiences:["openbao"], token_policies:["app-user"], token_ttl:"1h",
   allowed_redirect_uris:[
     ("https://" + $h + "/ui/vault/auth/oidc/oidc/callback"),
     "http://localhost:8250/oidc/callback"
   ]}' | bao_input write auth/oidc/role/user - >/dev/null
 
-# client secret 은 argv 에 남기지 않도록 stdin JSON 으로만 넘긴다.
-# default_role 은 가장 약한 user 다. role 을 지정하지 않고 들어온 로그인이 관리자 권한을
-# 받으면 안 된다.
-jq -nc --arg discovery "${KEYCLOAK_ISSUER}" \
-  --rawfile secret "${CREDENTIAL_DIR}/keycloak-openbao-client-secret" '{
-    oidc_discovery_url:$discovery, oidc_client_id:"openbao",
-    oidc_client_secret:($secret | sub("[\\r\\n]+$"; "")), default_role:"user"
-  }' | bao_input write auth/oidc/config - >/dev/null
+if [[ ${SKIP_OPENBAO_OIDC} == true ]]; then
+  note "OpenBao OIDC config는 Gateway/TLS/discovery 전용 순서 단계에서 적용하도록 보류"
+else
+  # 직접 bootstrap 진입점도 같은 fail-closed preflight를 거쳐야 API의 일반적인
+  # 'error checking oidc discovery URL' 400으로 원인이 가려지지 않는다.
+  bash scripts/ops/configure-openbao-oidc.sh --apply
+fi
 kctl wait -n openbao pod/${openbao_pod} --for=condition=Ready --timeout=5m >/dev/null
-ok "OpenBao audit/KV v2/Kubernetes auth/최소권한 policy/OIDC 구성"
+ok "OpenBao audit/KV v2/Kubernetes auth/최소권한 policy/OIDC role 구성"

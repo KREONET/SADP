@@ -2,7 +2,7 @@ import type { Metadata } from "next";
 import { redirect } from "next/navigation";
 
 import { auth } from "@/auth";
-import { signOutFromKeycloak } from "@/app/auth-actions";
+import { signOutFromOIDC } from "@/app/auth-actions";
 import { getI18n } from "@/lib/i18n/server";
 
 export async function generateMetadata(): Promise<Metadata> {
@@ -48,7 +48,7 @@ export default async function AccountPage() {
           {/* 레거시 전역 CSS를 내리고 PaaS 전용 CSS만 다시 로드한다. */}
           {/* eslint-disable-next-line @next/next/no-html-link-for-pages -- CSS 경계를 넘을 때는 전체 페이지 이동이 필요하다. */}
           <a className="button secondary" href="/">{t.home}</a>
-          <form action={signOutFromKeycloak}>
+          <form action={signOutFromOIDC}>
             <button className="button primary" type="submit">{t.signOut}</button>
           </form>
         </div>

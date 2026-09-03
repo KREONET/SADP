@@ -42,7 +42,7 @@ sudo bash ./sadp --install-wizard
 | 모든 `site.env` key와 생성 규칙 | [사이트 설정](site-configuration.md) |
 | NIC, 방화벽, Squid, DNS | [네트워크·egress](network-egress.md) |
 | wildcard staging → production | [Let's Encrypt DNS-01](letsencrypt-dns01.md) |
-| 외부 Keycloak과 SAML IdP | [외부 Keycloak](keycloak-external.md) |
+| 외부 OpenID/SAML 연결 | [외부 인증](identity-provider.md) |
 | 외부 Grafana/Wazuh 기계 인증 | [기계 인증](external-observability.md) |
 | 안전 기동·종료, SADP/RKE2 업데이트 | [운영 수명주기](operations-lifecycle.md) |
 | Portal API | [Portal API](portal-api.md) · [OpenAPI](../apps/portal-lite/backend/openapi.yaml) |

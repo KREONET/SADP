@@ -23,8 +23,11 @@ configuration:
     APP_ENV: prod
     PLATFORM_BASE_DOMAIN: sadp.example.invalid
     PORTAL_RELEASE: 0.4.0-gitops
-    AUTH_KEYCLOAK_ID: sadp-portal
-    AUTH_KEYCLOAK_ISSUER: https://sso.sadp.example.invalid/realms/sadp
+    AUTH_OIDC_ID: sadp-portal
+    AUTH_OIDC_ISSUER: https://idp.example.invalid/application/o/sadp
+    AUTH_OIDC_TOKEN_ENDPOINT: https://idp.example.invalid/application/o/token/
+    AUTH_OIDC_END_SESSION_ENDPOINT: ''
+    AUTH_OIDC_GROUPS_CLAIM: groups
     AUTH_TRUST_HOST: 'true'
     AUTH_URL: https://portal.sadp.example.invalid
     PORTAL_STATE_DIR: /data
@@ -44,7 +47,6 @@ configuration:
     PORTAL_ARGO_PROJECT: platform-prod
     PORTAL_ARGO_BOOTSTRAP_APPLICATION: platform-bootstrap
     PORTAL_RANCHER_NAMESPACE: cattle-system
-    PORTAL_KEYCLOAK_NAMESPACE: keycloak
     PORTAL_OPENBAO_NAMESPACE: openbao
     PORTAL_OPENBAO_ADDR: https://openbao.openbao.svc.cluster.local:8200
     PORTAL_OPENBAO_CACERT: /var/run/openbao/ca.crt
@@ -69,8 +71,8 @@ configuration:
     secretStore: openbao-portal-lite
     remotePath: apps/research/prod/portal-lite
     keys:
-    - AUTH_KEYCLOAK_SECRET
     - AUTH_SECRET
+    - AUTH_OIDC_SECRET
     - FORGEJO_BOT_TOKEN
   injection:
     mode: envFrom
@@ -91,7 +93,6 @@ rbac:
   namespaces:
   - sadp-apps
   - cattle-system
-  - keycloak
   - openbao
   tokenExpirationSeconds: 3600
   tokenAudience: https://kubernetes.default.svc.cluster.local

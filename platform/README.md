@@ -31,7 +31,6 @@ Argo CD가 적용하는 플랫폼 values입니다. 정상 설치는 `bash ./sadp
 | `exposure/` | Gateway, Route, 외부 서비스, 내부 CA | `render-exposure.py`와 정적 리소스 |
 | `cert-manager/` | ClusterIssuer/Certificate | `render-exposure.py` |
 | `rancher/` | Project와 group RBAC | `render-rancher.py` |
-| `keycloak/` | in-cluster 또는 external Service/EndpointSlice | `configure-site.py` |
 | `openbao/` | OpenBao TLS/PVC/audit 기반 리소스 | Argo + bootstrap script |
 | `external-secrets/` | ESO values | Argo CD |
 | `reloader/` | Reloader values | Argo CD |
@@ -103,7 +102,7 @@ kubectl get applications -n devtroncd \
 - CoreDNS split DNS 적용
 - cert-manager controller 전용 proxy 적용 확인
 - 제공 인증서 또는 cert-manager Secret 경계 처리
-- Keycloak in-cluster 리소스 또는 external Endpoint 적용
+- 외부 OIDC issuer와 client secret 준비 상태 확인
 - ESO/Reloader/OpenBao Argo Application과 rollout 대기
 - Gateway/플랫폼 Route 적용
 - 원툴 cluster 단계가 미리 동기화한 Prometheus/Loki/Alloy 이미지 확인과 Argo rollout 대기

@@ -23,6 +23,8 @@
 set -Eeuo pipefail
 
 ROOT=$(cd "$(dirname "${BASH_SOURCE[0]}")/../.." && pwd)
+source "${ROOT}/scripts/lib/testbed-common.sh"
+source "${ROOT}/scripts/lib/openbao-eso.sh"
 mapfile -t repository_values < <(python3 - "${ROOT}/contracts/platform-production.yaml" <<'PY'
 import sys
 from urllib.parse import urlsplit
@@ -86,6 +88,7 @@ while (($#)); do
 done
 
 [[ ${EUID} -eq 0 ]] || die "root 권한 필요 (sudo)"
+command -v jq >/dev/null 2>&1 || die "필수 명령을 찾을 수 없음: jq"
 [[ -n ${WRITE_TOKEN_FILE} ]] || die "--write-token-file 필요"
 [[ -r ${WRITE_TOKEN_FILE} ]] || die "읽을 수 없음: ${WRITE_TOKEN_FILE}"
 : "${READ_TOKEN_FILE:=${WRITE_TOKEN_FILE}}"
@@ -184,15 +187,7 @@ ok "ArgoCD repo secret 교체 + repo-server 재기동"
 
 # ---- 5. ExternalSecret 강제 동기화 후 포털 재기동 -------------------------
 note "portal-lite-auth ExternalSecret 강제 동기화"
-"${KUBECTL_BIN}" -n "${PORTAL_NAMESPACE}" annotate externalsecret portal-lite-auth \
-  force-sync="$(date +%s)" --overwrite >/dev/null || die "ExternalSecret 강제 동기화 실패"
-for _ in $(seq 1 30); do
-  phase=$("${KUBECTL_BIN}" -n "${PORTAL_NAMESPACE}" get externalsecret portal-lite-auth \
-    -o jsonpath='{.status.conditions[?(@.type=="Ready")].status}' 2>/dev/null || true)
-  [[ ${phase} == True ]] && break
-  sleep 2
-done
-[[ ${phase:-} == True ]] || die "portal-lite-auth ExternalSecret 가 Ready 가 아니다"
+wait_external_secret_ready "${PORTAL_NAMESPACE}" portal-lite-auth 2m
 ok "ExternalSecret 동기화 완료"
 
 note "포털 재기동"

@@ -4,10 +4,8 @@ platform:
   envoyGateway: 1.8.3
   certManager: 1.21.1
   rancher: v2.14.3
-  keycloak: 26.7.2
   openbao: 2.6.2
   openbaoChart: 0.29.2
-  postgresql: "17.10"
   prometheus: 29.27.0
   loki: 18.9.1
   alloy: 1.11.1

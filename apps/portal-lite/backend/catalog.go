@@ -81,14 +81,13 @@ func catalog() catalogResponse {
 		OpenAPISpec:        "/api/v1/openapi.yaml",
 		Services: []catalogService{
 			{ID: "hello", Name: "공개 샘플", Description: "로그인 없이 바로 접근하는 public 서비스", URL: "https://hello." + baseDomain, Access: "public", Status: "available"},
-			{ID: "secure-demo", Name: "SSO 보호 샘플", Description: "Keycloak 로그인을 통과한 사용자만 접근", URL: "https://secure-demo." + baseDomain, Access: "sso", Status: "available"},
+			{ID: "secure-demo", Name: "SSO 보호 샘플", Description: "외부 OIDC 로그인을 통과한 사용자만 접근", URL: "https://secure-demo." + baseDomain, Access: "sso", Status: "available"},
 			{ID: "rancher", Name: "Rancher", Description: "클러스터·노드·프로젝트 관리", URL: "https://rancher." + baseDomain, Access: "admin", Roles: []string{"platform-admin", "app-admin"}, Status: "available"},
 			{ID: "openbao", Name: "OpenBao", Description: "승인된 앱 경로의 Secret 관리", URL: "https://openbao." + baseDomain, Access: "sso", Roles: []string{"platform-admin", "app-admin"}, Status: "available"},
-			{ID: "keycloak", Name: "Keycloak", Description: "계정·그룹·외부 SSO 관리", URL: "https://sso." + baseDomain, Access: "admin", Roles: []string{"platform-admin"}, Status: "available"},
 		},
 		Templates: []catalogTemplate{
 			{ID: "web-public-v2", Name: "로그인 없는 공개 웹", Exposure: "public", Description: "HTTPS URL로 누구나 접근", ValuesFile: "apps/_template/values-public.yaml"},
-			{ID: "web-oidc-v2", Name: "Keycloak SSO 보호 웹", Exposure: "oidc", Description: "Envoy가 로그인 완료 후에만 upstream 연결", ValuesFile: "apps/_template/values-sso.yaml"},
+			{ID: "web-oidc-v2", Name: "외부 OIDC 보호 웹", Exposure: "oidc", Description: "Envoy가 로그인 완료 후에만 upstream 연결", ValuesFile: "apps/_template/values-sso.yaml"},
 		},
 		ResourcePresets: map[string]resourcePreset{
 			"small":  {Requests: map[string]string{"cpu": "100m", "memory": "128Mi"}, Limits: map[string]string{"cpu": "500m", "memory": "512Mi"}},
@@ -115,7 +114,6 @@ func catalogProbeTargets() map[string]serviceRef {
 		"hello":       {Namespace: workloadNamespace, Name: "hello"},
 		"secure-demo": {Namespace: workloadNamespace, Name: "secure-demo"},
 		"rancher":     {Namespace: rancherNamespace, Name: "rancher"},
-		"keycloak":    {Namespace: keycloakNamespace, Name: "keycloak"},
 		// openbao-active는 봉인 해제된 active Pod만 엔드포인트로 잡히므로 상태 신호가 정확하다.
 		"openbao": {Namespace: openbaoNamespace, Name: "openbao-active"},
 	}

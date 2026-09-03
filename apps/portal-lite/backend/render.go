@@ -323,7 +323,7 @@ func renderValuesYAML(request deploymentRequest) string {
 	// ExternalSecret 은 openbao-<app> SecretStore 를 참조한다. Secret key 를 하나라도
 	// 쓰면 그 SecretStore 가 있어야 하므로, OIDC 가 아니어도 만들어야 한다.
 	//
-	// 조건은 프로필(노출/인증)에서 직접 판단한다. 예전에는 Generated.KeycloakClientID 를
+	// 조건은 프로필(노출/인증)에서 직접 판단한다. 예전에는 Generated.OIDCClientID를
 	// 봤는데, 그건 계획 계산 결과라 프로필과 따로 채워질 수 있다. 둘이 어긋나면
 	// SecurityPolicy 는 생기고 그것이 참조하는 Secret 만 없는 상태가 된다.
 	builder.WriteString("eso:\n")
@@ -341,7 +341,7 @@ func renderValuesYAML(request deploymentRequest) string {
 	if needsOIDCSecret {
 		// 한 realm 을 여러 시스템이 나눠 쓰므로 로그인만으로 통과하면 안 된다.
 		// 앱 전용 그룹을 기본으로 넣고, AppGroup은 흔한 앱 이름을 재사용하므로 group을
-		// 포함한다. 그룹 구성은 Keycloak 관리자가 한다.
+		// 포함한다. 그룹 구성은 외부 IdP 관리자가 한다.
 		builder.WriteString("oidc:\n")
 		builder.WriteString("  allowedGroups:\n")
 		fmt.Fprintf(&builder, "    - %s\n", yamlString(oidcAllowedGroup(profile)))

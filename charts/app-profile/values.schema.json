@@ -79,8 +79,13 @@
             }
           }
         },
-        "keycloak": {
-          "type": "object"
+        "identityProvider": {
+          "type": "object",
+          "properties": {
+            "issuer": { "type": "string", "pattern": "^https://" },
+            "jwksURI": { "type": "string", "pattern": "^https://" },
+            "groupsClaim": { "type": "string", "minLength": 1 }
+          }
         },
         "network": {
           "type": "object",
@@ -421,10 +426,6 @@
         "idTokenHeader": {
           "type": "string",
           "minLength": 1
-        },
-        "jwksPath": {
-          "type": "string",
-          "pattern": "^/"
         }
       }
     },

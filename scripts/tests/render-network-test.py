@@ -30,6 +30,7 @@ def workspace() -> pathlib.Path:
         "contracts/platform-production.yaml",
         "scripts/site/render-network.py",
         "versions.lock.yaml",
+        "platform/devtron/images.txt",
     ):
         source = ROOT / relative
         target = root / relative
@@ -88,8 +89,8 @@ def default_outputs(root: pathlib.Path) -> str:
         return "ACME allowlist 누락"
     if "registry.npmjs.org" not in squid:
         return "package allowlist 누락"
-    if "idp_domains" in squid:
-        return "IdP 미설정 계약에 IdP ACL이 생성됨"
+    if "acl idp_domains dstdomain idp.example.invalid" not in squid:
+        return "계약의 외부 IdP HTTPS ACL 누락"
     if "idp_domains !CONNECT" in squid:
         return "IdP 평문 HTTP가 허용됨"
     if "ssl_bump" in "\n".join(
@@ -123,17 +124,8 @@ def default_outputs(root: pathlib.Path) -> str:
     ]
     if values["extraArgs"] != expected_args:
         return "cert-manager recursive DNS 인자 불일치"
-    patch = yaml.safe_load(
-        (root / "platform/keycloak/proxy-patch.yaml").read_text(encoding="utf-8")
-    )
-    containers = patch["spec"]["template"]["spec"]["containers"]
-    if [item["name"] for item in containers] != ["keycloak"]:
-        return "Keycloak proxy patch 대상 컨테이너 불일치"
-    kc_env = {item["name"]: item["value"] for item in containers[0]["env"]}
-    if kc_env.get("HTTPS_PROXY") != expected_proxy:
-        return "Keycloak proxy 불일치"
-    if ".cluster.local" not in kc_env.get("NO_PROXY", ""):
-        return "Keycloak NO_PROXY 내부 서비스 누락"
+    if any(path.is_file() for path in (root / "platform/keycloak").rglob("*")):
+        return "외부 IdP를 위한 관리 manifest가 생성됨"
     return ""
 
 
@@ -202,6 +194,35 @@ def rfc2136_outputs(root: pathlib.Path) -> str:
 
 
 case("NW-01 기본 계약은 최소 egress 산출물을 생성", None, True, default_outputs)
+
+
+def devtron_registry_outputs(root: pathlib.Path) -> str:
+    images = [
+        line.strip()
+        for line in (root / "platform/devtron/images.txt").read_text(encoding="utf-8").splitlines()
+        if line.strip() and not line.lstrip().startswith("#")
+    ]
+    registries = {image.split("/", 1)[0] for image in images}
+    package_domains = set(contract(root)["network"]["squid"]["packageDomains"])
+    missing = sorted(registries - package_domains)
+    if missing:
+        return f"Devtron image registry가 packageDomains에 없음: {missing}"
+    required_redirects = {"cdn01.quay.io", "cdn02.quay.io", "cdn03.quay.io"}
+    if not required_redirects.issubset(package_domains):
+        return "Quay blob redirect CDN이 packageDomains에 없음"
+    squid = (root / "platform/network/squid/squid.conf").read_text(encoding="utf-8")
+    for domain in sorted(registries | required_redirects):
+        if domain not in squid:
+            return f"Devtron registry/CDN이 squid.conf에 렌더되지 않음: {domain}"
+    return ""
+
+
+case(
+    "NW-01b 고정 Devtron image registry와 Quay CDN을 Squid에 렌더",
+    None,
+    True,
+    devtron_registry_outputs,
+)
 case("NW-01a 선택한 IdP 도메인은 HTTPS 전용 ACL로 렌더", enable_identity_provider, True, identity_provider_outputs)
 case("NW-05 미생성 상태의 --check 실패", None, False, arguments=("--check",))
 case("NW-06 RFC2136 DNS UPDATE 목적지만 허용", enable_rfc2136, True, rfc2136_outputs)

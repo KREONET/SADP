@@ -170,18 +170,77 @@ site.env의 allowlist 입력과 생성 결과를 확인합니다.
 
 ## 6. RKE2 embedded containerd proxy
 
-각 노드의 `/etc/default/rke2-server` 또는 `rke2-agent`에 `CONTAINERD_HTTP_PROXY`,
-`CONTAINERD_HTTPS_PROXY`, `CONTAINERD_NO_PROXY` 관리 블록을 설치합니다. RKE2 API/노드 통신
-전체에 shell proxy를 강제하지 않습니다.
+각 노드의 `/etc/default/rke2-server` 또는 `rke2-agent`에 RKE2가 containerd로 전달할 관리 환경을
+설치하고, 재시작 뒤 두 process에서 실제 이름을 따로 확인합니다.
+
+- 관리 파일과 RKE2 process: `CONTAINERD_HTTP_PROXY`, `CONTAINERD_HTTPS_PROXY`, `CONTAINERD_NO_PROXY`
+- RKE2가 시작한 embedded containerd: `HTTP_PROXY`, `HTTPS_PROXY`, `NO_PROXY`
+
+기본은 실행 중 RKE2와 systemd unit으로 server/agent를 자동 판별합니다. 둘 다 있거나 아무것도
+없으면 fail-close하고 그때만 `--role server|agent`로 해소합니다. plan/check/failure는 변수 이름만
+출력하고 값은 출력하지 않습니다.
 
 ```bash
-sudo bash ./sadp --install-containerd-proxy --role server
-sudo bash ./sadp --install-containerd-proxy --role server --apply
+sudo bash ./sadp --install-containerd-proxy
+sudo bash ./sadp --install-containerd-proxy --apply
 ```
 
+관리 파일은 일반 파일과 mode 0600만 허용합니다. symlink, 중첩/짝 불일치 표식은 덮어쓰지 않습니다.
 지원하는 적용 옵션에 `--restart`는 없습니다. 적용 뒤 관리자가 drain/유지보수 경계를 지켜
-서비스를 재시작합니다. private 앱 image에는 별도 pull Secret이 필요하며 kaniko push credential과
-재사용하지 않습니다.
+서비스를 재시작한 다음 각 노드에서 파일과 두 process 환경을 함께 검사합니다.
+
+```bash
+sudo bash ./sadp --install-containerd-proxy --check
+```
+
+신규 노드는 [설치 가이드의 node bundle SCP/checksum 절차](installation.md#4-secret-없는-node-bundle을-모든-노드에-배포)를
+사용합니다. 이미 실행 중인 3-node cluster의 drift는 control-plane에서 모든 노드에 Ready인 기존
+Canal/Calico image를 재사용해 중앙 수렴할 수 있습니다. plan은 Kubernetes 리소스를 만들지 않습니다.
+
+```bash
+sudo bash ./sadp --manage-containerd-proxy
+sudo bash ./sadp --manage-containerd-proxy --apply
+```
+
+중앙 명령은 `hostNetwork`, `hostPID`, host root mount와 `privileged`를 잠깐 사용하므로 선택 image의
+`sh`, `nsenter`, `cp`, `chmod`, `mkdir`, `rm`, `sleep`을 먼저 검사합니다. ServiceAccount token은
+mount하지 않으며 성공·rollout 실패·signal 모두에서 ConfigMap/DaemonSet을 삭제합니다. 출력된 실제
+node 이름의 명령대로 worker를 한 대씩 drain → agent restart → Ready → uncordon하고 server를
+마지막에 처리합니다. 재시작은 중앙 명령이 대신 실행하지 않습니다.
+
+```bash
+sudo bash ./sadp --manage-containerd-proxy --check
+sudo bash ./sadp --preflight --image-pull-only
+```
+
+`--image-pull-only`는 topology와 StorageClass를 생략하고 digest 고정 public image를
+`imagePullPolicy: Always`, `hostNetwork: true`, Linux selector, 모든 taint toleration의 임시
+DaemonSet으로 실제 CRI pull합니다. 성공 여부는 explicit proxy `curl`이 아니라 이 pull로 판정합니다.
+
+Registry `/v2/`는 challenge 확인용입니다. `401`은 registry까지 도달했다는 증거일 뿐 image pull
+성공이 아닙니다. `curl --fail`의 exit만 보지 말고 HTTP code를 별도로 받습니다.
+
+```bash
+code=$(curl --silent --show-error --output /dev/null \
+  --write-out '%{http_code}' --proxy 'http://<SQUID_HOST>:<PORT>' \
+  'https://<REGISTRY_HOST>/v2/' || true)
+printf 'registry challenge HTTP=%s\n' "${code}"
+```
+
+| 증상 | 먼저 판정할 경계 | 다음 조치 |
+| --- | --- | --- |
+| `Downloaded` | Devtron 설치 진행 중 | 최종 `Applied`와 workload Ready를 기다림 |
+| `ImagePullBackOff` + `lookup registry ... on 127.0.0.53` | containerd proxy 미적용 또는 적용 후 RKE2 미재시작 | 중앙 plan/apply → 순차 재시작 → 중앙 check → image-pull-only |
+| Registry HTTP 5xx/timeout | pull 단계의 일시적 upstream 장애 | `--sync-images`의 제한 재시도 결과 확인; archive 손상으로 분류하지 않음 |
+| `ctr: content digest sha256:<DIGEST>: not found` | export archive에서 manifest가 참조한 blob 누락 | 기존 tar 반복 import 금지; `sudo bash ./sadp --sync-images --image-list platform/monitoring/images.txt`로 새 pull/export/검증 |
+| `/v2/`가 `401` | Registry challenge 도달만 성공 | 실제 CRI pull 결과 확인 |
+| Squid `TCP_DENIED` | registry 또는 redirect/CDN allowlist 누락 | `site.env`/계약 package domain과 renderer 수정 후 재렌더 |
+| `Accepted=True`, `ResolvedRefs=False: BackendNotFound` | Route/Namespace 순서는 정상, backend Service 미기동 | 해당 선택 Application/Service Ready 진단 |
+
+Devtron 1.5.0/operator chart 0.22.92의 실제 render image 목록은
+`platform/devtron/images.txt`에 고정합니다. 현재 `quay.io`, `public.ecr.aws`와 Quay blob redirect
+`cdn01/02/03.quay.io`가 생성 Squid 계약에 포함됩니다. 생성된 `squid.conf`를 직접 고치지 않습니다.
+private 앱 image에는 별도 pull Secret이 필요하며 kaniko push credential과 재사용하지 않습니다.
 
 ## 7. CoreDNS upstream
 

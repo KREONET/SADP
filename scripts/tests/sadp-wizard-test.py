@@ -48,6 +48,8 @@ inactive = dict(values)
 inactive.update(
     {
         "TLS_SOURCE": "provided",
+        "PUBLIC_EXPOSURE_MODE": "nat",
+        "PUBLIC_IP_NODE": "worker-1",
         "SADP_DNS_TSIG_SECRET_FILE": "/etc/sadp/secrets/unused",
         "SADP_INSTALL_GITOPS": "false",
         "SADP_ARGO_REPO_TOKEN_FILE": "/etc/sadp/secrets/unused",
@@ -69,13 +71,17 @@ check(
             "SADP_BUILD_NODE",
             "SADP_REGISTRY_PULL_DOCKERCONFIG",
             "SADP_REGISTRY_PUSH_DOCKERCONFIG",
+            "PUBLIC_IP_NODE",
         )
     )
     and inactive["EXISTING_GATEWAY_TLS_READY"] == "true",
 )
 
 args = argparse.Namespace(
-    phase="node", node_name="worker-1", allow_dirty=False, apply=True
+    phase="node",
+    node_name="worker-1",
+    allow_dirty=False,
+    apply=True,
 )
 command = wizard.installer_command(args, pathlib.Path("/etc/sadp/site.env"))
 check(
@@ -107,7 +113,10 @@ result = subprocess.run(
 )
 check(
     "SW-05 공개 dispatcher에서 질문 목록 확인 가능",
-    result.returncode == 0 and "BASE_DOMAIN" in result.stdout and "SADP_RUN_VERIFY" in result.stdout,
+    result.returncode == 0
+    and "BASE_DOMAIN" in result.stdout
+    and "PUBLIC_IP_NODE" in result.stdout
+    and "SADP_RUN_VERIFY" in result.stdout,
 )
 
 print(f"통과 {passed} / 실패 {failed}")

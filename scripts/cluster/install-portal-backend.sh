@@ -5,6 +5,7 @@
 # 이 스크립트는 Secret 값을 출력하지 않고, 봇 토큰도 argv가 아닌 stdin으로만 전달한다.
 set -euo pipefail
 source "$(dirname "${BASH_SOURCE[0]}")/../lib/testbed-common.sh"
+source "$(dirname "${BASH_SOURCE[0]}")/../lib/openbao-eso.sh"
 
 VALUES_FILE=apps/portal-lite/values-beta.yaml
 CONTRACT_FILE=contracts/platform-production.yaml
@@ -147,6 +148,10 @@ else
   note "Forgejo 미설정: 배포 신청 POST는 503(forgejo_not_configured)으로 응답한다"
 fi
 
+# token-only와 check-only도 각각 KV 변경과 ExternalSecret 확인을 수행할 수 있으므로 공통
+# 진입 지점에서 sealed 상태를 먼저 차단한다.
+openbao_require_unsealed 2m
+
 openbao_root() {
   local init_file=$1
   shift
@@ -195,16 +200,36 @@ install_forgejo_token() {
   ok "Forgejo 봇 토큰을 OpenBao kv/${remote_path}에 저장(값 미출력)"
 }
 
+render_release() {
+  hctl template "${RELEASE}" charts/app-profile -n "${namespace}" \
+    -f "${CONTRACT_VALUES}" -f "${VALUES_FILE}"
+}
+
 apply_release() {
+  local include_workload=${1:-true}
   ensure_namespace "${namespace}"
   # 렌더에 -n 을 넘겨 Release.Namespace 를 고정한다. 차트가 객체마다
   # metadata.namespace 를 명시하므로 apply 는 -n 없이 그대로 흘려보낸다.
-  hctl template "${RELEASE}" charts/app-profile -n "${namespace}" \
-    -f "${CONTRACT_VALUES}" -f "${VALUES_FILE}" | kctl apply -f - >/dev/null
-  ok "Helm 렌더 결과 apply(${namespace})"
+  if [[ ${include_workload} == true ]]; then
+    render_release | kctl apply -f - >/dev/null
+  else
+    # ExternalSecret 대상이 생기기 전에 새 소비 Pod가 뜨지 않도록 Deployment만 두 번째
+    # apply로 미룬다. 기존 Deployment도 이 단계에서는 변경하지 않는다.
+    render_release | python3 -c '
+import sys
+import yaml
+
+documents = [
+    document for document in yaml.safe_load_all(sys.stdin)
+    if document and document.get("kind") != "Deployment"
+]
+yaml.safe_dump_all(documents, sys.stdout, sort_keys=False)
+' | kctl apply -f - >/dev/null
+  fi
+  ok "Helm 렌더 결과 apply(${namespace}, workload=${include_workload})"
 }
 
-wait_ready() {
+wait_dependencies() {
   local external_secret
   if [[ ${persistence_enabled} == true ]]; then
     kctl wait -n "${namespace}" "pvc/${app_name}-data" \
@@ -212,12 +237,15 @@ wait_ready() {
   fi
   while read -r external_secret; do
     [[ -n ${external_secret} ]] || continue
-    kctl wait -n "${namespace}" "externalsecret/${external_secret}" \
-      --for=condition=Ready --timeout=5m >/dev/null
+    wait_external_secret_ready "${namespace}" "${external_secret}" 5m
   done < <(kctl get externalsecret -n "${namespace}" \
     -l app.kubernetes.io/instance="${app_name}" -o jsonpath='{range .items[*]}{.metadata.name}{"\n"}{end}')
+  ok "PVC/ExternalSecret/대상 Secret Ready"
+}
+
+wait_workload_ready() {
   kctl rollout status -n "${namespace}" "deployment/${app_name}" --timeout=10m >/dev/null
-  ok "PVC/ExternalSecret/Deployment Ready"
+  ok "Deployment Ready"
 }
 
 verify_workload() {
@@ -352,13 +380,19 @@ if [[ ${CHECK_ONLY} != true ]]; then
   else
     note "이미지 단계 생략: ${image_ref}(pullPolicy=${pull_policy})가 노드에 있어야 한다"
   fi
-  apply_release
+  apply_release false
+  wait_dependencies
+  apply_release true
   if [[ ${SKIP_IMAGE} != true && ${pull_policy} == Never ]]; then
     # 같은 tag를 다시 import했으므로 Pod template 변화 없이도 새 이미지를 쓰게 만든다.
     kctl rollout restart -n "${namespace}" "deployment/${app_name}" >/dev/null
   fi
-  wait_ready
 fi
+
+if [[ ${CHECK_ONLY} == true ]]; then
+  wait_dependencies
+fi
+wait_workload_ready
 
 verify_workload
 verify_secret_material

@@ -48,5 +48,7 @@ platform:
       zoneApp: portal-zone-app-eso
       groupApp: portal-group-app-eso
       groupRegistry: portal-group-registry-eso
-  keycloak:
-    issuer: https://sso.sadp.example.invalid/realms/sadp
+  identityProvider:
+    issuer: https://idp.example.invalid/application/o/sadp
+    jwksURI: https://idp.example.invalid/application/o/sadp/jwks/
+    groupsClaim: groups

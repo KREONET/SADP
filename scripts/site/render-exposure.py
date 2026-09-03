@@ -40,7 +40,7 @@ SUPPORTED_PROVIDERS = ("rfc2136",)
 TLS_SOURCES = ("acme", "provided")
 ISSUER_MODES = ("staging", "production")
 PUBLIC_MODES = ("nat", "direct")
-MACHINE_AUTH_MODES = ("keycloak", "api-key")
+MACHINE_AUTH_MODES = ("oidc", "api-key")
 MACHINE_AUTH_API_KEY_HEADER = "X-SADP-API-Key"
 MACHINE_AUTH_REMOTE_PATH_PREFIX = "platform/machine-auth"
 MACHINE_AUTH_SECRET_STORE = "machine-auth-openbao"
@@ -228,7 +228,7 @@ def machine_auth_config(specification: dict) -> dict:
     config = specification.get("machineAuth") or {}
     mode = str(config.get("mode") or "").strip().lower()
     if mode not in MACHINE_AUTH_MODES:
-        raise ValueError("spec.machineAuth.mode must be keycloak or api-key")
+        raise ValueError("spec.machineAuth.mode must be oidc or api-key")
     clients = [str(item).strip() for item in config.get("clients") or []]
     if any(not NAME_PATTERN.match(client) for client in clients):
         raise ValueError("spec.machineAuth.clients entries must be Kubernetes names")
@@ -252,24 +252,35 @@ def machine_auth_config(specification: dict) -> dict:
         service for service in specification.get("platformServices") or []
         if (service or {}).get("machineAuth")
     ]
+    monitoring_enabled = bool(
+        (specification.get("monitoring") or {}).get("enabled", True)
+    )
+    if not monitoring_enabled and any(
+        str((service or {}).get("namespace") or "") == "monitoring"
+        for service in enabled_services
+    ):
+        raise ValueError(
+            "monitoring backend exposure requires SADP_INSTALL_MONITORING=true; "
+            "enable it or remove the backend input and render again"
+        )
     if (mode == "api-key" or enabled_services) and not clients:
         raise ValueError(f"spec.machineAuth.clients must not be empty in {mode} mode")
     if (mode == "api-key" or enabled_services) and not cidrs:
         raise ValueError(f"spec.machineAuth.allowedCIDRs must not be empty in {mode} mode")
 
     resolved = {**config, "mode": mode, "clients": clients, "allowedCIDRs": cidrs}
-    if mode == "keycloak":
-        keycloak = config.get("keycloak") or {}
-        issuer = str(keycloak.get("issuer") or "").strip()
-        jwks_uri = str(keycloak.get("jwksURI") or "").strip()
-        claim = str(keycloak.get("clientClaim") or "").strip()
+    if mode == "oidc":
+        oidc = config.get("oidc") or {}
+        issuer = str(oidc.get("issuer") or "").strip()
+        jwks_uri = str(oidc.get("jwksURI") or "").strip()
+        claim = str(oidc.get("clientClaim") or "").strip()
         if not issuer.startswith("https://"):
-            raise ValueError("spec.machineAuth.keycloak.issuer must be https")
+            raise ValueError("spec.machineAuth.oidc.issuer must be https")
         if not jwks_uri.startswith("https://"):
-            raise ValueError("spec.machineAuth.keycloak.jwksURI must be https")
+            raise ValueError("spec.machineAuth.oidc.jwksURI must be https")
         if not claim:
-            raise ValueError("spec.machineAuth.keycloak.clientClaim must not be empty")
-        resolved["keycloak"] = {"issuer": issuer, "jwksURI": jwks_uri, "clientClaim": claim}
+            raise ValueError("spec.machineAuth.oidc.clientClaim must not be empty")
+        resolved["oidc"] = {"issuer": issuer, "jwksURI": jwks_uri, "clientClaim": claim}
     else:
         api_key = config.get("apiKey") or {}
         expected = {
@@ -338,7 +349,7 @@ def platform_service_documents(specification: dict, replacements: dict[str, str]
         if external:
             # 다른 VM 에 있는 서비스(Forgejo, Grafana 등)는 클러스터에 워크로드가 없다.
             # Namespace 와 selector 없는 Service, EndpointSlice 를 만들어 주면 위의 HTTPRoute/
-            # ReferenceGrant 경로를 그대로 태울 수 있다. 외부 Keycloak 과 같은 방식이다.
+            # ReferenceGrant 경로를 그대로 태울 수 있다. 외부 OIDC backend와 같은 방식이다.
             documents.append(external_backend_documents(name, namespace, backend_service, port, external))
         documents.append(
             substitute(
@@ -369,22 +380,22 @@ def machine_auth_document(name: str, machine_auth: dict, route_namespace: str) -
             }
         ],
     }
-    if mode == "keycloak":
-        keycloak = machine_auth["keycloak"]
+    if mode == "oidc":
+        oidc = machine_auth["oidc"]
         policy_spec["jwt"] = {
             "providers": [
                 {
-                    "name": "keycloak",
-                    "issuer": keycloak["issuer"],
-                    "remoteJWKS": {"uri": keycloak["jwksURI"]},
+                    "name": "external-oidc",
+                    "issuer": oidc["issuer"],
+                    "remoteJWKS": {"uri": oidc["jwksURI"]},
                 }
             ]
         }
         principal["jwt"] = {
-            "provider": "keycloak",
+            "provider": "external-oidc",
             "claims": [
                 {
-                    "name": keycloak["clientClaim"],
+                    "name": oidc["clientClaim"],
                     "valueType": "String",
                     "values": machine_auth["clients"],
                 }
@@ -793,10 +804,21 @@ def public_service_config(specification: dict, vip: ipaddress.IPv4Address) -> st
     ).strip()
     if not external_interface:
         raise ValueError("spec.public.mode=direct requires spec.network.interfaces.external")
+    node_name = str(public.get("nodeName") or "").strip()
+    if not NAME_PATTERN.match(node_name) or len(node_name) > 63:
+        raise ValueError("spec.public.mode=direct requires a valid spec.public.nodeName")
+    known_nodes = {
+        token
+        for line in (ROOT / "rke" / "etc" / "hosts").read_text(encoding="utf-8").splitlines()
+        for token in line.partition("#")[0].split()[1:]
+    }
+    if node_name not in known_nodes:
+        raise ValueError("spec.public.nodeName must name a node from rke/etc/hosts")
     return "\n".join(
         [
             "        # direct mode: the public IP is assigned to the node external interface.",
-            "        externalTrafficPolicy: Cluster",
+            "        # Local preserves the downstream address used by machine-auth CIDR rules.",
+            "        externalTrafficPolicy: Local",
             "        patch:",
             "          type: StrategicMerge",
             "          value:",
@@ -804,6 +826,27 @@ def public_service_config(specification: dict, vip: ipaddress.IPv4Address) -> st
             "              externalIPs:",
             f"                - {vip}",
             f"                - {public_ip}",
+        ]
+    )
+
+
+def public_deployment_config(specification: dict) -> str:
+    """direct의 Local Service가 선택한 공인 IP 노드에서 빈 endpoint가 되지 않게 고정한다."""
+    public = specification.get("public") or {}
+    mode = str(public.get("mode") or "").strip().lower()
+    if mode == "nat":
+        return ""
+    if mode != "direct":
+        raise ValueError("spec.public.mode must be nat or direct")
+    node_name = str(public.get("nodeName") or "").strip()
+    if not NAME_PATTERN.match(node_name) or len(node_name) > 63:
+        raise ValueError("spec.public.mode=direct requires a valid spec.public.nodeName")
+    return "\n" + "\n".join(
+        [
+            "      envoyDeployment:",
+            "        pod:",
+            "          nodeSelector:",
+            f"            kubernetes.io/hostname: {node_name}",
         ]
     )
 
@@ -838,6 +881,7 @@ def render_exposure(specification: dict, tls_ready: bool) -> str:
         "__METALLB_VIP__": str(address),
         "__METALLB_VIP_CIDR__": f"{address}/32",
         "__PROXY_CONFIG_NAME__": gateway["proxyConfigName"],
+        "__PUBLIC_DEPLOYMENT_CONFIG__": public_deployment_config(specification),
         "__PUBLIC_SERVICE_CONFIG__": public_service_config(specification, address),
         "__REDIRECT_ROUTE_NAMESPACE__": redirect_namespace,
         "__ROUTE_LABEL_KEY__": label_key,
@@ -873,7 +917,7 @@ def render_exposure(specification: dict, tls_ready: bool) -> str:
 def append_system_exposure(
     rendered: str, specification: dict, tls_ready: bool, label_key: str, label_value: str
 ) -> str:
-    """시스템마다 Gateway listener 와 sso HTTPRoute 를 덧붙인다.
+    """시스템마다 Gateway listener를 덧붙인다.
 
     listener 는 기존 beta-gateway 객체 안에 추가한다 — Gateway API 는 하나의 Gateway 에
     여러 hostname/TLS 조합의 listener 를 둘 수 있으므로 새 Gateway 객체가 필요 없다.
@@ -922,42 +966,6 @@ def append_system_exposure(
                     "allowedRoutes": allowed_routes,
                 }
             )
-        route_listener = https_name if tls_ready else http_name
-        documents.append(
-            {
-                "apiVersion": "gateway.networking.k8s.io/v1",
-                "kind": "HTTPRoute",
-                "metadata": {
-                    "name": "sso",
-                    "namespace": system["workloadNamespace"],
-                },
-                "spec": {
-                    "parentRefs": [
-                        {
-                            "group": "gateway.networking.k8s.io",
-                            "kind": "Gateway",
-                            "namespace": gateway_doc["metadata"]["namespace"],
-                            "name": gateway_doc["metadata"]["name"],
-                            "sectionName": route_listener,
-                        }
-                    ],
-                    "hostnames": [f"sso.{system['domain']}"],
-                    "rules": [
-                        {
-                            "matches": [{"path": {"type": "PathPrefix", "value": "/"}}],
-                            "backendRefs": [
-                                {
-                                    "group": "",
-                                    "kind": "Service",
-                                    "name": "keycloak",
-                                    "port": 8080,
-                                }
-                            ],
-                        }
-                    ],
-                },
-            }
-        )
     return "---\n".join(
         yaml.safe_dump(document, allow_unicode=True, sort_keys=False) for document in documents
     )

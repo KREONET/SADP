@@ -1,10 +1,9 @@
 import NextAuth from "next-auth";
-import Keycloak from "next-auth/providers/keycloak";
 
 import {
-  extractKeycloakIdentity,
-  refreshKeycloakAccessToken,
-} from "./lib/keycloak-token";
+  extractOIDCIdentity,
+  refreshOIDCAccessToken,
+} from "./lib/oidc-token";
 
 function requiredRuntimeEnvironment(name: string): string {
   const value = process.env[name];
@@ -14,11 +13,30 @@ function requiredRuntimeEnvironment(name: string): string {
 
 export const { handlers, auth, signIn, signOut } = NextAuth({
   providers: [
-    Keycloak({
+    {
+      id: "oidc",
+      name: "SSO",
+      type: "oidc",
+      issuer: requiredRuntimeEnvironment("AUTH_OIDC_ISSUER"),
+      clientId: requiredRuntimeEnvironment("AUTH_OIDC_ID"),
+      clientSecret: requiredRuntimeEnvironment("AUTH_OIDC_SECRET"),
       authorization: { params: { scope: "openid email profile" } },
       // 복구 버튼을 누를 때마다 세 검증값을 모두 새로 발급해 오래된 탭의 요청과 섞이지 않게 한다.
       checks: ["pkce", "state", "nonce"],
-    }),
+      profile(profile) {
+        return {
+          id: String(profile.sub),
+          name:
+            typeof profile.name === "string"
+              ? profile.name
+              : typeof profile.preferred_username === "string"
+                ? profile.preferred_username
+                : undefined,
+          email: typeof profile.email === "string" ? profile.email : undefined,
+          image: typeof profile.picture === "string" ? profile.picture : undefined,
+        };
+      },
+    },
   ],
   pages: {
     signIn: "/login",
@@ -31,8 +49,13 @@ export const { handlers, auth, signIn, signOut } = NextAuth({
   callbacks: {
     async jwt({ token, account, profile }) {
       if (account) {
-        const clientId = requiredRuntimeEnvironment("AUTH_KEYCLOAK_ID");
-        const identity = extractKeycloakIdentity(profile, account.access_token, clientId);
+        const clientId = requiredRuntimeEnvironment("AUTH_OIDC_ID");
+        const identity = extractOIDCIdentity(
+          profile,
+          account.access_token,
+          clientId,
+          process.env.AUTH_OIDC_GROUPS_CLAIM ?? "groups",
+        );
         return {
           ...token,
           ...identity,
@@ -51,10 +74,11 @@ export const { handlers, auth, signIn, signOut } = NextAuth({
       if (!token.refreshToken) return { ...token, error: "RefreshTokenError" };
 
       try {
-        const refreshed = await refreshKeycloakAccessToken(token, {
-          issuer: requiredRuntimeEnvironment("AUTH_KEYCLOAK_ISSUER"),
-          clientId: requiredRuntimeEnvironment("AUTH_KEYCLOAK_ID"),
-          clientSecret: requiredRuntimeEnvironment("AUTH_KEYCLOAK_SECRET"),
+        const refreshed = await refreshOIDCAccessToken(token, {
+          tokenEndpoint: requiredRuntimeEnvironment("AUTH_OIDC_TOKEN_ENDPOINT"),
+          clientId: requiredRuntimeEnvironment("AUTH_OIDC_ID"),
+          clientSecret: requiredRuntimeEnvironment("AUTH_OIDC_SECRET"),
+          groupsClaim: process.env.AUTH_OIDC_GROUPS_CLAIM ?? "groups",
         });
         return { ...refreshed, error: undefined };
       } catch {

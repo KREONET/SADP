@@ -56,7 +56,7 @@ export async function requirePaasRole(required: PortalApiRole): Promise<Session>
 }
 
 /**
- * 개발 서버 전용 로그인 우회. Keycloak client 자격증명 없이 `(paas)` 화면을
+ * 개발 서버 전용 로그인 우회. 외부 OIDC client 자격증명 없이 `(paas)` 화면을
  * 열기 위한 장치다.
  *
  * 🔴 인증을 끄는 코드이므로 두 조건을 **모두** 만족할 때만 동작한다.
@@ -101,7 +101,7 @@ function devBypassSession(): Session | null {
  *
  * `requester` 는 Go API 가 배포 신청을 저장·필터링하는 키다. 이 값이 비면
  * 목록 API 가 전체를 돌려주므로, 데이터 계층에서 "빈 requester = 빈 목록"으로 막는다.
- * Keycloak `preferred_username` 을 1순위로 쓰고, 없으면 `sub` 로 떨어진다.
+ * OIDC `preferred_username`을 1순위로 쓰고, 없으면 `sub`로 떨어진다.
  */
 export function paasIdentity(session: Session): {
   requester: string;

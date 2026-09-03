@@ -337,7 +337,7 @@ func TestGroupedExternalIdentityIncludesGroup(t *testing.T) {
 	}
 	result := validationResult(input, true)
 	if result.Profile.Exposure.Host != "ga-research-viewer-mobility-376e074d38."+baseDomain ||
-		result.Generated.KeycloakClientID != "kc-a-mobility-research-viewer-beta-6cd084cd81" ||
+		result.Generated.OIDCClientID != "oc-a-mobility-research-viewer-beta-36fd2a5528" ||
 		result.Generated.OpenBaoPath != "apps/research/beta/workloads/app-mobility/eso-sa-a-research-viewer-1b04590771" {
 		t.Fatalf("그룹 identity가 경로에 포함되지 않음: %+v", result)
 	}
@@ -539,7 +539,7 @@ func TestOIDCValuesCarryClientSecret(t *testing.T) {
 	groupedValues := renderValuesYAML(deploymentRequest{
 		ID: "0123456789abcdef", Profile: validationResult(grouped, true).Profile,
 	})
-	if !strings.Contains(groupedValues, "    - \"kg-a-mobility-research-viewer-user-c13c1c4a2c\"") ||
+	if !strings.Contains(groupedValues, "    - \"og-a-mobility-research-viewer-user-cc4d18e89e\"") ||
 		!strings.Contains(groupedValues, "  serviceAccountName: \"eso-sa-a-research-viewer-1b04590771\"") ||
 		!strings.Contains(groupedValues, "  role: \"portal-group-app-eso\"") ||
 		!strings.Contains(groupedValues, "      remotePath: \"apps/research/beta/workloads/app-mobility/eso-sa-a-research-viewer-1b04590771\"") ||
@@ -1061,7 +1061,7 @@ func TestTypedGlobalNamesAreInjectiveAndStable(t *testing.T) {
 		"application": {appApplicationName(first), appApplicationName(second)},
 		"git-path":    {appApplicationPath(first), appApplicationPath(second)},
 		"host":        {externalHostLabel(first), externalHostLabel(second)},
-		"keycloak":    {keycloakClientID(first), keycloakClientID(second)},
+		"oidc-client": {oidcClientID(first), oidcClientID(second)},
 		"oidc-group":  {oidcAllowedGroup(first), oidcAllowedGroup(second)},
 	} {
 		if names[0] == names[1] {

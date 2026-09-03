@@ -73,6 +73,7 @@ SECTIONS: tuple[tuple[str, tuple[Question, ...]], ...] = (
         (
             Question("PUBLIC_IP", "서비스 공인 IPv4"),
             Question("PUBLIC_EXPOSURE_MODE", "공개 방식", ("nat", "direct")),
+            Question("PUBLIC_IP_NODE", "공인 IP 보유 Kubernetes Node 이름"),
             Question("GATEWAY_VIP", "MetalLB Gateway VIP"),
             Question("GATEWAY_ADDRESS_POOL", "MetalLB 주소 pool"),
             Question("SQUID_INTERNAL_IP", "Squid 담당 노드 내부 IPv4"),
@@ -83,10 +84,15 @@ SECTIONS: tuple[tuple[str, tuple[Question, ...]], ...] = (
     (
         "인증과 TLS",
         (
-            Question("KEYCLOAK_DEPLOYMENT", "Keycloak 배치 방식", ("in-cluster", "external")),
-            Question("KEYCLOAK_NODE_PLACEMENT", "Keycloak 노드 배치", ("any", "control-plane")),
-            Question("KEYCLOAK_EXTERNAL_ADDRESS", "외부 Keycloak IPv4(미사용 시 -)", optional=True),
-            Question("KEYCLOAK_EXTERNAL_PORT", "외부 Keycloak port"),
+            Question("IDENTITY_SOURCE_PROTOCOL", "외부 인증 원본 방식", ("openid", "saml")),
+            Question("OIDC_ISSUER", "SADP가 사용할 OIDC issuer"),
+            Question("OIDC_AUTHORIZATION_ENDPOINT", "OIDC authorization endpoint"),
+            Question("OIDC_TOKEN_ENDPOINT", "OIDC token endpoint"),
+            Question("OIDC_JWKS_URI", "OIDC JWKS URI"),
+            Question("OIDC_END_SESSION_ENDPOINT", "OIDC logout endpoint(없으면 -)", optional=True),
+            Question("OIDC_GROUPS_CLAIM", "OIDC 그룹 claim"),
+            Question("OIDC_CLIENT_ID_CLAIM", "OIDC client ID claim"),
+            Question("PORTAL_OIDC_CLIENT_ID", "Portal OIDC client ID"),
             Question("TLS_SOURCE", "TLS 인증서 방식", ("acme", "provided")),
             Question("ACME_EMAIL", "ACME 알림 email"),
             Question("DNS01_MODE", "DNS-01 방식", ("direct-rfc2136", "delegated-rfc2136")),
@@ -106,6 +112,7 @@ SECTIONS: tuple[tuple[str, tuple[Question, ...]], ...] = (
             Question("SADP_ARGO_REPO_USERNAME", "Argo 저장소 사용자명"),
             Question("SADP_ARGO_REPO_TOKEN_FILE", "Argo read token 파일 경로"),
             Question("SADP_DNS_TSIG_SECRET_FILE", "RFC2136 TSIG 파일 경로"),
+            Question("SADP_INSTALL_MONITORING", "Prometheus/Loki/Alloy를 설치할지", ("true", "false")),
             Question("SADP_BUILD_IMAGES", "SADP 이미지를 빌드할지", ("true", "false")),
             Question("SADP_BUILD_NODE", "빌드 worker 이름(자동 선택은 -)", optional=True),
             Question("SADP_DEPLOY_APPS", "기본 앱을 배포할지", ("true", "false")),
@@ -162,10 +169,8 @@ def answer(question: Question, current: str) -> str:
 
 
 def should_ask(question: Question, values: dict[str, str]) -> bool:
-    if question.key == "KEYCLOAK_EXTERNAL_ADDRESS":
-        return values.get("KEYCLOAK_DEPLOYMENT") == "external"
-    if question.key == "KEYCLOAK_EXTERNAL_PORT":
-        return values.get("KEYCLOAK_DEPLOYMENT") == "external"
+    if question.key == "PUBLIC_IP_NODE":
+        return values.get("PUBLIC_EXPOSURE_MODE") == "direct"
     if question.key.startswith("RFC2136_") or question.key in {
         "ACME_EMAIL",
         "DNS01_MODE",
@@ -190,8 +195,8 @@ def should_ask(question: Question, values: dict[str, str]) -> bool:
 
 
 def clear_inactive(values: dict[str, str]) -> None:
-    if values.get("KEYCLOAK_DEPLOYMENT") != "external":
-        values["KEYCLOAK_EXTERNAL_ADDRESS"] = ""
+    if values.get("PUBLIC_EXPOSURE_MODE") != "direct":
+        values["PUBLIC_IP_NODE"] = ""
     if values.get("TLS_SOURCE") == "acme":
         values["PROVIDED_CERTIFICATE_PATH"] = ""
         values["PROVIDED_PRIVATE_KEY_PATH"] = ""

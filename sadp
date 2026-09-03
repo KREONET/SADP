@@ -36,41 +36,45 @@ install-node-config|bash|scripts/node/install-rke2-node-config.sh|생성된 RKE2
 install-network-identity|bash|scripts/node/install-rke2-network-identity.sh|내부망 NIC에 RKE2 고정
 install-interface-guard|bash|scripts/node/install-rke2-interface-guard.sh|공인 NIC의 관리 포트 차단
 install-containerd-proxy|bash|scripts/node/install-rke2-containerd-proxy.sh|containerd image pull만 Squid 경유
+node-bundle|python3|scripts/ops/build-node-bundle.py|Secret 없는 node proxy bundle과 portable checksum 생성
 install-docker-proxy|bash|scripts/node/install-docker-proxy.sh|control-plane Docker image pull을 Squid 경유
 install-squid|bash|scripts/node/install-squid-egress.sh|allowlist Squid proxy 설치
 upgrade-rke2|bash|scripts/node/upgrade-rke2.sh|versions.lock의 고정 버전으로 기존 RKE2 노드 업데이트
 GROUP:cluster — control-plane에서 root. 클러스터 전체
 bootstrap|bash|scripts/cluster/bootstrap-testbed.sh|전체 설치 진입점(아래 단계를 순서대로)
 preflight|bash|scripts/cluster/preflight.sh|3노드 RKE2와 기본 StorageClass 실검증
+preflight-dns01|bash|scripts/cluster/preflight-cert-manager-dns01.sh|cert-manager controller node의 authoritative DNS TCP/UDP 경로 검사
+manage-containerd-proxy|bash|scripts/cluster/manage-rke2-containerd-proxy.sh|모든 Linux 노드 proxy 중앙 plan/apply/check(재시작 없음)
+prepare-exposure|python3|scripts/cluster/prepare-exposure-namespaces.py|노출 YAML이 참조하는 Namespace를 먼저 plan/apply
 install-local-path-storage|bash|scripts/cluster/install-local-path-storage.sh|StorageClass 부재 시 local-path provisioner 설치
 install-devtron|bash|scripts/cluster/install-devtron.sh|Devtron/번들 Argo CD 계획, 부재 시 설치, 동일 버전 failed 복구
-install-platform|bash|scripts/cluster/install-testbed-platform.sh|인증서/3노드/OpenBao/ESO/Reloader/Keycloak
-configure-keycloak|bash|scripts/cluster/configure-keycloak.sh|이미 실행 중인 in-cluster/external Keycloak 계약 수렴
+install-platform|bash|scripts/cluster/install-testbed-platform.sh|인증서/3노드/OpenBao/ESO/Reloader
 configure-openbao-app-access|bash|scripts/ops/configure-openbao-app-access.sh|앱별 OpenBao OIDC 권한 구성(관리자 전용)
+configure-openbao-oidc|bash|scripts/ops/configure-openbao-oidc.sh|Gateway/TLS/discovery preflight 뒤 OpenBao OIDC 설정 멱등 수렴
 build-images|bash|scripts/cluster/build-local-images.sh|이미지 빌드(워커 Pod) + 세 노드 import
-bootstrap-services|bash|scripts/cluster/bootstrap-testbed-services.sh|Keycloak realm/client, OpenBao auth/KV
+bootstrap-services|bash|scripts/cluster/bootstrap-testbed-services.sh|외부 OIDC client 사전검사, OpenBao auth/KV
 deploy-apps|bash|scripts/cluster/deploy-testbed-apps.sh|hello/secure-demo/portal-lite 배포와 rollout
 install-portal-backend|bash|scripts/cluster/install-portal-backend.sh|Portal Lite 백엔드
 configure-argocd-repo|bash|scripts/cluster/configure-argocd-repo.sh|Argo CD repository Secret
-configure-external-keycloak|bash|scripts/cluster/configure-external-keycloak.sh|외부 Keycloak VM에 realm/IdP/Portal client 정책 원격 수렴
 sync-images|bash|scripts/cluster/sync-external-images.sh|서드파티 이미지를 모든 노드에 동기화
 GROUP:verify — 검수
 verify-testbed|bash|scripts/verify/verify-testbed.sh|핵심 acceptance. control-plane 노드 위에서
+inspect-machine-auth-log|bash|scripts/verify/inspect-machine-auth-access-log.sh|기계 인증 요청의 안전한 Envoy 판정 필드 추출
 verify-d5|bash|scripts/verify/verify-d5.sh|cert-manager, wildcard TLS, HTTP->HTTPS
 verify-d6|bash|scripts/verify/verify-d6.sh|Rancher 설치와 기본 RBAC
-verify-portal-auth|bash|scripts/verify/verify-portal-auth.sh|Auth.js -> Keycloak 인증 흐름
-verify-saml-federation|bash|scripts/verify/verify-saml-federation.sh|외부 SSO/Keycloak 시간·Assertion 재사용·신규 오류 검증
+verify-portal-auth|bash|scripts/verify/verify-portal-auth.sh|Auth.js -> 외부 OIDC 인증 흐름
 verify-squid|bash|scripts/verify/verify-squid-egress.sh|렌더된 allowlist 검증(host 변경 없음)
 verify-backups|bash|scripts/verify/verify-backups.sh|백업 checksum/포맷과 복원 시험
 GROUP:ops — 운영
-backup|bash|scripts/ops/backup-testbed.sh|etcd, OpenBao Raft, Keycloak PostgreSQL
+backup|bash|scripts/ops/backup-testbed.sh|etcd, OpenBao Raft
 toggle-portal|bash|scripts/ops/toggle-portal.sh|Portal 테스트 페이지 on/off/status
 power|bash|scripts/ops/manage-power.sh|백업·drain·Ready 순서를 지키는 테스트베드 기동/종료
 update-sadp|bash|scripts/ops/update-sadp.sh|GitHub main의 VERSION 확인 후 fast-forward 업데이트
 rotate-forgejo-token|bash|scripts/ops/rotate-forgejo-token.sh|Forgejo 봇 토큰 회전
 rotate-machine-api-key|bash|scripts/ops/rotate-machine-api-key.sh|기계 API 키 병행 반영·승격·폐기
+unseal-openbao|bash|scripts/ops/unseal-openbao.sh|OpenBao seal 상태 plan, --apply에서만 root-only 재료로 unseal
+ops-bundle|python3|scripts/ops/build-ops-bundle.py|Secret 제외 control-plane 운영 overlay와 checksum 생성
 export-credentials|bash|scripts/ops/export-test-credentials.sh|자격증명을 Git 밖 root-only 경로로
-configure-authentik-saml|bash|scripts/ops/configure-authentik-saml.sh|Authentik Assertion 유효시간 공식 기본값 수렴
 GROUP:check — 커밋 전에 통과시킬 것
 guard|bash|scripts/ci-guard.sh|금지 입력 차단. pre-commit과 CI가 같은 것을 쓴다
 render-test|bash|scripts/tests/render-test.sh|helm template 회귀

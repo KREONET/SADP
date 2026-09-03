@@ -69,7 +69,7 @@ describe("Portal API BFF boundary", () => {
     expect(portalApiRequiredRole("DELETE")).toBe("deployments:write");
   });
 
-  it("supports exact API scopes and the existing Keycloak role contract", () => {
+  it("supports exact API scopes and the external OIDC role contract", () => {
     expect(hasPortalApiRole(["deployments:read"], "deployments:read")).toBe(true);
     expect(hasPortalApiRole(["deployments:write"], "deployments:read")).toBe(true);
     expect(hasPortalApiRole(["deployments:write"], "deployments:write")).toBe(true);

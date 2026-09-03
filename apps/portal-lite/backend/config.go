@@ -28,7 +28,6 @@ var (
 	// 카탈로그 상태 프로브가 볼 네임스페이스. 설치 스크립트가 site.env 값으로 채운다.
 	workloadNamespace = configured("PORTAL_WORKLOAD_NAMESPACE", "research-beta")
 	rancherNamespace  = configured("PORTAL_RANCHER_NAMESPACE", "cattle-system")
-	keycloakNamespace = configured("PORTAL_KEYCLOAK_NAMESPACE", "keycloak")
 	openbaoNamespace  = configured("PORTAL_OPENBAO_NAMESPACE", "openbao")
 	openbaoAddress    = configured("PORTAL_OPENBAO_ADDR", "https://openbao.openbao.svc.cluster.local:8200")
 	openbaoCACert     = configured("PORTAL_OPENBAO_CACERT", "/var/run/openbao/ca.crt")

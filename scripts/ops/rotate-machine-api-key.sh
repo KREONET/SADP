@@ -57,8 +57,7 @@ openbao_pod=openbao-0
 bao_addr=https://openbao.openbao.svc.cluster.local:8200
 init_file=${TESTBED_STATE_DIR}/openbao-init.json
 [[ -s ${init_file} ]] || die "OpenBao 초기화 파일 없음: ${init_file}"
-kctl wait -n openbao pod/${openbao_pod} --for=condition=Ready --timeout=2m >/dev/null \
-  || die "OpenBao Pod가 Ready가 아님"
+openbao_require_unsealed 2m
 
 bao() {
   jq -er '.root_token' "${init_file}" |

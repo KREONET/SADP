@@ -45,7 +45,7 @@ function problem(status: number, title: string, detail: string): Response {
 async function forward(request: Request, context: RouteHandlerContext): Promise<Response> {
   const session = await paasSession();
   if (!session?.user) {
-    return problem(401, "인증 필요", "Keycloak 로그인 세션이 필요합니다.");
+    return problem(401, "인증 필요", "외부 OIDC 로그인 세션이 필요합니다.");
   }
 
   const { requester, roles } = paasIdentity(session);

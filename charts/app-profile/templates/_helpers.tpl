@@ -202,8 +202,8 @@ false
 {{- if and (eq $auth "oidc") (not .Values.oidc.allowedGroups) -}}
 {{ fail "authentication.mode=oidc 인데 oidc.allowedGroups 가 비어 있다. 노출 중지 상태에서도 인증 경계는 완전한 설정이어야 한다" }}
 {{- end -}}
-{{- if and (eq $auth "oidc") (not .Values.platform.keycloak.issuer) -}}
-{{ fail "authentication.mode=oidc 인데 platform.keycloak.issuer 계약값이 비어 있다" }}
+{{- if and (eq $auth "oidc") (not .Values.platform.identityProvider.issuer) -}}
+{{ fail "authentication.mode=oidc 인데 platform.identityProvider.issuer 계약값이 비어 있다" }}
 {{- end -}}
 {{- $oidcSecretCount := 0 -}}
 {{- range .Values.configuration.externalSecrets -}}
@@ -224,10 +224,10 @@ false
 {{ fail "authentication.mode=oidc 앱은 oidc-client ExternalSecret 계약을 정확히 하나 가져야 한다" }}
 {{- end -}}
 {{- if and (eq $auth "none") (gt (int $oidcSecretCount) 0) -}}
-{{ fail "authentication.mode=none 앱은 Keycloak oidc-client ExternalSecret을 만들 수 없다" }}
+{{ fail "authentication.mode=none 앱은 OIDC client ExternalSecret을 만들 수 없다" }}
 {{- end -}}
 {{- if and (eq $auth "oidc") (ne .Values.oidc.callbackPath "/oauth2/callback") -}}
-{{ fail "OIDC callbackPath는 플랫폼 Keycloak 계약과 같은 /oauth2/callback이어야 한다" }}
+{{ fail "OIDC callbackPath는 플랫폼 OIDC 계약과 같은 /oauth2/callback이어야 한다" }}
 {{- end -}}
 {{- if eq $auth "oidc" -}}
 {{- range .Values.oidc.allowedGroups -}}
@@ -494,10 +494,10 @@ false
 {{- default (printf "%s-oidc-client" .Values.app.name) .Values.oidc.clientSecretName -}}
 {{- end -}}
 
-{{/* AppGroup마다 api 같은 이름을 재사용하므로 Keycloak client도 group 경계가 필요하다. */}}
+{{/* AppGroup마다 api 같은 이름을 재사용하므로 OIDC client도 group 경계가 필요하다. */}}
 {{- define "app-profile.oidcClientID" -}}
 {{- if .Values.app.group -}}
-{{- include "app-profile.typedName" (dict "prefix" "kc-a-" "slug" (printf "%s-%s-%s" .Values.app.group .Values.app.name .Values.app.environment) "canonical" (include "app-profile.canonicalAppID" .)) -}}
+{{- include "app-profile.typedName" (dict "prefix" "oc-a-" "slug" (printf "%s-%s-%s" .Values.app.group .Values.app.name .Values.app.environment) "canonical" (include "app-profile.canonicalAppID" .)) -}}
 {{- else -}}
 {{- printf "%s-%s" .Values.app.name .Values.app.environment -}}
 {{- end -}}

@@ -3,7 +3,7 @@
 [이 내용은 작성한 코드를 보고 ai가 내용을 작성해줌]
 contracts/platform-production.yaml -> contracts/values-platform-production.yaml 생성.
 
-Chart는 baseDomain/Gateway/OpenBao/Keycloak을 하드코딩하지 않고 이 파일만 참조한다.
+Chart는 baseDomain/Gateway/OpenBao/외부 OIDC IdP를 하드코딩하지 않고 이 파일만 참조한다.
 생성물은 커밋하며, CI가 재생성 후 diff로 동기화 여부를 검사한다.
 """
 import sys
@@ -128,7 +128,11 @@ def build(spec: dict) -> dict:
                     ),
                 },
             },
-            "keycloak": {"issuer": spec["keycloak"]["issuer"]},
+            "identityProvider": {
+                "issuer": spec["identityProvider"]["issuer"],
+                "jwksURI": spec["identityProvider"]["jwksURI"],
+                "groupsClaim": spec["identityProvider"]["groupsClaim"],
+            },
         }
     }
 

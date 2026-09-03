@@ -27,7 +27,7 @@ export function portalApiRequiredRole(method: string): PortalApiRole {
 }
 
 /**
- * Portal API scope와 현재 Keycloak bootstrap의 역할을 하나의 권한 계약으로 해석한다.
+ * Portal API scope와 외부 OIDC 그룹의 역할을 하나의 권한 계약으로 해석한다.
  * 정확한 deployments:* scope를 우선 지원하되 viewer는 조회에서만 허용한다.
  */
 export function hasPortalApiRole(

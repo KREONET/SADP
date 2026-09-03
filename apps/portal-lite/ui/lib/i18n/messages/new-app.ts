@@ -112,7 +112,7 @@ export const ko = {
   authNoneDescription: "누구나 주소만 알면 접근할 수 있습니다.",
   authOidc: "SSO 로그인 필요",
   authOidcDescription:
-    "Keycloak SSO 로그인을 통과한 허용 그룹 사용자만 접근합니다.",
+    "외부 OIDC 로그인을 통과한 허용 그룹 사용자만 접근합니다.",
   egressLegend: "외부 통신",
   egressBlocked: "차단",
   egressBlockedDescription: "DNS와 명시적으로 연결한 내부 앱만 통신할 수 있습니다.",
@@ -312,7 +312,7 @@ export const en: typeof ko = {
   authNoneDescription: "Anyone who knows the address can reach it.",
   authOidc: "SSO login required",
   authOidcDescription:
-    "Only users in the allowed Keycloak groups can reach it after signing in.",
+    "Only users in the allowed external OIDC groups can reach it after signing in.",
   egressLegend: "Outbound traffic",
   egressBlocked: "Blocked",
   egressBlockedDescription: "Only DNS and the internal apps you explicitly connect to.",

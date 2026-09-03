@@ -24,19 +24,12 @@ import yaml
 
 ROOT = pathlib.Path(__file__).resolve().parents[2]
 CONTRACT_PATH = ROOT / "contracts" / "platform-production.yaml"
-# external 모드로 렌더한 뒤 다시 in-cluster 로 돌아올 때 워크로드 문서를 복구하는 원본이다.
-IN_CLUSTER_KEYCLOAK_TEMPLATE = ROOT / "scripts/site/templates/keycloak-in-cluster.yaml.template"
-
 ENV_KEY = re.compile(r"^[A-Z][A-Z0-9_]*$")
 KUBE_NAME = re.compile(r"^[a-z0-9]([-a-z0-9.]*[a-z0-9])?$")
 DNS_NAME = re.compile(
     r"^[a-z0-9](?:[-a-z0-9]*[a-z0-9])?(?:\.[a-z0-9](?:[-a-z0-9]*[a-z0-9])?)+$"
 )
 INTERFACE = re.compile(r"^[A-Za-z0-9_.:-]{1,15}$")
-SYSTEM_KEY = re.compile(
-    r"^SYSTEM_[A-Z0-9_]+_(KEYCLOAK_DEPLOYMENT|KEYCLOAK_REALM|PORTAL_CLIENT_ID|"
-    r"KEYCLOAK_EXTERNAL_ADDRESS|KEYCLOAK_EXTERNAL_PORT)$"
-)
 IMAGE_TAG = re.compile(r"^[A-Za-z0-9._-]{1,128}$")
 REVISION = re.compile(r"^[A-Za-z0-9._/-]{1,200}$")
 REGISTRY = re.compile(r"^[a-zA-Z0-9.-]+(?::[0-9]{1,5})?$")
@@ -51,17 +44,14 @@ SUPPORTED_DELEGATION_TYPES = {"cname", "ns"}
 # direct-rfc2136 은 Pod 가 권위 서버로 raw DNS UPDATE 를 보낸다. Squid 로는 대신할 수
 # 없으므로 egress 가 gateway 노드에만 있는 사이트에서는 controller 를 그 노드에 고정한다.
 SUPPORTED_CERT_MANAGER_PLACEMENTS = {"any", "control-plane"}
-# control-plane 은 관리 taint 두 개를 쓰므로 selector만 붙이면 Keycloak과 DB가 영원히
-# Pending이다. placement를 계약으로 두고 두 워크로드의 selector/toleration을 함께 만든다.
-SUPPORTED_KEYCLOAK_PLACEMENTS = {"any", "control-plane"}
-SUPPORTED_MACHINE_AUTH_MODES = {"keycloak", "api-key"}
+SUPPORTED_IDENTITY_SOURCE_PROTOCOLS = {"openid", "saml"}
+SUPPORTED_MACHINE_AUTH_MODES = {"oidc", "api-key"}
 MACHINE_AUTH_API_KEY_HEADER = "X-SADP-API-Key"
 MACHINE_AUTH_REMOTE_PATH_PREFIX = "platform/machine-auth"
 MACHINE_AUTH_SECRET_STORE = "machine-auth-openbao"
 MACHINE_AUTH_ESO_SERVICE_ACCOUNT = "eso-machine-auth"
 MACHINE_AUTH_ESO_ROLE = "machine-auth-eso"
 MACHINE_AUTH_SECRET_PREFIX = "machine-auth-"
-CONTROL_PLANE_LABEL = "node-role.kubernetes.io/control-plane"
 # _acme-challenge 처럼 밑줄로 시작하는 label 도 위임 zone 이름이 될 수 있다.
 DNS_ZONE = re.compile(
     r"^_?[a-z0-9](?:[-a-z0-9]*[a-z0-9])?(?:\._?[a-z0-9](?:[-a-z0-9]*[a-z0-9])?)+$"
@@ -144,7 +134,6 @@ RESERVED_EGRESS_CIDRS = (
 # 이름은 platform/ 차트가 설치하는 고정값이라 site.env로 바꾸지 않는다.
 PORTAL_PLATFORM_NAMESPACES = {
     "PORTAL_RANCHER_NAMESPACE": "cattle-system",
-    "PORTAL_KEYCLOAK_NAMESPACE": "keycloak",
     "PORTAL_OPENBAO_NAMESPACE": "openbao",
 }
 # AppGroup Namespace는 현재 플랫폼 전체에서 `app-<group>` 계약을 쓴다. site.env 입력으로
@@ -171,6 +160,8 @@ ALLOWED_SECRET_METADATA_KEYS = {
     "WILDCARD_TLS_SECRET",
     "SADP_ARGO_REPO_TOKEN_FILE",
     "SADP_DNS_TSIG_SECRET_FILE",
+    # OAuth 표준 endpoint 이름에 TOKEN이 들어가지만 값은 공개 URL이다.
+    "OIDC_TOKEN_ENDPOINT",
 }
 SENSITIVE_KEY = re.compile(r"PASSWORD|TOKEN|PRIVATE_KEY|CREDENTIAL|API_KEY|SECRET")
 SENSITIVE_VALUE = re.compile(
@@ -183,16 +174,13 @@ KNOWN_KEYS = {
     "WORKLOAD_NAMESPACE", "PLATFORM_ROUTE_NAMESPACE", "GATEWAY_NAMESPACE",
     "GATEWAY_NAME", "GATEWAY_PROXY_CONFIG_NAME", "GATEWAY_ADDRESS_POOL_NAME",
     "WILDCARD_TLS_SECRET", "ACME_CLUSTER_ISSUER_NAME", "ACME_ACCOUNT_SECRET_NAME",
-    "PORTAL_HOST", "HELLO_HOST", "SECURE_DEMO_HOST", "SSO_HOST",
+    "PORTAL_HOST", "HELLO_HOST", "SECURE_DEMO_HOST",
     "RANCHER_HOST", "OPENBAO_HOST", "SYSTEMS", "EXTERNAL_SERVICES",
     "MACHINE_AUTH_MODE", "MACHINE_AUTH_SERVICES", "MACHINE_AUTH_CLIENTS",
     "MACHINE_AUTH_ALLOWED_CIDRS",
-    "KEYCLOAK_REALM",
-    "PORTAL_KEYCLOAK_CLIENT_ID", "KEYCLOAK_DEPLOYMENT", "KEYCLOAK_NODE_PLACEMENT",
-    "KEYCLOAK_EXTERNAL_ADDRESS", "KEYCLOAK_EXTERNAL_PORT",
-    "KEYCLOAK_SAML_SP_ENTITY_ID",
-    "KEYCLOAK_IDP_ALIAS", "KEYCLOAK_IDP_DISPLAY_NAME", "KEYCLOAK_IDP_PROVIDER_ID",
-    "KEYCLOAK_IDP_METADATA_URL", "KEYCLOAK_IDP_SSO_URL",
+    "IDENTITY_SOURCE_PROTOCOL", "OIDC_ISSUER", "OIDC_AUTHORIZATION_ENDPOINT",
+    "OIDC_TOKEN_ENDPOINT", "OIDC_JWKS_URI", "OIDC_END_SESSION_ENDPOINT",
+    "OIDC_GROUPS_CLAIM", "OIDC_CLIENT_ID_CLAIM", "PORTAL_OIDC_CLIENT_ID",
     "STORAGE_CLASS", "APP_GROUP_VOLUME_SIZE", "APP_GROUP_MAX_SERVICES", "FORGEJO_REPO_URL",
     "FORGEJO_REVISION", "OCI_REGISTRY", "OCI_PROJECT", "REGISTRY_PULL_SECRET",
     "TEST_APP_IMAGE_TAG", "PORTAL_IMAGE_TAG", "IMAGE_PULL_POLICY",
@@ -205,7 +193,7 @@ KNOWN_KEYS = {
     "CLUSTER_UPSTREAM_DNS",
     "KUBERNETES_API_PORT", "RKE2_SUPERVISOR_PORT", "ETCD_CLIENT_PORT",
     "ETCD_PEER_PORT", "KUBELET_PORT", "CANAL_VXLAN_UDP_PORT", "PUBLIC_IP",
-    "PUBLIC_EXPOSURE_MODE",
+    "PUBLIC_EXPOSURE_MODE", "PUBLIC_IP_NODE",
     "GATEWAY_VIP", "GATEWAY_ADDRESS_POOL", "PUBLIC_HTTP_PORT",
     "PUBLIC_HTTPS_PORT", "EXTERNAL_ALLOWED_TCP_PORTS",
     "EXTERNAL_ALLOWED_UDP_PORTS", "ENVOY_HTTPS_TARGET_PORT",
@@ -219,7 +207,7 @@ KNOWN_KEYS = {
     "CERT_MANAGER_NODE_PLACEMENT",
     "PROVIDED_CERTIFICATE_PATH", "PROVIDED_PRIVATE_KEY_PATH",
     "SADP_INSTALL_GITOPS", "SADP_ARGO_REPO_USERNAME", "SADP_ARGO_REPO_TOKEN_FILE",
-    "SADP_DNS_TSIG_SECRET_FILE", "SADP_BUILD_IMAGES", "SADP_BUILD_NODE",
+    "SADP_DNS_TSIG_SECRET_FILE", "SADP_INSTALL_MONITORING", "SADP_BUILD_IMAGES", "SADP_BUILD_NODE",
     "SADP_DEPLOY_APPS", "SADP_REGISTRY_PULL_DOCKERCONFIG",
     "SADP_REGISTRY_PUSH_DOCKERCONFIG", "SADP_RUN_VERIFY",
 }
@@ -263,11 +251,7 @@ def parse_env(path: pathlib.Path) -> dict[str, str]:
             raise ConfigError(f"line {line_number}: value too long for {key}")
         result[key] = value
 
-    # SYSTEMS 항목마다 SYSTEM_<NAME>_KEYCLOAK_* 키가 동적으로 생긴다. 이름은 SYSTEMS 값에서
-    # 나오므로 KNOWN_KEYS 고정 목록에 미리 넣을 수 없다. 정해진 접미사만 패턴으로 허용한다.
-    unknown = sorted(
-        key for key in set(result) - KNOWN_KEYS if not SYSTEM_KEY.fullmatch(key)
-    )
+    unknown = sorted(set(result) - KNOWN_KEYS)
     if unknown:
         raise ConfigError("unknown env keys: " + ", ".join(unknown))
     for key, value in result.items():
@@ -391,47 +375,58 @@ def kube_name(raw: str, where: str) -> str:
     return value
 
 
-def parse_keycloak_deployment(
-    values: dict[str, str], deployment_key: str, address_key: str, port_key: str
-) -> tuple[str, str, int]:
-    """`in-cluster`|`external` 판정과 external 전용 필드 검증을 공통 로직으로 둔다."""
-    deployment = required(values, deployment_key).lower()
-    if deployment not in {"in-cluster", "external"}:
-        raise ConfigError(f"{deployment_key} must be in-cluster or external")
-    address = optional(values, address_key)
-    resolved_port = 0
-    if deployment == "external":
-        # 외부 Keycloak은 클러스터가 EndpointSlice로 직접 가리키므로 주소가 반드시 필요하다.
-        address = str(ipv4(required(values, address_key), address_key))
-        resolved_port = port(required(values, port_key), port_key)
-    elif address:
-        raise ConfigError(f"in-cluster {deployment_key} must not set {address_key}")
-    return deployment, address, resolved_port
+def parse_identity_provider(values: dict[str, str]) -> dict[str, str]:
+    """외부 IdP의 공개 OIDC 소비 계약만 받는다.
 
-
-def parse_keycloak_node_placement(values: dict[str, str], deployment: str) -> str:
-    """in-cluster Keycloak의 노드 배치를 검증하고 external의 stale 입력을 막는다."""
-    placement = (optional(values, "KEYCLOAK_NODE_PLACEMENT") or "any").lower()
-    if placement not in SUPPORTED_KEYCLOAK_PLACEMENTS:
-        raise ConfigError("KEYCLOAK_NODE_PLACEMENT must be any or control-plane")
-    if deployment == "external" and placement != "any":
-        raise ConfigError(
-            "KEYCLOAK_DEPLOYMENT=external requires KEYCLOAK_NODE_PLACEMENT=any"
-        )
-    return placement
+    sourceProtocol=saml은 외부 브로커의 상류 연결 방식이다. Portal, Envoy Gateway,
+    OpenBao는 SAML을 직접 처리하지 않으므로 두 경우 모두 브로커가 공개한 OIDC endpoint가
+    필요하다. 저장소는 IdP, realm, client, 사용자 또는 그룹을 생성하지 않는다.
+    """
+    source_protocol = required(values, "IDENTITY_SOURCE_PROTOCOL").lower()
+    if source_protocol not in SUPPORTED_IDENTITY_SOURCE_PROTOCOLS:
+        raise ConfigError("IDENTITY_SOURCE_PROTOCOL must be openid or saml")
+    issuer = https_url(required(values, "OIDC_ISSUER"), "OIDC_ISSUER").rstrip("/")
+    authorization = https_url(
+        required(values, "OIDC_AUTHORIZATION_ENDPOINT"), "OIDC_AUTHORIZATION_ENDPOINT"
+    )
+    token = https_url(required(values, "OIDC_TOKEN_ENDPOINT"), "OIDC_TOKEN_ENDPOINT")
+    jwks = https_url(required(values, "OIDC_JWKS_URI"), "OIDC_JWKS_URI")
+    end_session_raw = optional(values, "OIDC_END_SESSION_ENDPOINT")
+    end_session = (
+        https_url(end_session_raw, "OIDC_END_SESSION_ENDPOINT") if end_session_raw else ""
+    )
+    groups_claim = optional(values, "OIDC_GROUPS_CLAIM") or "groups"
+    client_id_claim = optional(values, "OIDC_CLIENT_ID_CLAIM") or "azp"
+    for name, value in (("OIDC_GROUPS_CLAIM", groups_claim), ("OIDC_CLIENT_ID_CLAIM", client_id_claim)):
+        if not re.fullmatch(r"[A-Za-z0-9._/-]{1,128}", value):
+            raise ConfigError(f"{name} has an invalid claim name")
+    return {
+        "managed": "external",
+        "sourceProtocol": source_protocol,
+        "issuer": issuer,
+        "authorizationEndpoint": authorization,
+        "tokenEndpoint": token,
+        "jwksURI": jwks,
+        "endSessionEndpoint": end_session,
+        "groupsClaim": groups_claim,
+        "clientIDClaim": client_id_claim,
+        "portalClientID": kube_name(
+            required(values, "PORTAL_OIDC_CLIENT_ID"), "PORTAL_OIDC_CLIENT_ID"
+        ),
+    }
 
 
 def parse_machine_auth(
-    values: dict[str, str], base_domain: str, realm: str, sso_host: str
+    values: dict[str, str], base_domain: str, identity_provider: dict[str, str]
 ) -> dict:
     """기계 인증의 전역 모드와 노출 서비스를 실제 값 없는 계약으로 바꾼다.
 
-    keycloak은 기존 client_credentials JWT를 검증한다. api-key는 클라이언트 이름과
+    oidc는 외부 IdP의 client_credentials JWT를 검증한다. api-key는 클라이언트 이름과
     OpenBao/ESO가 사용할 경로·Secret 이름만 계약에 두며 실제 키는 절대 받지 않는다.
     """
     mode = required(values, "MACHINE_AUTH_MODE").lower()
     if mode not in SUPPORTED_MACHINE_AUTH_MODES:
-        raise ConfigError("MACHINE_AUTH_MODE must be keycloak or api-key")
+        raise ConfigError("MACHINE_AUTH_MODE must be oidc or api-key")
     entries = csv(values, "MACHINE_AUTH_SERVICES")
     clients = csv(values, "MACHINE_AUTH_CLIENTS")
     cidrs = csv(values, "MACHINE_AUTH_ALLOWED_CIDRS")
@@ -446,10 +441,10 @@ def parse_machine_auth(
             "MACHINE_AUTH_SERVICES requires MACHINE_AUTH_ALLOWED_CIDRS; these endpoints "
             "expose cluster internals"
         )
-    if not entries and mode == "keycloak" and (clients or cidrs):
+    if not entries and mode == "oidc" and (clients or cidrs):
         raise ConfigError(
             "MACHINE_AUTH_CLIENTS and MACHINE_AUTH_ALLOWED_CIDRS require "
-            "MACHINE_AUTH_SERVICES in keycloak mode"
+            "MACHINE_AUTH_SERVICES in oidc mode"
         )
     for entry in cidrs:
         try:
@@ -470,7 +465,6 @@ def parse_machine_auth(
     if len(clients) != len(set(clients)):
         raise ConfigError("MACHINE_AUTH_CLIENTS contains duplicate names")
 
-    issuer = f"https://{sso_host}/realms/{realm}"
     services: list[dict] = []
     for entry in entries:
         name_part, separator, target = entry.partition("=")
@@ -514,11 +508,11 @@ def parse_machine_auth(
         "clients": clients,
         "allowedCIDRs": cidrs,
     }
-    if mode == "keycloak":
-        result["keycloak"] = {
-            "issuer": issuer,
-            "jwksURI": f"{issuer}/protocol/openid-connect/certs",
-            "clientClaim": "azp",
+    if mode == "oidc":
+        result["oidc"] = {
+            "issuer": identity_provider["issuer"],
+            "jwksURI": identity_provider["jwksURI"],
+            "clientClaim": identity_provider["clientIDClaim"],
         }
     else:
         result["apiKey"] = {
@@ -585,8 +579,8 @@ def parse_systems(
 ) -> list[dict]:
     """`SYSTEMS=<name>=<domain>,...` 를 시스템 목록으로 바꾼다.
 
-    시스템마다 전용 Namespace, Rancher Project, 도메인, wildcard 인증서, 그리고 독자
-    Keycloak(`SYSTEM_<NAME>_KEYCLOAK_*`)을 가진다. 도메인은 baseDomain 의 형제 서브도메인
+    시스템마다 전용 Namespace, Rancher Project, 도메인, wildcard 인증서를 가진다.
+    인증은 사이트의 외부 IdP 계약을 공유한다. 도메인은 baseDomain 의 형제 서브도메인
     이어야 한다 — 그래야 이미 승인된 RFC2136 zone/TSIG 하나로 모든 시스템의 wildcard 를
     발급할 수 있다.
     """
@@ -615,19 +609,6 @@ def parse_systems(
             )
         reserved.add(namespace)
 
-        env_prefix = f"SYSTEM_{system_name.upper().replace('-', '_')}_"
-        deployment, address, resolved_port = parse_keycloak_deployment(
-            values,
-            f"{env_prefix}KEYCLOAK_DEPLOYMENT",
-            f"{env_prefix}KEYCLOAK_EXTERNAL_ADDRESS",
-            f"{env_prefix}KEYCLOAK_EXTERNAL_PORT",
-        )
-        realm = kube_name(
-            required(values, f"{env_prefix}KEYCLOAK_REALM"), f"{env_prefix}KEYCLOAK_REALM"
-        )
-        portal_client = kube_name(
-            required(values, f"{env_prefix}PORTAL_CLIENT_ID"), f"{env_prefix}PORTAL_CLIENT_ID"
-        )
         systems.append(
             {
                 "name": system_name,
@@ -639,13 +620,6 @@ def parse_systems(
                 ),
                 "httpListener": f"http-{system_name}",
                 "httpsListener": f"https-{system_name}",
-                "keycloak": {
-                    "realm": realm,
-                    "portalClientID": portal_client,
-                    "issuer": f"https://sso.{system_domain}/realms/{realm}",
-                    "deployment": deployment,
-                    "external": {"address": address, "port": resolved_port or 8080},
-                },
             }
         )
     names = [item["name"] for item in systems]
@@ -707,17 +681,6 @@ def safe_absolute_path(raw: str, where: str) -> str:
     if ".." in parts or raw == "/" or "//" in raw:
         raise ConfigError(f"{where} must identify one file below an absolute directory")
     return raw
-
-
-def saml_sp_entity_id(raw: str, issuer: str) -> str:
-    """SAML Audience는 OIDC issuer와 끝 슬래시 한 글자까지 정확히 계약한다."""
-    value = raw or issuer
-    if value not in {issuer, f"{issuer}/"}:
-        raise ConfigError(
-            "KEYCLOAK_SAML_SP_ENTITY_ID must equal the Keycloak issuer with at most "
-            "one trailing slash"
-        )
-    return value
 
 
 def forgejo_api_coordinates(raw: str) -> dict[str, str] | None:
@@ -800,7 +763,6 @@ def validate(values: dict[str, str]) -> dict:
         "secure-demo": endpoint_host(
             values, "SECURE_DEMO_HOST", "secure-demo", base_domain
         ),
-        "sso": endpoint_host(values, "SSO_HOST", "sso", base_domain),
         "rancher": endpoint_host(values, "RANCHER_HOST", "rancher", base_domain),
         "openbao": endpoint_host(values, "OPENBAO_HOST", "openbao", base_domain),
     }
@@ -1079,6 +1041,16 @@ def validate(values: dict[str, str]) -> dict:
     public_mode = required(values, "PUBLIC_EXPOSURE_MODE").lower()
     if public_mode not in {"nat", "direct"}:
         raise ConfigError("PUBLIC_EXPOSURE_MODE must be nat or direct")
+    public_ip_node = optional(values, "PUBLIC_IP_NODE")
+    if public_mode == "direct":
+        public_ip_node = kube_name(
+            required(values, "PUBLIC_IP_NODE"), "PUBLIC_IP_NODE"
+        )
+        known_nodes = {control_hostname, *(name for name, _ in workers)}
+        if public_ip_node not in known_nodes:
+            raise ConfigError("PUBLIC_IP_NODE must name CONTROL_PLANE_HOSTNAME or a WORKER_NODES host")
+    elif public_ip_node:
+        raise ConfigError("PUBLIC_IP_NODE is only valid when PUBLIC_EXPOSURE_MODE=direct")
     extra_packages = [dns_name(item, "EXTRA_PACKAGE_DOMAINS") for item in csv(values, "EXTRA_PACKAGE_DOMAINS")]
     storage_class = kube_name(required(values, "STORAGE_CLASS"), "STORAGE_CLASS")
     app_group_volume_amount, app_group_volume_unit = storage_quantity(
@@ -1087,50 +1059,7 @@ def validate(values: dict[str, str]) -> dict:
     app_group_max_services = positive_int(
         required(values, "APP_GROUP_MAX_SERVICES"), "APP_GROUP_MAX_SERVICES", 20
     )
-    realm = kube_name(required(values, "KEYCLOAK_REALM"), "KEYCLOAK_REALM")
-    portal_client = kube_name(
-        required(values, "PORTAL_KEYCLOAK_CLIENT_ID"), "PORTAL_KEYCLOAK_CLIENT_ID"
-    )
-    keycloak_deployment, keycloak_address, keycloak_port = parse_keycloak_deployment(
-        values, "KEYCLOAK_DEPLOYMENT", "KEYCLOAK_EXTERNAL_ADDRESS", "KEYCLOAK_EXTERNAL_PORT"
-    )
-    keycloak_node_placement = parse_keycloak_node_placement(values, keycloak_deployment)
-    keycloak_issuer = f"https://{hosts['sso']}/realms/{realm}"
-    keycloak_saml_sp_entity_id = saml_sp_entity_id(
-        optional(values, "KEYCLOAK_SAML_SP_ENTITY_ID"), keycloak_issuer
-    )
-    idp_keys = (
-        "KEYCLOAK_IDP_ALIAS",
-        "KEYCLOAK_IDP_DISPLAY_NAME",
-        "KEYCLOAK_IDP_PROVIDER_ID",
-        "KEYCLOAK_IDP_METADATA_URL",
-        "KEYCLOAK_IDP_SSO_URL",
-    )
-    idp_values = {key: optional(values, key) for key in idp_keys}
-    populated_idp = [key for key, value in idp_values.items() if value]
-    if populated_idp and len(populated_idp) != len(idp_keys):
-        missing = [key for key in idp_keys if not idp_values[key]]
-        raise ConfigError("Keycloak IdP fields must be all empty or all set: " + ", ".join(missing))
-    identity_provider: dict[str, str] = {}
-    if populated_idp:
-        alias = kube_name(idp_values["KEYCLOAK_IDP_ALIAS"], "KEYCLOAK_IDP_ALIAS")
-        provider_id = idp_values["KEYCLOAK_IDP_PROVIDER_ID"].lower()
-        if provider_id != "saml":
-            raise ConfigError("KEYCLOAK_IDP_PROVIDER_ID must be saml")
-        display_name = idp_values["KEYCLOAK_IDP_DISPLAY_NAME"]
-        if len(display_name) > 80 or any(character in display_name for character in "\r\n"):
-            raise ConfigError("KEYCLOAK_IDP_DISPLAY_NAME must be a single line up to 80 characters")
-        identity_provider = {
-            "alias": alias,
-            "displayName": display_name,
-            "providerId": provider_id,
-            "metadataDescriptorUrl": https_url(
-                idp_values["KEYCLOAK_IDP_METADATA_URL"], "KEYCLOAK_IDP_METADATA_URL"
-            ),
-            "singleSignOnServiceUrl": https_url(
-                idp_values["KEYCLOAK_IDP_SSO_URL"], "KEYCLOAK_IDP_SSO_URL"
-            ),
-        }
+    identity_provider = parse_identity_provider(values)
     install_gitops = boolean(values, "SADP_INSTALL_GITOPS", default=False)
     argo_username = optional(values, "SADP_ARGO_REPO_USERNAME")
     argo_token_file = optional(values, "SADP_ARGO_REPO_TOKEN_FILE")
@@ -1152,6 +1081,7 @@ def validate(values: dict[str, str]) -> dict:
         dns_tsig_secret_file = safe_absolute_path(
             dns_tsig_secret_file, "SADP_DNS_TSIG_SECRET_FILE"
         )
+    install_monitoring = boolean(values, "SADP_INSTALL_MONITORING", default=True)
     build_images = boolean(values, "SADP_BUILD_IMAGES", default=True)
     build_node = optional(values, "SADP_BUILD_NODE")
     if build_node:
@@ -1186,9 +1116,15 @@ def validate(values: dict[str, str]) -> dict:
     systems = parse_systems(values, environment, base_domain, {
         workload_namespace, platform_namespace, gateway_namespace,
     })
-    machine_auth = parse_machine_auth(
-        values, base_domain, realm, hosts["sso"]
-    )
+    machine_auth = parse_machine_auth(values, base_domain, identity_provider)
+    if not install_monitoring and any(
+        service["namespace"] == "monitoring"
+        for service in machine_auth.get("services") or []
+    ):
+        raise ConfigError(
+            "monitoring backend exposure requires SADP_INSTALL_MONITORING=true; "
+            "enable it or remove the backend input and render again"
+        )
     external_services = parse_external_services(
         values,
         base_domain,
@@ -1269,6 +1205,7 @@ def validate(values: dict[str, str]) -> dict:
             "gatewayPool": f"{pool_start}-{pool_end}",
             "publicIP": str(public_ip),
             "publicMode": public_mode,
+            "publicIPNode": public_ip_node,
             "envoyTargetPort": port(
                 required(values, "ENVOY_HTTPS_TARGET_PORT"), "ENVOY_HTTPS_TARGET_PORT"
             ),
@@ -1304,21 +1241,13 @@ def validate(values: dict[str, str]) -> dict:
             "providedCertificatePath": required(values, "PROVIDED_CERTIFICATE_PATH"),
             "providedPrivateKeyPath": required(values, "PROVIDED_PRIVATE_KEY_PATH"),
         },
-        "keycloak": {
-            "realm": realm,
-            "portalClientID": portal_client,
-            "samlSpEntityId": keycloak_saml_sp_entity_id,
-            "deployment": keycloak_deployment,
-            "nodePlacement": keycloak_node_placement,
-            "externalAddress": keycloak_address,
-            "externalPort": keycloak_port,
-            "identityProvider": identity_provider,
-        },
+        "identityProvider": identity_provider,
         "installer": {
             "gitops": install_gitops,
             "argoRepoUsername": argo_username,
             "argoRepoTokenFile": argo_token_file,
             "dnsTsigSecretFile": dns_tsig_secret_file,
+            "installMonitoring": install_monitoring,
             "buildImages": build_images,
             "buildNode": build_node,
             "deployApps": deploy_apps,
@@ -1363,6 +1292,7 @@ def build_contract(base: dict, cfg: dict) -> dict:
     spec["baseDomain"] = cfg["baseDomain"]
     spec["cluster"]["name"] = cfg["clusterName"]
     spec["cluster"]["storageClass"] = cfg["storageClass"]
+    spec["monitoring"] = {"enabled": cfg["installer"]["installMonitoring"]}
 
     gateway = spec["gateway"]
     old_workload_namespace = str(gateway["allowedRouteNamespaces"][0])
@@ -1449,8 +1379,11 @@ def build_contract(base: dict, cfg: dict) -> dict:
         dict.fromkeys(
             urlsplit(url).hostname or ""
             for url in (
-                cfg["keycloak"]["identityProvider"].get("metadataDescriptorUrl", ""),
-                cfg["keycloak"]["identityProvider"].get("singleSignOnServiceUrl", ""),
+                cfg["identityProvider"]["issuer"],
+                cfg["identityProvider"]["authorizationEndpoint"],
+                cfg["identityProvider"]["tokenEndpoint"],
+                cfg["identityProvider"]["jwksURI"],
+                cfg["identityProvider"].get("endSessionEndpoint", ""),
             )
             if url
         )
@@ -1465,6 +1398,10 @@ def build_contract(base: dict, cfg: dict) -> dict:
 
     spec["public"]["mode"] = cfg["network"]["publicMode"]
     spec["public"]["ip"] = cfg["network"]["publicIP"]
+    if cfg["network"]["publicMode"] == "direct":
+        spec["public"]["nodeName"] = cfg["network"]["publicIPNode"]
+    else:
+        spec["public"].pop("nodeName", None)
     spec["public"]["ports"] = [80, 443]
     spec["public"].pop("natPorts", None)
     spec["public"]["hairpinNat"] = (
@@ -1490,7 +1427,9 @@ def build_contract(base: dict, cfg: dict) -> dict:
     spec["platformServices"] = [
         service
         for service in spec.get("platformServices") or []
-        if not (service or {}).get("external") and not (service or {}).get("machineAuth")
+        if (service or {}).get("name") != "sso"
+        and not (service or {}).get("external")
+        and not (service or {}).get("machineAuth")
     ]
     spec["machineAuth"] = copy.deepcopy(cfg["machineAuth"])
     spec["machineAuth"].pop("services", None)
@@ -1553,31 +1492,11 @@ def build_contract(base: dict, cfg: dict) -> dict:
             "wildcardTlsSecret": item["wildcardTlsSecret"],
             "httpListener": item["httpListener"],
             "httpsListener": item["httpsListener"],
-            "keycloak": copy.deepcopy(item["keycloak"]),
         }
         for item in cfg["systems"]
     ]
-    spec["keycloak"]["realm"] = cfg["keycloak"]["realm"]
-    spec["keycloak"]["portalClientID"] = cfg["keycloak"]["portalClientID"]
-    spec["keycloak"]["issuer"] = (
-        f"https://{cfg['hosts']['sso']}/realms/{cfg['keycloak']['realm']}"
-    )
-    # SAML Audience는 URI 문자열 비교라 끝 슬래시도 의미가 있다. OIDC issuer에 이 값을
-    # 섞지 않고 별도 계약으로 보존해야 외부 IdP 등록 형식에 맞추면서 discovery는 유지된다.
-    spec["keycloak"]["samlSpEntityId"] = cfg["keycloak"]["samlSpEntityId"]
-    # issuer 와 sso host 는 배포 모드와 무관하게 같다. 달라지는 것은 backend 뿐이다.
-    spec["keycloak"]["deployment"] = cfg["keycloak"]["deployment"]
-    spec["keycloak"]["nodePlacement"] = cfg["keycloak"]["nodePlacement"]
-    spec["keycloak"]["external"] = {
-        "address": cfg["keycloak"]["externalAddress"],
-        "port": cfg["keycloak"]["externalPort"] or 8080,
-    }
-    if cfg["keycloak"]["identityProvider"]:
-        spec["keycloak"]["identityProvider"] = copy.deepcopy(
-            cfg["keycloak"]["identityProvider"]
-        )
-    else:
-        spec["keycloak"].pop("identityProvider", None)
+    spec.pop("keycloak", None)
+    spec["identityProvider"] = copy.deepcopy(cfg["identityProvider"])
     # AppGroup의 ClusterSecretStore는 namespaced SecretStore와 달리 CA ConfigMap의
     # Namespace를 명시해야 한다. 이 값도 계약을 거쳐 Chart로 보내 하드코딩을 피한다.
     spec["openbao"]["namespace"] = PORTAL_PLATFORM_NAMESPACES["PORTAL_OPENBAO_NAMESPACE"]
@@ -1757,10 +1676,14 @@ def app_values(
 
     if app_name == "portal-lite":
         config = configuration["config"]
-        issuer = f"https://{cfg['hosts']['sso']}/realms/{cfg['keycloak']['realm']}"
         config["PLATFORM_BASE_DOMAIN"] = cfg["baseDomain"]
-        config["AUTH_KEYCLOAK_ID"] = cfg["keycloak"]["portalClientID"]
-        config["AUTH_KEYCLOAK_ISSUER"] = issuer
+        config.pop("AUTH_KEYCLOAK_ID", None)
+        config.pop("AUTH_KEYCLOAK_ISSUER", None)
+        config["AUTH_OIDC_ID"] = cfg["identityProvider"]["portalClientID"]
+        config["AUTH_OIDC_ISSUER"] = cfg["identityProvider"]["issuer"]
+        config["AUTH_OIDC_TOKEN_ENDPOINT"] = cfg["identityProvider"]["tokenEndpoint"]
+        config["AUTH_OIDC_END_SESSION_ENDPOINT"] = cfg["identityProvider"]["endSessionEndpoint"]
+        config["AUTH_OIDC_GROUPS_CLAIM"] = cfg["identityProvider"]["groupsClaim"]
         config["AUTH_URL"] = f"https://{cfg['hosts']['portal']}"
 
         # 신청 이력 PVC. Go API의 PORTAL_STATE_DIR과 마운트 경로는 항상 같아야 한다.
@@ -1872,8 +1795,9 @@ def app_values(
             keys = [
                 item
                 for item in auth_secret.get("keys") or []
-                if item != "FORGEJO_BOT_TOKEN"
+                if item not in {"FORGEJO_BOT_TOKEN", "AUTH_KEYCLOAK_SECRET", "AUTH_OIDC_SECRET"}
             ]
+            keys.append("AUTH_OIDC_SECRET")
             if cfg["forgejo"].get("api"):
                 # 봇 토큰은 OpenBao에만 있고 values/Git에는 키 이름만 남는다.
                 keys.append("FORGEJO_BOT_TOKEN")
@@ -1928,7 +1852,7 @@ def template_values(path: pathlib.Path, cfg: dict, app_name: str, exposure: str)
         oidc.setdefault("logoutPath", "/logout")
         oidc["allowedGroups"] = oidc.get("allowedGroups") or [f"{app_name}-user"]
     else:
-        # 인증과 runtime Secret이 모두 없는 기본 템플릿은 Keycloak/OpenBao를 전혀 요구하지
+        # 인증과 runtime Secret이 모두 없는 기본 템플릿은 외부 IdP/OpenBao를 전혀 요구하지
         # 않는다. runtime Secret이 실제로 필요한 앱만 이 목록과 canonical path를 추가한다.
         authentication["mode"] = "none"
         configuration["externalSecrets"] = []
@@ -2009,148 +1933,6 @@ def argocd_updates(cfg: dict, old_contract: dict) -> dict[pathlib.Path, str]:
     return updates
 
 
-def external_keycloak_documents(
-    namespace: str, address_text: str, external_port: int, *, include_namespace: bool
-) -> list[dict]:
-    """외부 VM/Docker Keycloak을 클러스터 안의 Service 이름으로 그대로 노출한다.
-
-    HTTPRoute 는 이 Namespace 의 Service/keycloak:8080 을 참조한다. selector 없는 Service 와
-    EndpointSlice 로 같은 이름을 유지하면 HTTPRoute, ReferenceGrant, issuer, SecurityPolicy,
-    Portal 설정을 하나도 바꾸지 않고 backend 만 외부로 옮길 수 있다.
-
-    include_namespace=False 는 시스템 전용 Keycloak처럼, Namespace 문서를 exposure 렌더러가
-    이미 만들어주는 경우(allowedRouteNamespaces 에 포함)에 중복 생성을 피하기 위해 쓴다.
-    """
-    documents: list[dict] = []
-    if include_namespace:
-        documents.append(
-            {
-                "apiVersion": "v1",
-                "kind": "Namespace",
-                "metadata": {
-                    "name": namespace,
-                    "labels": {"platform.example.io/component": "identity"},
-                },
-            }
-        )
-    documents.append(
-        {
-            "apiVersion": "v1",
-            "kind": "Service",
-            "metadata": {
-                "name": "keycloak",
-                "namespace": namespace,
-                "annotations": {
-                    "platform.example.io/keycloak-deployment": "external",
-                },
-            },
-            # selector 를 두지 않는다. Endpoint 는 아래 EndpointSlice 가 직접 채운다.
-            "spec": {
-                "type": "ClusterIP",
-                "ports": [
-                    {
-                        "name": "http",
-                        "port": 8080,
-                        "targetPort": external_port,
-                        "protocol": "TCP",
-                    }
-                ],
-            },
-        }
-    )
-    documents.append(
-        {
-            "apiVersion": "discovery.k8s.io/v1",
-            "kind": "EndpointSlice",
-            "metadata": {
-                "name": "keycloak-external",
-                "namespace": namespace,
-                "labels": {"kubernetes.io/service-name": "keycloak"},
-            },
-            "addressType": "IPv4",
-            "ports": [{"name": "http", "port": external_port, "protocol": "TCP"}],
-            "endpoints": [
-                {"addresses": [address_text], "conditions": {"ready": True}}
-            ],
-        }
-    )
-    return documents
-
-
-def in_cluster_keycloak_documents(
-    namespace: str,
-    hostname: str,
-    storage_class: str,
-    node_placement: str,
-    network_replacements: dict[str, str],
-    previous_documents: list[dict] | None,
-    *,
-    include_namespace: bool,
-) -> list[dict]:
-    """in-cluster Keycloak+PostgreSQL 워크로드를 템플릿에서 만들거나 이전 상태에서 복구한다."""
-    documents = previous_documents or []
-    # 이전에 external 로 렌더된 상태에서 되돌아오면 워크로드 문서가 없다. 원본에서 복구한다.
-    if not any(item.get("kind") == "Deployment" for item in documents):
-        documents = [
-            item
-            for item in yaml.safe_load_all(IN_CLUSTER_KEYCLOAK_TEMPLATE.read_text(encoding="utf-8"))
-            if item
-        ]
-    documents = [replace_strings(item, network_replacements) for item in documents]
-    for document in documents:
-        document.setdefault("metadata", {})["namespace"] = namespace
-        if document.get("kind") == "StatefulSet" and document["metadata"].get("name") == "keycloak-postgresql":
-            for claim in document.get("spec", {}).get("volumeClaimTemplates") or []:
-                claim.setdefault("spec", {})["storageClassName"] = storage_class
-        if document.get("kind") in {"Deployment", "StatefulSet"}:
-            pod_spec = document.setdefault("spec", {}).setdefault("template", {}).setdefault(
-                "spec", {}
-            )
-            if node_placement == "control-plane":
-                # RKE2 server의 NoSchedule/NoExecute taint를 둘 다 견뎌야 새 설치에서도
-                # Keycloak과 로컬 PostgreSQL이 같은 control-plane에 함께 뜬다.
-                pod_spec["nodeSelector"] = {CONTROL_PLANE_LABEL: "true"}
-                pod_spec["tolerations"] = [
-                    {
-                        "key": "CriticalAddonsOnly",
-                        "operator": "Equal",
-                        "value": "true",
-                        "effect": "NoExecute",
-                    },
-                    {
-                        "key": CONTROL_PLANE_LABEL,
-                        "operator": "Equal",
-                        "value": "true",
-                        "effect": "NoSchedule",
-                    },
-                ]
-            else:
-                # control-plane에서 any로 되돌릴 때 이전 생성 결과가 남아 계속 고정되지
-                # 않도록 생성기가 소유한 scheduling field를 함께 지운다.
-                pod_spec.pop("nodeSelector", None)
-                pod_spec.pop("tolerations", None)
-        if document.get("kind") == "Deployment":
-            for container in document.get("spec", {}).get("template", {}).get("spec", {}).get("containers") or []:
-                for env in container.get("env") or []:
-                    if env.get("name") == "KC_HOSTNAME":
-                        env["value"] = hostname
-    if not include_namespace:
-        documents = [item for item in documents if item.get("kind") != "Namespace"]
-    elif not any(item.get("kind") == "Namespace" for item in documents):
-        documents.insert(
-            0,
-            {
-                "apiVersion": "v1",
-                "kind": "Namespace",
-                "metadata": {
-                    "name": namespace,
-                    "labels": {"platform.example.io/component": "identity"},
-                },
-            },
-        )
-    return documents
-
-
 def rke_updates(cfg: dict) -> dict[pathlib.Path, str]:
     server_path = ROOT / "rke/control-node/config.yaml"
     server = yaml.safe_load(server_path.read_text(encoding="utf-8")) or {}
@@ -2208,66 +1990,7 @@ def rke_updates(cfg: dict) -> dict[pathlib.Path, str]:
 
 def runtime_updates(cfg: dict, old_contract: dict) -> dict[pathlib.Path, str]:
     old_domain = old_contract["spec"]["baseDomain"]
-    network_replacements = {
-        old_domain: cfg["baseDomain"],
-        str(old_contract["spec"]["network"]["podCIDRs"][0]): cfg["network"]["podCIDRs"][0],
-        str(old_contract["spec"]["network"]["serviceCIDRs"][0]): cfg["network"]["serviceCIDRs"][0],
-    }
     updates: dict[pathlib.Path, str] = {}
-    keycloak_path = ROOT / "platform/keycloak/resources.yaml"
-    if cfg["keycloak"]["deployment"] == "external":
-        keycloak_documents = external_keycloak_documents(
-            "keycloak",
-            cfg["keycloak"]["externalAddress"],
-            cfg["keycloak"]["externalPort"] or 8080,
-            include_namespace=True,
-        )
-    else:
-        previous_documents = [
-            item for item in yaml.safe_load_all(keycloak_path.read_text(encoding="utf-8")) if item
-        ]
-        keycloak_documents = in_cluster_keycloak_documents(
-            "keycloak",
-            f"https://sso.{cfg['baseDomain']}",
-            cfg["storageClass"],
-            cfg["keycloak"]["nodePlacement"],
-            network_replacements,
-            previous_documents,
-            include_namespace=True,
-        )
-    updates[keycloak_path] = "---\n".join(
-        yaml.safe_dump(item, allow_unicode=True, sort_keys=False) for item in keycloak_documents
-    )
-
-    for system in cfg["systems"]:
-        system_path = ROOT / "platform" / "systems" / system["name"] / "keycloak.yaml"
-        keycloak = system["keycloak"]
-        if keycloak["deployment"] == "external":
-            system_documents = external_keycloak_documents(
-                system["workloadNamespace"],
-                keycloak["external"]["address"],
-                keycloak["external"]["port"] or 8080,
-                include_namespace=False,
-            )
-        else:
-            previous_system_documents = (
-                [item for item in yaml.safe_load_all(system_path.read_text(encoding="utf-8")) if item]
-                if system_path.exists()
-                else []
-            )
-            system_documents = in_cluster_keycloak_documents(
-                system["workloadNamespace"],
-                f"https://sso.{system['domain']}",
-                cfg["storageClass"],
-                "any",
-                network_replacements,
-                previous_system_documents,
-                include_namespace=False,
-            )
-        updates[system_path] = "---\n".join(
-            yaml.safe_dump(item, allow_unicode=True, sort_keys=False) for item in system_documents
-        )
-
     openapi_path = ROOT / "apps/portal-lite/backend/openapi.yaml"
     openapi = yaml.safe_load(openapi_path.read_text(encoding="utf-8"))
     openapi = replace_strings(
@@ -2277,12 +2000,11 @@ def runtime_updates(cfg: dict, old_contract: dict) -> dict[pathlib.Path, str]:
             str(old_contract["spec"].get("environment") or "beta"): cfg["environment"],
         },
     )
-    issuer = f"https://{cfg['hosts']['sso']}/realms/{cfg['keycloak']['realm']}"
-    oauth_flow = openapi["components"]["securitySchemes"]["keycloak"]["flows"][
+    oauth_flow = openapi["components"]["securitySchemes"]["oidc"]["flows"][
         "authorizationCode"
     ]
-    oauth_flow["authorizationUrl"] = f"{issuer}/protocol/openid-connect/auth"
-    oauth_flow["tokenUrl"] = f"{issuer}/protocol/openid-connect/token"
+    oauth_flow["authorizationUrl"] = cfg["identityProvider"]["authorizationEndpoint"]
+    oauth_flow["tokenUrl"] = cfg["identityProvider"]["tokenEndpoint"]
     updates[openapi_path] = yaml_text(openapi)
 
     openbao_values_path = ROOT / "platform/openbao/values-beta.yaml"
@@ -2322,20 +2044,21 @@ def install_env(cfg: dict) -> str:
         "EXTERNAL_ALLOWED_TCP_PORTS": "80,443",
         "PUBLIC_EXPOSURE_MODE": cfg["network"]["publicMode"],
         "PUBLIC_IP": cfg["network"]["publicIP"],
+        "PUBLIC_IP_NODE": cfg["network"]["publicIPNode"],
         "FORGEJO_REPO_URL": cfg["forgejo"]["repoURL"],
         "FORGEJO_REVISION": cfg["forgejo"]["revision"],
         "OCI_REGISTRY": cfg["registry"]["host"],
         "REGISTRY_PULL_SECRET": cfg["registry"]["pullSecret"],
         "TLS_SOURCE": cfg["tls"]["source"],
         "EXISTING_GATEWAY_TLS_READY": str(cfg["tls"]["existingReady"]).lower(),
-        "KEYCLOAK_DEPLOYMENT": cfg["keycloak"]["deployment"],
-        "KEYCLOAK_NODE_PLACEMENT": cfg["keycloak"]["nodePlacement"],
+        "OIDC_ISSUER": cfg["identityProvider"]["issuer"],
         "DNS_CREDENTIAL_SECRET_NAME": cfg["tls"]["credentialSecretName"],
         "DNS_CREDENTIAL_SECRET_KEY": cfg["tls"]["credentialSecretKey"],
         "SADP_INSTALL_GITOPS": str(cfg["installer"]["gitops"]).lower(),
         "SADP_ARGO_REPO_USERNAME": cfg["installer"]["argoRepoUsername"],
         "SADP_ARGO_REPO_TOKEN_FILE": cfg["installer"]["argoRepoTokenFile"],
         "SADP_DNS_TSIG_SECRET_FILE": cfg["installer"]["dnsTsigSecretFile"],
+        "SADP_INSTALL_MONITORING": str(cfg["installer"]["installMonitoring"]).lower(),
         "SADP_BUILD_IMAGES": str(cfg["installer"]["buildImages"]).lower(),
         "SADP_BUILD_NODE": cfg["installer"]["buildNode"],
         "SADP_DEPLOY_APPS": str(cfg["installer"]["deployApps"]).lower(),

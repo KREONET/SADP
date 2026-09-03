@@ -326,7 +326,7 @@ type quotaSummary struct {
 type generatedPlan struct {
 	ValuesTemplate   string `json:"valuesTemplate"`
 	OpenBaoPath      string `json:"openbaoPath"`
-	KeycloakClientID string `json:"keycloakClientId,omitempty"`
+	OIDCClientID     string `json:"oidcClientId,omitempty"`
 	OIDCCallbackURL  string `json:"oidcCallbackUrl,omitempty"`
 	// 빌드가 끝난 뒤 채워지는 최종 이미지 좌표(레지스트리/이름:태그).
 	Image             string `json:"image,omitempty"`
@@ -945,10 +945,10 @@ func validationResult(input appProfileInput, submissionEnabled bool) validationR
 	}
 	if authentication == authOIDC {
 		generated.ValuesTemplate = "apps/_template/values-sso.yaml"
-		generated.KeycloakClientID = keycloakClientID(profile)
+		generated.OIDCClientID = oidcClientID(profile)
 		generated.OIDCCallbackURL = "https://" + profile.Exposure.Host + "/oauth2/callback"
 		generated.ExpectedAnonymous = http.StatusFound
-		nextSteps = append([]string{"Keycloak confidential client와 OpenBao OIDC_CLIENT_SECRET을 플랫폼 관리자가 준비합니다."}, nextSteps...)
+		nextSteps = append([]string{"외부 IdP에 confidential OIDC client를 등록하고 OpenBao OIDC_CLIENT_SECRET을 관리자가 준비합니다."}, nextSteps...)
 	}
 	if input.Group != "" {
 		nextSteps = append([]string{

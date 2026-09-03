@@ -31,7 +31,7 @@ sudo bash ./sadp --power prepare-off --role server --apply
 적용은 다음을 순서대로 수행합니다.
 
 1. 세 Node가 모두 Ready인지 확인
-2. RKE2 etcd, OpenBao Raft, in-cluster Keycloak PostgreSQL 전체 백업
+2. RKE2 etcd와 OpenBao Raft 전체 백업
 3. worker 두 대 cordon과 drain
 4. `/var/lib/sadp/power/prepared-off`에 백업 경로와 worker 목록 기록
 

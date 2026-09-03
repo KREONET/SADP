@@ -132,7 +132,7 @@ func TestValidatePublicProfile(t *testing.T) {
 	if result.Generated.ValuesTemplate != "apps/_template/values-public.yaml" || result.Generated.ExpectedAnonymous != http.StatusOK {
 		t.Fatalf("public plan 불일치: %+v", result.Generated)
 	}
-	if result.Generated.KeycloakClientID != "" || result.Profile.Exposure.Host != "research-viewer."+baseDomain {
+	if result.Generated.OIDCClientID != "" || result.Profile.Exposure.Host != "research-viewer."+baseDomain {
 		t.Fatalf("public 결과 불일치: %+v", result)
 	}
 	if want := "research-viewer." + zoneNamespace() + ".svc:8080"; result.Profile.Service.InternalAddress != want {
@@ -149,7 +149,7 @@ func TestValidateOIDCProfile(t *testing.T) {
 	if err := json.Unmarshal(recorder.Body.Bytes(), &result); err != nil {
 		t.Fatal(err)
 	}
-	if result.Generated.ValuesTemplate != "apps/_template/values-sso.yaml" || result.Generated.KeycloakClientID != "research-viewer-"+appEnvironment || result.Generated.ExpectedAnonymous != http.StatusFound {
+	if result.Generated.ValuesTemplate != "apps/_template/values-sso.yaml" || result.Generated.OIDCClientID != "research-viewer-"+appEnvironment || result.Generated.ExpectedAnonymous != http.StatusFound {
 		t.Fatalf("oidc plan 불일치: %+v", result.Generated)
 	}
 	if result.Generated.OIDCCallbackURL != "https://research-viewer."+baseDomain+"/oauth2/callback" {

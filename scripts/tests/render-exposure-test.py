@@ -254,8 +254,14 @@ def direct_public_service(root: pathlib.Path, _result) -> str:
         d for d in documents(root, EXPOSURE) if d["kind"] == "EnvoyProxy"
     )
     service = envoy_proxy["spec"]["provider"]["kubernetes"]["envoyService"]
-    if service.get("externalTrafficPolicy") != "Cluster":
-        return "direct mode Envoy Service가 Cluster externalTrafficPolicy를 쓰지 않는다"
+    if service.get("externalTrafficPolicy") != "Local":
+        return "direct mode Envoy Service가 Local externalTrafficPolicy를 쓰지 않는다"
+    deployment = envoy_proxy["spec"]["provider"]["kubernetes"]["envoyDeployment"]
+    expected_node = contract["public"]["nodeName"]
+    if deployment["pod"].get("nodeSelector") != {
+        "kubernetes.io/hostname": expected_node
+    }:
+        return "direct mode Envoy Pod가 공인 IP 노드에 고정되지 않는다"
     external_ips = service.get("patch", {}).get("value", {}).get("spec", {}).get("externalIPs")
     if external_ips != [contract["gateway"]["vip"], contract["public"]["ip"]]:
         return f"direct mode externalIPs 불일치: {external_ips}"
@@ -269,6 +275,8 @@ def nat_public_service(root: pathlib.Path, _result) -> str:
     service = envoy_proxy["spec"]["provider"]["kubernetes"]["envoyService"]
     if "patch" in service or "externalTrafficPolicy" in service:
         return "nat mode가 direct Service patch를 렌더했다"
+    if "envoyDeployment" in envoy_proxy["spec"]["provider"]["kubernetes"]:
+        return "nat mode가 direct Envoy nodeSelector를 렌더했다"
     return ""
 
 
@@ -596,7 +604,7 @@ def verify_api_key_machine_auth(root: pathlib.Path, _result) -> str:
     if auth.get("extractFrom") != [{"headers": ["X-SADP-API-Key"]}]:
         return f"API key header 불일치: {auth.get('extractFrom')!r}"
     if policy["spec"].get("jwt"):
-        return "api-key 정책에 Keycloak JWT가 함께 켜졌다"
+        return "api-key 정책에 OIDC JWT가 함께 켜졌다"
     principal = policy["spec"]["authorization"]["rules"][0]["principal"]
     if principal != {"clientCIDRs": ["203.0.113.10/32", "198.51.100.20/32"]}:
         return f"CIDR principal 불일치: {principal!r}"
@@ -644,7 +652,10 @@ case(
 case(
     "EX-27 공인 NIC direct 모드는 Envoy Service externalIPs를 생성한다",
     # 사이트 계약이 nat 일 수도 있으므로 direct 를 시험 안에서 명시한다.
-    lambda spec, status: (ready(spec, status), spec["public"].update({"mode": "direct"})),
+    lambda spec, status: (
+        ready(spec, status),
+        spec["public"].update({"mode": "direct", "nodeName": "sadp-control-plane-1"}),
+    ),
     True,
     direct_public_service,
 )
@@ -658,8 +669,17 @@ case(
     "EX-29 direct 모드에서 external interface 누락을 거부한다",
     lambda spec, status: (
         ready(spec, status),
-        spec["public"].update({"mode": "direct"}),
+        spec["public"].update({"mode": "direct", "nodeName": "sadp-control-plane-1"}),
         spec["network"]["interfaces"].update({"external": ""}),
+    ),
+    False,
+)
+case(
+    "EX-30 direct 모드에서 공인 IP 노드 누락을 거부한다",
+    lambda spec, status: (
+        ready(spec, status),
+        spec["public"].update({"mode": "direct"}),
+        spec["public"].pop("nodeName", None),
     ),
     False,
 )
@@ -676,13 +696,6 @@ def add_analytics_system(spec: dict) -> str:
             "wildcardTlsSecret": "analytics-wildcard-tls",
             "httpListener": "http-analytics",
             "httpsListener": "https-analytics",
-            "keycloak": {
-                "realm": "analytics",
-                "portalClientID": "analytics-portal",
-                "issuer": f"https://sso.{domain}/realms/analytics",
-                "deployment": "external",
-                "external": {"address": "192.0.2.60", "port": 8080},
-            },
         }
     ]
     spec["gateway"]["allowedRouteNamespaces"] = [
@@ -712,17 +725,6 @@ def system_exposure(root: pathlib.Path, _result) -> str:
         return "http-analytics listener 가 렌더되지 않았다"
     if listener["hostname"] != f"*.{domain}":
         return f"http-analytics listener hostname 불일치: {listener['hostname']}"
-    sso_route = next(
-        (
-            d for d in exposure
-            if d["kind"] == "HTTPRoute" and d["metadata"].get("namespace") == "analytics-beta"
-        ),
-        None,
-    )
-    if sso_route is None:
-        return "analytics-beta 의 sso HTTPRoute 가 없다"
-    if sso_route["spec"]["hostnames"] != [f"sso.{domain}"]:
-        return f"sso HTTPRoute hostname 불일치: {sso_route['spec']['hostnames']}"
     namespaces = {d["metadata"]["name"] for d in exposure if d["kind"] == "Namespace"}
     if "analytics-beta" not in namespaces:
         return "analytics-beta Namespace 가 렌더되지 않았다"
@@ -739,7 +741,7 @@ def system_exposure(root: pathlib.Path, _result) -> str:
 
 
 case(
-    "EX-30 systems 계약이 있으면 시스템별 Gateway listener/sso Route/Certificate가 추가된다",
+    "EX-30 systems 계약이 있으면 시스템별 Gateway listener/Namespace/Certificate가 추가된다",
     lambda spec, status: (ready(spec, status), add_analytics_system(spec)),
     True,
     system_exposure,
@@ -825,6 +827,27 @@ case(
     lambda spec, status: (
         ready(spec, status),
         spec["tls"]["solver"].update({"dns01Mode": "acme-dns"}),
+    ),
+    False,
+)
+case(
+    "EX-38 monitoring 비활성 계약은 monitoring backend 노출을 거부한다",
+    lambda spec, status: (
+        ready(spec, status),
+        spec.update({"monitoring": {"enabled": False}}),
+        spec["machineAuth"].update(
+            {"clients": ["grafana-central"], "allowedCIDRs": ["192.0.2.40/32"]}
+        ),
+        spec["platformServices"].append(
+            {
+                "name": "metrics",
+                "host": f"metrics.{BASE_DOMAIN}",
+                "namespace": "monitoring",
+                "service": "prometheus-server",
+                "port": 80,
+                "machineAuth": True,
+            }
+        ),
     ),
     False,
 )

@@ -39,7 +39,7 @@
         "quota": { "type": "object" },
         "openbao": { "type": "object" },
         "baseDomain": { "type": "string" },
-        "keycloak": { "type": "object" },
+        "identityProvider": { "type": "object" },
         "network": { "type": "object" }
       }
     },

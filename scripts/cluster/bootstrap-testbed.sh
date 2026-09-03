@@ -7,6 +7,9 @@ cd "${ROOT}"
 python3 scripts/site/render-network.py
 bash scripts/node/install-squid-egress.sh
 source platform/network/proxy.env
+# 레거시 진입점도 플랫폼 리소스 전에 실제 CRI pull을 확인해 containerd proxy 누락을
+# ImagePullBackOff가 난 뒤에 발견하지 않게 한다.
+bash scripts/cluster/preflight.sh --image-pull-only
 bash scripts/cluster/install-testbed-platform.sh
 bash scripts/cluster/build-local-images.sh
 bash scripts/cluster/bootstrap-testbed-services.sh

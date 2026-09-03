@@ -41,8 +41,8 @@ Rancher Ingress나 `rke2-ingress-nginx`가 존재하면 단일 진입점 계약 
 `platform/rancher/resources.yaml`을 생성합니다.
 
 - Project는 항상 렌더링합니다.
-- role binding은 해당 Keycloak group이 `pending`이 아닐 때만 렌더링합니다.
-- subject는 개인 계정이 아니라 `keycloakoidc_group://<group>`입니다.
+- role binding은 해당 Rancher `principal`이 `pending`이 아닐 때만 렌더링합니다.
+- subject는 개인 계정이 아니라 Rancher UI/API에서 확인한 외부 IdP group principal입니다.
 - Rancher 내장 GlobalRole/RoleTemplate만 사용합니다.
 - Project 이름이 workload Namespace와 같으면 Rancher backing Namespace와 충돌하므로 거부합니다.
 
@@ -58,7 +58,7 @@ Rancher Ingress나 `rke2-ingress-nginx`가 존재하면 단일 진입점 계약 
 | `developer` | project | `project-member` |
 | `viewer` | project | `read-only` |
 
-사용자를 Rancher UI에서 별도로 binding하면 Git 계약과 드리프트가 생깁니다. Keycloak group
+사용자를 Rancher UI에서 별도로 binding하면 Git 계약과 드리프트가 생깁니다. 외부 IdP group
 membership과 계약을 수정한 뒤 renderer를 실행합니다.
 
 ## 4. 생성과 동기화 확인
@@ -122,5 +122,5 @@ group이 아직 `pending`이면 RBAC는 실패가 아니라 `[SKIP]`으로 표�
 | `http://` redirect | Gateway의 `X-Forwarded-Proto`, `server-url` |
 | Route `ResolvedRefs=False` | `cattle-system` ReferenceGrant와 Service port |
 | Project 없음 | `platform-resources` Application sync, generated resources |
-| SSO 사용자는 로그인되나 권한 없음 | 계약 group, Keycloak membership, rendered binding |
+| SSO 사용자는 로그인되나 권한 없음 | 계약 principal, 외부 IdP membership, rendered binding |
 | UI 수동 권한이 다시 달라짐 | UI grant 제거 후 계약 기반 group binding 사용 |

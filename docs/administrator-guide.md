@@ -9,7 +9,7 @@ RKE2 자체 설치는 이 저장소의 범위가 아닙니다.
 | --- | --- |
 | 클러스터 | 1 server + 2 worker Ready, StorageClass, CNI, 유지보수 |
 | 네트워크 | NIC 역할, 80/443 공개 경로, Squid, DNS, interface guard |
-| 인증 | Keycloak realm/client/group, 상위 IdP |
+| 인증 | 외부 OIDC endpoint/client 연결, IdP 그룹 claim 검증 |
 | Secret | root 전용 입력, OpenBao, ESO, Reloader |
 | GitOps | site.env, 생성물, Forgejo, Argo Application |
 | 운영 | acceptance, 백업, 복원 시험, token·인증서 회전 |
@@ -84,12 +84,40 @@ Secret 본문은 Git, `site.env`, 명령 인자, 인수인계 문서에 넣지 �
 | --- | --- | --- |
 | 공개 URL 연결 실패 | NAT/direct, 공인 IP, Gateway, 80/443 | [네트워크](network-egress.md) |
 | HTTPS 또는 Certificate 실패 | Issuer, Order, Challenge, wildcard Secret | [DNS-01](letsencrypt-dns01.md) |
-| 로그인 반복·SAML 오류 | issuer, callback, NTP, Audience | [외부 Keycloak](keycloak-external.md) |
+| 로그인 반복·SAML 오류 | OIDC issuer/callback, 외부 broker와 상위 IdP | [외부 인증](identity-provider.md) |
 | Worker만 image/DNS 실패 | containerd proxy, CoreDNS, Squid | [네트워크](network-egress.md) |
 | `ImagePullBackOff` | immutable tag, pull credential, Registry 권한 | Pod event |
-| ExternalSecret 실패 | SecretStore, ServiceAccount, OpenBao role/path | ESO event |
+| ExternalSecret timeout | OpenBao sealed/active endpoint, 자동 판별된 Store Ready condition | [복구](recovery.md#7-openbao-sealexternalsecret-timeout-복구) |
 | Portal 배포 API 503 | Forgejo 연결과 bot 권한 | [Portal API](portal-api.md) |
 | 데이터 손상 | 추가 쓰기 중단, 마지막 검증 백업 | [복구](recovery.md) |
+
+ExternalSecret의 raw `kubectl wait` timeout은 설치 성공이 아닙니다. OpenBao가 재기동 뒤 sealed이면
+ESO provider는 HTTP 503 `Vault is sealed`를 받고 SecretStore 또는 ClusterSecretStore가 일시적으로
+Ready가 아닐 수 있습니다. unseal 후에도 이전 실패 condition을 다시 reconcile하려면 force-sync가
+필요할 수 있습니다.
+
+control-plane에서만 다음 순서로 확인합니다.
+
+```bash
+sudo bash ./sadp --unseal-openbao
+
+# sealed일 때만 실행
+sudo bash ./sadp --unseal-openbao --apply
+
+kubectl annotate externalsecret \
+  -n <EXTERNAL_SECRET_NAMESPACE> <EXTERNAL_SECRET_NAME> \
+  force-sync="$(date +%s)" --overwrite
+
+kubectl wait \
+  externalsecret/<EXTERNAL_SECRET_NAME> \
+  -n <EXTERNAL_SECRET_NAMESPACE> \
+  --for=condition=Ready --timeout=2m
+```
+
+최종 성공 조건은 ExternalSecret `Ready=True`, 참조 Store `Ready=True`, 대상 Secret 객체 존재입니다.
+실패 시 ExternalSecret과 Store의 `status.conditions`만 확인합니다. Pod 로그 전체, Secret YAML,
+Secret data, OpenBao token, unseal key를 출력하지 않습니다. 이 manager와 unseal 명령은 Kubernetes
+API와 OpenBao Pod를 직접 다루므로 worker에서 실행하지 않습니다.
 
 ## 7. 검수 명령
 
@@ -106,7 +134,7 @@ sudo bash ./sadp --verify-testbed
 
 ## 8. 백업과 복구
 
-백업 대상은 RKE2 etcd, OpenBao Raft, in-cluster Keycloak PostgreSQL입니다.
+백업 대상은 RKE2 etcd와 OpenBao Raft입니다. 외부 IdP 백업은 해당 운영팀의 범위입니다.
 
 ```bash
 sudo bash ./sadp --backup

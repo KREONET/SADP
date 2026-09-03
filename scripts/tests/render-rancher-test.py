@@ -1,8 +1,5 @@
 #!/usr/bin/env python3
-"""scripts/site/render-rancher.py 회귀 시험(RA-01~RA-10).
-
-D6 은 Project 까지, D7 은 Keycloak group binding 까지다. 그 경계가 지켜지는지 확인한다.
-"""
+"""scripts/site/render-rancher.py의 Project/principal binding 회귀 시험(RA-01~RA-10)."""
 
 from __future__ import annotations
 
@@ -92,21 +89,21 @@ def case(label: str, mutate, expect_success: bool, verify=None, arguments=()) ->
     shutil.rmtree(root, ignore_errors=True)
 
 
-def fill_groups(spec: dict, _status: dict) -> None:
-    groups = {
-        "platform-admin": "platform-admins",
-        "app-admin": "app-admins",
-        "developer": "developers",
-        "viewer": "viewers",
+def fill_principals(spec: dict, _status: dict) -> None:
+    principals = {
+        "platform-admin": "oidc_group://platform-admins",
+        "app-admin": "oidc_group://app-admins",
+        "developer": "oidc_group://developers",
+        "viewer": "oidc_group://viewers",
     }
     for binding in spec["rancher"]["roleBindings"]:
-        binding["group"] = groups[binding["role"]]
+        binding["principal"] = principals[binding["role"]]
 
 
 def projects_only(root: pathlib.Path, result) -> str:
     kinds = [d["kind"] for d in documents(root)]
     if kinds != ["Project", "Project"]:
-        return f"group 미확정 상태에서 Project 외 문서가 생성됐다: {kinds}"
+        return f"principal 미확정 상태에서 Project 외 문서가 생성됐다: {kinds}"
     if "미확정" not in result.stdout:
         return "생략된 역할을 알리는 경고가 없다"
     return ""
@@ -126,7 +123,7 @@ def all_bindings(root: pathlib.Path, _result) -> str:
     global_binding = next(d for d in docs if d["kind"] == "GlobalRoleBinding")
     if global_binding["globalRoleName"] != "admin":
         return "platform-admin 이 내장 admin GlobalRole 을 쓰지 않는다"
-    if not global_binding["groupPrincipalName"].startswith("keycloakoidc_group://"):
+    if global_binding["groupPrincipalName"] != "oidc_group://platform-admins":
         return f"group principal 형식이 다르다: {global_binding['groupPrincipalName']}"
 
     owner = next(
@@ -157,20 +154,20 @@ def viewer_two_projects(root: pathlib.Path, _result) -> str:
     return ""
 
 
-case("RA-01 group 미확정이면 Project 만 생성한다", lambda spec, status: None, True, projects_only)
-case("RA-02 group 확정 시 전체 binding 생성", fill_groups, True, all_bindings)
-case("RA-03 viewer 는 두 Project 에 바인딩된다", fill_groups, True, viewer_two_projects)
+case("RA-01 principal 미확정이면 Project 만 생성한다", lambda spec, status: None, True, projects_only)
+case("RA-02 principal 확정 시 전체 binding 생성", fill_principals, True, all_bindings)
+case("RA-03 viewer 는 두 Project 에 바인딩된다", fill_principals, True, viewer_two_projects)
 case(
     "RA-04 계획서 7.2 밖의 역할 거부",
     lambda spec, status: spec["rancher"]["roleBindings"].append(
-        {"role": "super-admin", "scope": "global", "globalRole": "admin", "group": "x"}
+        {"role": "super-admin", "scope": "global", "globalRole": "admin", "principal": "oidc_group://x"}
     ),
     False,
 )
 case(
     "RA-05 없는 Project 참조 거부",
     lambda spec, status: (
-        fill_groups(spec, status),
+        fill_principals(spec, status),
         spec["rancher"]["roleBindings"][1]["projects"].append("nope-missing-project"),
     ),
     False,
@@ -178,7 +175,7 @@ case(
 case(
     "RA-06 알 수 없는 scope 거부",
     lambda spec, status: (
-        fill_groups(spec, status),
+        fill_principals(spec, status),
         spec["rancher"]["roleBindings"][0].update({"scope": "cluster"}),
     ),
     False,
@@ -187,11 +184,11 @@ case(
     "RA-07 중복 역할 선언 거부",
     lambda spec, status: spec["rancher"]["roleBindings"].append(
         {"role": "viewer", "scope": "project", "roleTemplate": "read-only",
-         "projects": [spec["rancher"]["projects"][0]["name"]], "group": "dup"}
+         "projects": [spec["rancher"]["projects"][0]["name"]], "principal": "oidc_group://dup"}
     ),
     False,
 )
-case("RA-08 --check 는 미동기화 산출물을 잡는다", fill_groups, False, arguments=("--check",))
+case("RA-08 --check 는 미동기화 산출물을 잡는다", fill_principals, False, arguments=("--check",))
 case(
     # Rancher 는 Project 이름과 같은 backing Namespace 를 만든다. 워크로드 Namespace 와
     # 이름이 겹치면 한 Namespace 가 워크로드와 RBAC 보관 두 용도로 섞인다.
@@ -204,7 +201,7 @@ case(
 case(
     "RA-10 binding 에 개별 사용자/비밀번호 필드 거부",
     lambda spec, status: (
-        fill_groups(spec, status),
+        fill_principals(spec, status),
         spec["rancher"]["roleBindings"][0].update({"user": "someone"}),
     ),
     False,

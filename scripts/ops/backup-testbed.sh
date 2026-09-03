@@ -1,7 +1,8 @@
 #!/usr/bin/env bash
-# RKE2 etcd, OpenBao Raft, Keycloak PostgreSQL을 root-only 디렉터리에 백업한다.
+# RKE2 etcd와 OpenBao Raft를 root-only 디렉터리에 백업한다.
 set -euo pipefail
 source "$(dirname "$0")/../lib/testbed-common.sh"
+source "$(dirname "$0")/../lib/openbao-eso.sh"
 
 require_root
 for command in jq sha256sum; do require_command "${command}"; done
@@ -19,6 +20,7 @@ install -m 0600 /var/lib/rancher/rke2/server/token "${run_dir}/rke2-server-token
 ok "RKE2 etcd snapshot 생성"
 
 openbao_init=${TESTBED_STATE_DIR}/openbao-init.json
+openbao_require_unsealed 2m
 [[ -s ${openbao_init} ]] || die "OpenBao 초기화 상태 파일 없음: ${openbao_init}"
 jq -e '.root_token | type == "string" and length > 0' "${openbao_init}" >/dev/null \
   || die "OpenBao root token 없음"
@@ -37,26 +39,6 @@ kctl cp -n openbao -c openbao "openbao-0:${openbao_remote}" "${openbao_local}" >
 kctl exec -n openbao openbao-0 -- rm -f "${openbao_remote}"
 [[ -s ${openbao_local} ]] || die "OpenBao Raft snapshot 복사 실패"
 ok "OpenBao Raft snapshot 생성"
-
-if keycloak_is_external; then
-  # 외부 Keycloak은 DB도 외부 VM에 있다. 이 저장소의 백업 대상이 아니므로 건너뛴다.
-  note "Keycloak deployment=external: PostgreSQL 백업은 외부 VM 책임(docs/keycloak-external.md)"
-else
-  postgres_remote=/tmp/keycloak-${timestamp}.dump
-  postgres_local=${run_dir}/keycloak-postgresql.dump
-  kctl exec -n keycloak keycloak-postgresql-0 -- sh -ceu '
-    umask 077
-    PGPASSWORD="$POSTGRES_PASSWORD" pg_dump \
-      --username="$POSTGRES_USER" --dbname="$POSTGRES_DB" \
-      --format=custom --file="$1"
-    pg_restore --list "$1" >/dev/null
-  ' sh "${postgres_remote}"
-  kctl cp -n keycloak -c postgresql \
-    "keycloak-postgresql-0:${postgres_remote}" "${postgres_local}" >/dev/null
-  kctl exec -n keycloak keycloak-postgresql-0 -- rm -f "${postgres_remote}"
-  [[ -s ${postgres_local} ]] || die "Keycloak PostgreSQL dump 복사 실패"
-  ok "Keycloak PostgreSQL custom dump 생성 및 catalog 검사"
-fi
 
 kctl get nodes -o wide >"${run_dir}/cluster-inventory.txt"
 kctl get gateway,httproute -A >"${run_dir}/gateway-inventory.txt"

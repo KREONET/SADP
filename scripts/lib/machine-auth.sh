@@ -1,6 +1,7 @@
 #!/usr/bin/env bash
 # 기계 API 키의 OpenBao 원본과 ESO/Gateway 수렴을 공통 처리한다.
 # 이 파일은 bao/bao_input/kctl과 testbed-common.sh를 준비한 root 스크립트에서 source한다.
+source "$(dirname "${BASH_SOURCE[0]}")/openbao-eso.sh"
 
 machine_auth_load_contract() {
   local -a values
@@ -136,21 +137,10 @@ machine_auth_assert_distinct_keys() {
 }
 
 machine_auth_wait_external_secret() {
-  local client=$1 expect_next=${2:-false} external_secret secret ready
+  local client=$1 expect_next=${2:-false} external_secret secret
   external_secret="${MACHINE_AUTH_SECRET_PREFIX}${client}"
   secret="${MACHINE_AUTH_SECRET_PREFIX}${client}-api-keys"
-  kctl -n "${MACHINE_AUTH_NAMESPACE}" get externalsecret "${external_secret}" >/dev/null \
-    || die "machine-auth ExternalSecret 없음: ${MACHINE_AUTH_NAMESPACE}/${external_secret}"
-  kctl -n "${MACHINE_AUTH_NAMESPACE}" annotate externalsecret "${external_secret}" \
-    force-sync="$(date +%s)" --overwrite >/dev/null
-  ready=""
-  for _ in $(seq 1 60); do
-    ready=$(kctl -n "${MACHINE_AUTH_NAMESPACE}" get externalsecret "${external_secret}" \
-      -o jsonpath='{.status.conditions[?(@.type=="Ready")].status}' 2>/dev/null || true)
-    [[ ${ready} == True ]] && break
-    sleep 2
-  done
-  [[ ${ready} == True ]] || die "machine-auth ExternalSecret가 Ready가 아님: ${external_secret}"
+  wait_external_secret_ready "${MACHINE_AUTH_NAMESPACE}" "${external_secret}" 2m
   if [[ ${expect_next} == true ]]; then
     kctl -n "${MACHINE_AUTH_NAMESPACE}" get secret "${secret}" -o json |
       jq -e --arg active "${client}" --arg next "${client}-next" \
@@ -184,8 +174,8 @@ machine_auth_wait_policies() {
 machine_auth_bootstrap() {
   local client
   machine_auth_load_contract
-  if [[ ${MACHINE_AUTH_MODE} == keycloak ]]; then
-    note "machine-auth mode=keycloak: API 키를 생성하거나 변경하지 않음"
+  if [[ ${MACHINE_AUTH_MODE} == oidc ]]; then
+    note "machine-auth mode=oidc: API 키를 생성하거나 변경하지 않음"
     return 0
   fi
   machine_auth_validate_api_key_contract

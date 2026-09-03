@@ -1,9 +1,12 @@
 {{- if and (eq (include "app-profile.routeEnabled" .) "true") (eq (include "app-profile.authMode" .) "oidc") }}
-{{- if not .Values.platform.keycloak.issuer }}
-{{ fail "authentication.mode=oidc 인데 platform.keycloak.issuer 계약값이 비어 있다" }}
+{{- if not .Values.platform.identityProvider.issuer }}
+{{ fail "authentication.mode=oidc 인데 platform.identityProvider.issuer 계약값이 비어 있다" }}
+{{- end }}
+{{- if not .Values.platform.identityProvider.jwksURI }}
+{{ fail "authentication.mode=oidc 인데 platform.identityProvider.jwksURI 계약값이 비어 있다" }}
 {{- end }}
 {{- if not .Values.oidc.allowedGroups }}
-{{ fail "authentication.mode=oidc 인데 oidc.allowedGroups 가 비어 있다. 한 realm을 여러 시스템이 공유하므로 시스템마다 허용 그룹을 지정해야 한다" }}
+{{ fail "authentication.mode=oidc 인데 oidc.allowedGroups 가 비어 있다. 외부 IdP를 공유하므로 시스템마다 허용 그룹을 지정해야 한다" }}
 {{- end }}
 {{- range .Values.oidc.allowedGroups }}
 {{- if not (regexMatch "^[A-Za-z0-9][A-Za-z0-9._/-]*$" .) }}
@@ -35,7 +38,7 @@ spec:
       name: {{ include "app-profile.fullname" . }}
   oidc:
     provider:
-      issuer: {{ .Values.platform.keycloak.issuer | quote }}
+      issuer: {{ .Values.platform.identityProvider.issuer | quote }}
     clientID: {{ include "app-profile.oidcClientID" . | quote }}
     clientSecret:
       group: ""
@@ -49,10 +52,10 @@ spec:
       header: {{ .Values.oidc.idTokenHeader | quote }}
   jwt:
     providers:
-      - name: keycloak
-        issuer: {{ .Values.platform.keycloak.issuer | quote }}
+      - name: external-oidc
+        issuer: {{ .Values.platform.identityProvider.issuer | quote }}
         remoteJWKS:
-          uri: {{ printf "%s%s" .Values.platform.keycloak.issuer .Values.oidc.jwksPath | quote }}
+          uri: {{ .Values.platform.identityProvider.jwksURI | quote }}
         extractFrom:
           headers:
             - name: {{ .Values.oidc.idTokenHeader | quote }}
@@ -67,9 +70,9 @@ spec:
         action: Allow
         principal:
           jwt:
-            provider: keycloak
+            provider: external-oidc
             claims:
-              - name: {{ .Values.oidc.groupsClaim | quote }}
+              - name: {{ default .Values.platform.identityProvider.groupsClaim .Values.oidc.groupsClaim | quote }}
                 valueType: StringArray
                 values:
                   {{- range .Values.oidc.allowedGroups }}

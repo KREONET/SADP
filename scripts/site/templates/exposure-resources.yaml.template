@@ -28,7 +28,7 @@ metadata:
 spec:
   provider:
     type: Kubernetes
-    kubernetes:
+    kubernetes:__PUBLIC_DEPLOYMENT_CONFIG__
       envoyService:
         annotations:
           metallb.io/address-pool: __ADDRESS_POOL_NAME__

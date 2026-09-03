@@ -15,7 +15,7 @@ RKE2 token, OpenBao root token, Forgejo bot token이 필요하지 않습니다.
 ## 2. 로그인
 
 1. Portal 주소를 엽니다.
-2. Keycloak 로그인을 선택합니다.
+2. 조직 SSO 로그인을 선택합니다.
 3. 조직 SSO 화면이 나오면 조직 계정으로 로그인합니다.
 4. 다시 Portal로 돌아오는지 확인합니다.
 

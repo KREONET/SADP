@@ -1,7 +1,7 @@
 {{- if .Values.configuration.config }}
 {{- /* ConfigMap 에 민감 key 가 들어오면 렌더 단계에서 실패시킨다(CI 검사와 이중 방어) */}}
 {{- range $key, $value := .Values.configuration.config }}
-{{- if regexMatch "(?i)(PASSWORD|PASSWD|TOKEN|SECRET|PRIVATE_KEY|CREDENTIAL|API_KEY|ACCESS_KEY|DATABASE_URL|DB_URL|DSN|CONNECTION_STRING|AUTHORIZATION|BEARER)" $key }}
+{{- if and (ne $key "AUTH_OIDC_TOKEN_ENDPOINT") (regexMatch "(?i)(PASSWORD|PASSWD|TOKEN|SECRET|PRIVATE_KEY|CREDENTIAL|API_KEY|ACCESS_KEY|DATABASE_URL|DB_URL|DSN|CONNECTION_STRING|AUTHORIZATION|BEARER)" $key) }}
 {{ fail (printf "ConfigMap key '%s' 는 민감값이다. OpenBao + ExternalSecret 으로 이동하라" $key) }}
 {{- end }}
 {{- $text := printf "%v" $value -}}

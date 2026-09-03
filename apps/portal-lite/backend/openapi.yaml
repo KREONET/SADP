@@ -4,7 +4,7 @@ info:
   title: SADP Portal API
   version: 1.0.0-prod
   summary: 서비스 카탈로그, AppProfile/AppGroup 검증, Forgejo GitOps 배포 요청 API
-  description: '모든 /api/v1 엔드포인트는 포털 Keycloak 세션이 필요하다. 브라우저가 보낸
+  description: '모든 /api/v1 엔드포인트는 포털 외부 OIDC IdP 세션이 필요하다. 브라우저가 보낸
 
     X-Portal-User와 requester 질의값은 BFF가 신뢰하지 않으며, 세션에서 얻은 신청자를
 
@@ -36,7 +36,7 @@ servers:
     baseDomain:
       default: sadp.example.invalid
 security:
-- keycloak:
+- oidc:
   - deployments:read
 tags:
 - name: System
@@ -93,7 +93,7 @@ paths:
       summary: 배포 저장 없이 AppProfile 입력 사전검증
       description: 노출, 인증, 네트워크 정책을 독립적으로 정규화하고 배포 계획을 계산한다.
       security:
-      - keycloak:
+      - oidc:
         - deployments:write
       requestBody:
         required: true
@@ -120,7 +120,7 @@ paths:
                     egressMode: blocked
                   resourceSize: small
               sso:
-                summary: Keycloak SSO 필수 앱
+                summary: 외부 OIDC IdP SSO 필수 앱
                 value:
                   appName: internal-search
                   project: research
@@ -240,7 +240,7 @@ paths:
 
         '
       security:
-      - keycloak:
+      - oidc:
         - deployments:write
       parameters:
       - $ref: '#/components/parameters/RequesterHeader'
@@ -293,7 +293,7 @@ paths:
 
         '
       security:
-      - keycloak:
+      - oidc:
         - deployments:write
       parameters:
       - $ref: '#/components/parameters/RequesterHeader'
@@ -361,7 +361,7 @@ paths:
 
         '
       security:
-      - keycloak:
+      - oidc:
         - deployments:write
       parameters:
       - $ref: '#/components/parameters/RequesterHeader'
@@ -422,7 +422,7 @@ paths:
 
         '
       security:
-      - keycloak:
+      - oidc:
         - deployments:read
       parameters:
       - name: limit
@@ -458,7 +458,7 @@ paths:
 
         '
       security:
-      - keycloak:
+      - oidc:
         - deployments:read
       parameters:
       - name: requestID
@@ -497,7 +497,7 @@ paths:
 
         '
       security:
-      - keycloak:
+      - oidc:
         - deployments:write
       parameters:
       - name: requestID
@@ -548,7 +548,7 @@ paths:
 
         '
       security:
-      - keycloak:
+      - oidc:
         - deployments:write
       parameters:
       - name: requestID
@@ -599,9 +599,9 @@ paths:
           $ref: '#/components/responses/ForgejoUnavailable'
 components:
   securitySchemes:
-    keycloak:
+    oidc:
       type: oauth2
-      description: 'Keycloak platform realm의 포털 세션. BFF는 정확한 deployments:* client
+      description: '외부 OIDC IdP platform realm의 포털 세션. BFF는 정확한 deployments:* client
         scope를
 
         우선 지원하며 현재 bootstrap 역할도 호환한다. 조회는 platform-admin, app-admin,
@@ -613,8 +613,8 @@ components:
         '
       flows:
         authorizationCode:
-          authorizationUrl: https://sso.sadp.example.invalid/realms/sadp/protocol/openid-connect/auth
-          tokenUrl: https://sso.sadp.example.invalid/realms/sadp/protocol/openid-connect/token
+          authorizationUrl: https://idp.example.invalid/application/o/authorize/
+          tokenUrl: https://idp.example.invalid/application/o/token/
           scopes:
             deployments:read: 자신의 배포 요청 조회
             deployments:write: 배포 요청 생성
@@ -687,7 +687,7 @@ components:
           schema:
             $ref: '#/components/schemas/Problem'
     Unauthorized:
-      description: 유효한 Keycloak access token 없음
+      description: 유효한 외부 OIDC IdP access token 없음
       content:
         application/problem+json:
           schema:
@@ -1660,7 +1660,7 @@ components:
           type: string
         openbaoPath:
           type: string
-        keycloakClientId:
+        oidcClientId:
           type: string
         oidcCallbackUrl:
           type: string

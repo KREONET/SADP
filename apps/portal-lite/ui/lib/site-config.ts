@@ -12,17 +12,13 @@ export const SITE = {
 
 /**
  * 환경마다 바뀌는 외부 시스템 주소. 화면에 절대 하드코딩하지 않는다.
- * (사내/개발/운영 클러스터마다 Git·SSO 도메인이 다르다.)
+ * (사내/개발/운영 클러스터마다 Git·앱 도메인이 다르다.)
  */
 export const PLATFORM = {
   /** Git 저장소 호스트 (화면 4-5 Step 2 placeholder/검증). */
   gitBaseUrl: process.env.NEXT_PUBLIC_GIT_BASE_URL ?? "https://github.com",
   /** 예시 placeholder 에 쓰는 기본 조직명. */
   gitOrg: process.env.NEXT_PUBLIC_GIT_DEFAULT_ORG ?? "organization",
-  /** SSO(Keycloak) 도메인 (화면 4-5 Step 4, 화면 7 서비스 카탈로그). */
-  ssoBaseUrl:
-    process.env.NEXT_PUBLIC_SSO_BASE_URL ?? "https://sso.sadp.example.invalid",
-  ssoRealm: process.env.NEXT_PUBLIC_SSO_REALM ?? "sadp",
   /** 앱이 노출될 기본 도메인 (호스트명 placeholder). */
   appDomain:
     process.env.NEXT_PUBLIC_PAAS_APP_DOMAIN ?? "apps.sadp.example.invalid",
@@ -41,9 +37,6 @@ export const LEGACY_TOOLS = {
   rancherUrl:
     process.env.NEXT_PUBLIC_RANCHER_BASE_URL ??
     "https://rancher.sadp.example.invalid",
-  keycloakUrl:
-    process.env.NEXT_PUBLIC_LEGACY_SSO_BASE_URL ??
-    "https://sso.sadp.example.invalid",
   apiContractUrl: "/api/v1/openapi.yaml",
 } as const;
 

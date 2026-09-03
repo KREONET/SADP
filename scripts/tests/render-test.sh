@@ -823,12 +823,12 @@ fi
 if grep -q '^kind: ExternalSecret$' $TMP/public.yaml; then
   echo "[FAIL] Secret 없는 public 템플릿이 ExternalSecret을 생성함"; FAILED=$((FAILED+1))
 else
-  echo "[OK]   Secret 없는 public 템플릿은 Keycloak/OpenBao 리소스 불필요"; PASS=$((PASS+1))
+  echo "[OK]   Secret 없는 public 템플릿은 OIDC/OpenBao 리소스 불필요"; PASS=$((PASS+1))
 fi
 if grep -q '^kind: SecurityPolicy$' $TMP/sso.yaml \
    && grep -q '^kind: ExternalSecret$' $TMP/sso.yaml \
    && grep -q "clientID: \"sample-sso-${APP_ENV}\"" $TMP/sso.yaml; then
-  echo "[OK]   SSO 템플릿은 Keycloak 인증을 강제"; PASS=$((PASS+1))
+  echo "[OK]   SSO 템플릿은 외부 OIDC 인증을 강제"; PASS=$((PASS+1))
 else
   echo "[FAIL] 템플릿의 OIDC 리소스 누락"; FAILED=$((FAILED+1))
 fi
@@ -908,10 +908,10 @@ then
 else
   echo "[FAIL] OIDC client Secret 이름 불일치"; FAILED=$((FAILED+1))
 fi
-# 한 realm을 여러 시스템이 공유하므로 로그인만으로 통과하면 안 된다. 시스템마다 허용 그룹을
-# 선언하고 그 그룹만 Allow 되는지 본다.
+# 외부 IdP 로그인이 성공해도 승인 그룹이 아니면 통과하면 안 된다. 앱이 선언한 그룹만
+# Allow 되는지 본다.
 if grep -q 'defaultAction: Deny' $TMP/sso.yaml \
-   && grep -q 'provider: keycloak' $TMP/sso.yaml \
+   && grep -q 'provider: external-oidc' $TMP/sso.yaml \
    && grep -q '"sample-sso-user"' $TMP/sso.yaml; then
   echo "[OK]   SSO 템플릿은 허용 그룹만 통과시킨다"; PASS=$((PASS+1))
 else
@@ -958,8 +958,8 @@ def typed(prefix, slug):
     digest = hashlib.sha256(f"{prefix}|{canonical}".encode()).hexdigest()[:10]
     return f"{prefix}{slug[:52-len(prefix)].rstrip('-')}-{digest}"
 print(typed("ga-", "api-mobility-platform"))
-print(typed("kc-a-", f"mobility-platform-api-{environment}"))
-print(typed("kg-a-", "mobility-platform-api-user"))
+print(typed("oc-a-", f"mobility-platform-api-{environment}"))
+print(typed("og-a-", "mobility-platform-api-user"))
 print(typed("css-a-", "mobility-platform-api"))
 print(typed("eso-sa-a-", "api"))
 print(typed("np-i-", "api"))
@@ -967,7 +967,7 @@ print(typed("np-e-", "api"))
 PY
 )
 GROUP_APP_HOST=${GROUP_TYPED_NAMES[0]}.${BASE_DOMAIN}
-GROUP_KEYCLOAK_CLIENT=${GROUP_TYPED_NAMES[1]}
+GROUP_OIDC_CLIENT=${GROUP_TYPED_NAMES[1]}
 GROUP_ALLOWED_GROUP=${GROUP_TYPED_NAMES[2]}
 GROUP_SECRET_STORE=${GROUP_TYPED_NAMES[3]}
 GROUP_ESO_SA=${GROUP_TYPED_NAMES[4]}
@@ -981,7 +981,7 @@ helm template group-sso charts/app-profile -n app-mobility-platform -f $CONTRACT
   --set-string "exposure.host=${GROUP_APP_HOST}" \
   --set-string "configuration.externalSecrets[0].remotePath=apps/${APP_PROJECT}/${APP_ENV}/workloads/app-mobility-platform/${GROUP_ESO_SA}" \
   --set-string "oidc.allowedGroups[0]=${GROUP_ALLOWED_GROUP}" >$TMP/group-sso.yaml
-if grep -q "clientID: \"${GROUP_KEYCLOAK_CLIENT}\"" $TMP/group-sso.yaml \
+if grep -q "clientID: \"${GROUP_OIDC_CLIENT}\"" $TMP/group-sso.yaml \
    && grep -q "name: ${GROUP_SECRET_STORE}" $TMP/group-sso.yaml \
    && grep -q "name: ${GROUP_ESO_SA}" $TMP/group-sso.yaml \
    && grep -q "name: ${GROUP_INGRESS_NP}" $TMP/group-sso.yaml \

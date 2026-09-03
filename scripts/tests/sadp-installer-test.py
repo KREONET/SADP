@@ -50,7 +50,7 @@ check(
     "SI-01 example site.env render plan is read-only",
     ["bash", "./sadp", "--install", "--env-file", str(ENV_FILE), "--phase", "render"],
     0,
-    ("site=sadp", "검사만 완료"),
+    ("site=sadp", "외부 OIDC issuer 연결:", "IdP 설정은 설치기 관리 대상 아님", "검사만 완료"),
 )
 check(
     "SI-02 worker role/IP and node steps are inferred from env",
@@ -117,7 +117,7 @@ check(
     ],
     0,
     (
-        "Keycloak 통합 설치: in-cluster, node-placement=any",
+        "외부 OIDC issuer 연결:",
         "기존 RKE2 클러스터 선행 조건 검사",
         "Devtron과 번들 Argo CD 자동 준비",
         "scripts/cluster/install-devtron.sh",

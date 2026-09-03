@@ -128,7 +128,7 @@ func writeOpenBaoContractUnavailable(w http.ResponseWriter, profile normalizedPr
 	detail := "앱의 canonical OpenBao 경로와 ExternalSecret key가 준비되지 않았습니다. 플랫폼 관리자에게 시드를 요청하세요."
 	if profile.authMode() == authOIDC {
 		title = "OIDC 인증 준비 안 됨"
-		detail = "Keycloak client ID, /oauth2/callback, 허용 그룹과 OpenBao OIDC client secret 계약을 관리자가 준비해야 합니다."
+		detail = "외부 IdP client ID, /oauth2/callback, 허용 그룹과 OpenBao OIDC client secret 계약을 관리자가 준비해야 합니다."
 	}
 	writeProblem(w, http.StatusServiceUnavailable,
 		"urn:sadp:portal:problem:openbao-contract-unavailable", title, detail, nil)

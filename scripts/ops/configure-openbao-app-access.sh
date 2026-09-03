@@ -1,22 +1,23 @@
 #!/usr/bin/env bash
-# 앱별 OpenBao 정책/OIDC role을 만든다. Keycloak 그룹 구성원 추가는 관리자 UI에서만 한다.
+# 앱별 OpenBao 정책/OIDC role을 만든다. 외부 IdP 그룹 구성원 추가는 IdP 관리자가 수행한다.
 set -euo pipefail
 source "$(dirname "$0")/../lib/testbed-common.sh"
+source "$(dirname "$0")/../lib/openbao-eso.sh"
 
 APP=""
 APP_GROUP=""
-KEYCLOAK_GROUP=""
+OIDC_GROUP=""
 APPLY=false
 while (($#)); do
   case "$1" in
     --app) APP=${2:?--app 값 필요}; shift ;;
-    # 기존 --group은 Keycloak group override다. AppGroup 이름으로 재사용하면 기존 자동화가
+    # 기존 --group은 OIDC group override다. AppGroup 이름으로 재사용하면 기존 자동화가
     # 조용히 다른 group에 묶이므로 새 의미는 별도 인자로만 받는다.
     --app-group) APP_GROUP=${2:?--app-group 값 필요}; shift ;;
-    --group) KEYCLOAK_GROUP=${2:?--group 값 필요}; shift ;;
+    --group) OIDC_GROUP=${2:?--group 값 필요}; shift ;;
     --apply) APPLY=true ;;
     -h|--help)
-      echo "usage: sudo bash $0 --app <app-name> [--app-group <group>] [--group <keycloak-group>] [--apply]"
+      echo "usage: sudo bash $0 --app <app-name> [--app-group <group>] [--group <oidc-group>] [--apply]"
       exit 0 ;;
     *) die "알 수 없는 인자: $1" ;;
   esac
@@ -97,18 +98,18 @@ if [[ -n ${APP_GROUP} ]]; then
   APP_NAMESPACE="${NAMESPACE_PREFIX}${APP_GROUP}"
   REGISTRY_ROLE=${GROUP_REGISTRY_ESO_ROLE}
   REGISTRY_SERVICE_ACCOUNT=eso-registry
-  : "${KEYCLOAK_GROUP:=openbao-${ROLE}}"
+  : "${OIDC_GROUP:=openbao-${ROLE}}"
 else
   ROLE="app-${PROJECT}-${ENVIRONMENT}-${APP}"
   ESO_ROLE=${ZONE_APP_ESO_ROLE}
   ESO_SERVICE_ACCOUNT="eso-${APP}"
   APP_NAMESPACE="${ZONE_NAMESPACE}"
-  : "${KEYCLOAK_GROUP:=openbao-app-${PROJECT}-${ENVIRONMENT}-${APP}}"
+  : "${OIDC_GROUP:=openbao-app-${PROJECT}-${ENVIRONMENT}-${APP}}"
 fi
 PATH_PREFIX="apps/${PROJECT}/${ENVIRONMENT}/workloads/${APP_NAMESPACE}/${ESO_SERVICE_ACCOUNT}"
-[[ ${KEYCLOAK_GROUP} =~ ^[A-Za-z0-9._:-]{1,128}$ ]] || die "Keycloak group 이름 형식 오류"
+[[ ${OIDC_GROUP} =~ ^[A-Za-z0-9._:/-]{1,128}$ ]] || die "OIDC group 이름 형식 오류"
 
-note "Keycloak 관리자 UI에서 group '${KEYCLOAK_GROUP}'을 만들고 승인된 사용자만 구성원으로 추가한다."
+note "외부 IdP 관리자 UI에서 group '${OIDC_GROUP}'을 만들고 승인된 사용자만 구성원으로 추가한다."
 note "OpenBao login role: ${ROLE}"
 note "ESO Kubernetes auth role: ${ESO_ROLE} (SA ${APP_NAMESPACE}/${ESO_SERVICE_ACCOUNT})"
 note "허용 경로: kv/${PATH_PREFIX}"
@@ -117,6 +118,8 @@ if [[ -n ${APP_GROUP} ]]; then
 fi
 [[ ${APPLY} == true ]] || { note "계획만 출력함. 적용하려면 --apply"; exit 0; }
 
+# policy/role을 쓰기 전에 sealed 상태를 확인해 bao의 503을 일반 write 실패로 숨기지 않는다.
+openbao_require_unsealed 2m
 INIT_FILE=${TESTBED_STATE_DIR}/openbao-init.json
 [[ -s ${INIT_FILE} ]] || die "OpenBao 초기화 파일 없음: ${INIT_FILE}"
 jq -e '.root_token | type == "string" and length > 0' "${INIT_FILE}" >/dev/null || \
@@ -168,7 +171,7 @@ if [[ -n ${APP_GROUP} ]]; then
     || die "registry pull seed 없음: kv/${REGISTRY_REMOTE_PATH} (deploy-testbed-apps.sh 선행 필요)"
 fi
 
-jq -n --arg group "${KEYCLOAK_GROUP}" --arg policy "${ROLE}" \
+jq -n --arg group "${OIDC_GROUP}" --arg policy "${ROLE}" \
   --arg host "openbao.${BASE_DOMAIN}" '{
     role_type:"oidc", user_claim:"preferred_username", groups_claim:"groups",
     bound_audiences:["openbao"], token_policies:[$policy], token_ttl:"1h",
@@ -178,4 +181,4 @@ jq -n --arg group "${KEYCLOAK_GROUP}" --arg policy "${ROLE}" \
       "http://localhost:8250/oidc/callback"
     ]}' | bao_input write "auth/oidc/role/${ROLE}" - >/dev/null
 
-ok "앱별 OpenBao policy/role 적용: ${ROLE} (group=${KEYCLOAK_GROUP})"
+ok "앱별 OpenBao policy/role 적용: ${ROLE} (group=${OIDC_GROUP})"

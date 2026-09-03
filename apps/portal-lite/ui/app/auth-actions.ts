@@ -6,10 +6,9 @@ import { redirect, RedirectType } from "next/navigation";
 
 import { signOut } from "@/auth";
 import {
-  endKeycloakSession,
-  keycloakBrowserLogoutURL,
-  type KeycloakTokenState,
-} from "@/lib/keycloak-token";
+  oidcBrowserLogoutURL,
+  type OIDCTokenState,
+} from "@/lib/oidc-token";
 
 function requiredRuntimeEnvironment(name: string): string {
   const value = process.env[name];
@@ -17,7 +16,7 @@ function requiredRuntimeEnvironment(name: string): string {
   return value;
 }
 
-async function authToken(): Promise<KeycloakTokenState | null> {
+async function authToken(): Promise<OIDCTokenState | null> {
   const authURL = new URL(requiredRuntimeEnvironment("AUTH_URL"));
   const requestHeaders = await headers();
   const secret = requiredRuntimeEnvironment("AUTH_SECRET");
@@ -31,32 +30,20 @@ async function authToken(): Promise<KeycloakTokenState | null> {
   );
 }
 
-export async function signOutFromKeycloak(): Promise<never> {
-  const issuer = requiredRuntimeEnvironment("AUTH_KEYCLOAK_ISSUER");
-  const clientId = requiredRuntimeEnvironment("AUTH_KEYCLOAK_ID");
+export async function signOutFromOIDC(): Promise<never> {
+  const clientId = requiredRuntimeEnvironment("AUTH_OIDC_ID");
   const authURL = new URL(requiredRuntimeEnvironment("AUTH_URL"));
   const postLogoutRedirectUri = new URL("/portal", authURL).toString();
   const token = await authToken();
-
-  // 이 기능 배포 전에 만들어진 Auth.js 쿠키에는 ID token이 없다. 그 세션만 백채널로
-  // 먼저 끊고, 새 세션은 브라우저 RP logout으로 Keycloak/상위 SAML 로그아웃을 전파한다.
-  if (token?.refreshToken && !token.idToken) {
-    try {
-      await endKeycloakSession(token, {
-        issuer,
-        clientId,
-        clientSecret: requiredRuntimeEnvironment("AUTH_KEYCLOAK_SECRET"),
-      });
-    } catch (error) {
-      console.warn("기존 Keycloak 세션 백채널 종료 실패", error);
-    }
-  }
-
-  const keycloakLogout = keycloakBrowserLogoutURL(token ?? {}, {
-    issuer,
-    clientId,
-    postLogoutRedirectUri,
-  });
   await signOut({ redirect: false });
-  redirect(keycloakLogout, RedirectType.replace);
+  const endSessionEndpoint = process.env.AUTH_OIDC_END_SESSION_ENDPOINT;
+  if (!endSessionEndpoint) redirect(postLogoutRedirectUri, RedirectType.replace);
+  redirect(
+    oidcBrowserLogoutURL(token ?? {}, {
+      endSessionEndpoint,
+      clientId,
+      postLogoutRedirectUri,
+    }),
+    RedirectType.replace,
+  );
 }

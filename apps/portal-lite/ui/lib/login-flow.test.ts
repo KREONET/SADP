@@ -2,10 +2,10 @@ import { describe, expect, it, vi } from "vitest";
 
 import { en, ko } from "./i18n/messages/legacy";
 import {
-  keycloakAuthorizationParams,
+  oidcAuthorizationParams,
   needsAuthenticationRecovery,
   safeLoginCallback,
-  startKeycloakLogin,
+  startOIDCLogin,
 } from "./login-flow";
 
 describe("login recovery presentation", () => {
@@ -53,7 +53,7 @@ describe("safe login callback", () => {
   });
 });
 
-describe("Keycloak authorization restart", () => {
+describe("OIDC authorization restart", () => {
   function actions(order: string[]) {
     return {
       signOut: vi.fn(async () => {
@@ -69,7 +69,7 @@ describe("Keycloak authorization restart", () => {
     const order: string[] = [];
     const authActions = actions(order);
 
-    await startKeycloakLogin(authActions, {
+    await startOIDCLogin(authActions, {
       callbackUrl: "/my-apps",
       locale: "ko",
       fresh: false,
@@ -78,7 +78,7 @@ describe("Keycloak authorization restart", () => {
     expect(order).toEqual(["signIn"]);
     expect(authActions.signOut).not.toHaveBeenCalled();
     expect(authActions.signIn).toHaveBeenCalledWith(
-      "keycloak",
+      "oidc",
       { redirectTo: "/my-apps" },
       { ui_locales: "ko" },
     );
@@ -88,7 +88,7 @@ describe("Keycloak authorization restart", () => {
     const order: string[] = [];
     const authActions = actions(order);
 
-    await startKeycloakLogin(authActions, {
+    await startOIDCLogin(authActions, {
       callbackUrl: "/my-apps",
       locale: "en",
       fresh: true,
@@ -97,7 +97,7 @@ describe("Keycloak authorization restart", () => {
     expect(order).toEqual(["signOut", "signIn"]);
     expect(authActions.signOut).toHaveBeenCalledWith({ redirect: false });
     expect(authActions.signIn).toHaveBeenCalledWith(
-      "keycloak",
+      "oidc",
       { redirectTo: "/my-apps" },
       { prompt: "login", ui_locales: "en" },
     );
@@ -107,12 +107,12 @@ describe("Keycloak authorization restart", () => {
     const order: string[] = [];
     const authActions = actions(order);
 
-    await startKeycloakLogin(authActions, {
+    await startOIDCLogin(authActions, {
       callbackUrl: "/my-apps?tab=first",
       locale: "ko",
       fresh: true,
     });
-    await startKeycloakLogin(authActions, {
+    await startOIDCLogin(authActions, {
       callbackUrl: "/my-apps?tab=second",
       locale: "en",
       fresh: true,
@@ -121,20 +121,20 @@ describe("Keycloak authorization restart", () => {
     expect(order).toEqual(["signOut", "signIn", "signOut", "signIn"]);
     expect(authActions.signIn).toHaveBeenNthCalledWith(
       1,
-      "keycloak",
+      "oidc",
       { redirectTo: "/my-apps?tab=first" },
       { prompt: "login", ui_locales: "ko" },
     );
     expect(authActions.signIn).toHaveBeenNthCalledWith(
       2,
-      "keycloak",
+      "oidc",
       { redirectTo: "/my-apps?tab=second" },
       { prompt: "login", ui_locales: "en" },
     );
   });
 
   it("builds a fresh authorization parameter set with prompt and locale", () => {
-    const query = new URLSearchParams(keycloakAuthorizationParams("en", true));
+    const query = new URLSearchParams(oidcAuthorizationParams("en", true));
     expect(query.get("prompt")).toBe("login");
     expect(query.get("ui_locales")).toBe("en");
     expect([...query.keys()].sort()).toEqual(["prompt", "ui_locales"]);

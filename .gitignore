@@ -13,6 +13,8 @@ __pycache__/
 *.key
 *root-token*
 *unseal*
+# 복구 재료는 계속 무시하되, 값이 없는 명시적 복구 명령 구현만 정확한 경로로 추적한다.
+!scripts/ops/unseal-openbao.sh
 *registry-token*
 *dns-api-token*
 *db-dump*

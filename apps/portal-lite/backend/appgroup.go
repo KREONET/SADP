@@ -113,11 +113,11 @@ func externalHostLabel(profile normalizedProfile) string {
 	return typedDNSName("ga-", profile.App.Name+"-"+profile.App.Group, canonicalAppID(profile))
 }
 
-func keycloakClientID(profile normalizedProfile) string {
+func oidcClientID(profile normalizedProfile) string {
 	if profile.App.Group == "" {
 		return profile.App.Name + "-" + profile.App.Environment
 	}
-	return typedDNSName("kc-a-", profile.App.Group+"-"+profile.App.Name+"-"+profile.App.Environment,
+	return typedDNSName("oc-a-", profile.App.Group+"-"+profile.App.Name+"-"+profile.App.Environment,
 		canonicalAppID(profile))
 }
 
@@ -125,7 +125,7 @@ func oidcAllowedGroup(profile normalizedProfile) string {
 	if profile.App.Group == "" {
 		return profile.App.Name + "-user"
 	}
-	return typedDNSName("kg-a-", profile.App.Group+"-"+profile.App.Name+"-user", canonicalAppID(profile))
+	return typedDNSName("og-a-", profile.App.Group+"-"+profile.App.Name+"-user", canonicalAppID(profile))
 }
 
 // typedDNSName은 종류(prefix)와 canonical identity를 함께 해시해 63자 DNS label을 만든다.

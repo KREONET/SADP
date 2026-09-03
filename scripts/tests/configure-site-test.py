@@ -33,21 +33,22 @@ ACME_ACCOUNT_SECRET_NAME=prod-acme-account-key
 PORTAL_HOST=
 HELLO_HOST=
 SECURE_DEMO_HOST=
-SSO_HOST=
 RANCHER_HOST=
 OPENBAO_HOST=
 EXTERNAL_SERVICES=
-MACHINE_AUTH_MODE=keycloak
+MACHINE_AUTH_MODE=oidc
 MACHINE_AUTH_SERVICES=
 MACHINE_AUTH_CLIENTS=
 MACHINE_AUTH_ALLOWED_CIDRS=
-KEYCLOAK_REALM=platform
-PORTAL_KEYCLOAK_CLIENT_ID=portal-prod
-KEYCLOAK_DEPLOYMENT=in-cluster
-KEYCLOAK_NODE_PLACEMENT=any
-KEYCLOAK_EXTERNAL_ADDRESS=
-KEYCLOAK_EXTERNAL_PORT=8080
-KEYCLOAK_SAML_SP_ENTITY_ID=
+IDENTITY_SOURCE_PROTOCOL=openid
+OIDC_ISSUER=https://idp.company.kr/application/o/sadp
+OIDC_AUTHORIZATION_ENDPOINT=https://idp.company.kr/application/o/authorize/
+OIDC_TOKEN_ENDPOINT=https://idp.company.kr/application/o/token/
+OIDC_JWKS_URI=https://idp.company.kr/application/o/sadp/jwks/
+OIDC_END_SESSION_ENDPOINT=
+OIDC_GROUPS_CLAIM=groups
+OIDC_CLIENT_ID_CLAIM=azp
+PORTAL_OIDC_CLIENT_ID=portal-prod
 STORAGE_CLASS=local-path
 APP_GROUP_VOLUME_SIZE=5Gi
 APP_GROUP_MAX_SERVICES=5
@@ -80,6 +81,7 @@ KUBELET_PORT=10250
 CANAL_VXLAN_UDP_PORT=8472
 PUBLIC_IP=203.0.113.10
 PUBLIC_EXPOSURE_MODE=nat
+PUBLIC_IP_NODE=
 GATEWAY_VIP=10.20.30.200
 GATEWAY_ADDRESS_POOL=10.20.30.200-10.20.30.220
 PUBLIC_HTTP_PORT=80
@@ -125,8 +127,7 @@ def run_env(text: str, *, write: bool = False) -> tuple[subprocess.CompletedProc
         shutil.copy2(ROOT / "scripts/site/configure-site.py", workspace / "scripts/site/configure-site.py")
         shutil.copy2(ROOT / "contracts/platform-production.yaml", workspace / "contracts/platform-production.yaml")
         # --check still prepares every target in memory, so copy the read dependencies.
-        # scripts/site/templates 도 읽기 의존성이다. in-cluster Keycloak 계약은 --check 에서도
-        # keycloak-in-cluster.yaml.template 을 열기 때문에, 빠지면 그 case 만 파일 없음으로 죽는다.
+        # scripts/site/templates도 --check에서 읽는 의존성이므로 합성 workspace에 복사한다.
         for relative in ("apps", "argocd", "rke", "platform", "scripts/site/templates"):
             shutil.copytree(
                 ROOT / relative,
@@ -342,11 +343,13 @@ def verify_generated(workspace: pathlib.Path) -> str:
     )
     if "iface: ens192" not in canal.get("spec", {}).get("valuesContent", ""):
         return "internal interface was not generated into the RKE2 Canal config"
-    keycloak = (workspace / "platform/keycloak/resources.yaml").read_text(encoding="utf-8")
-    if "https://sso.prod.company.kr" not in keycloak:
-        return "Keycloak public hostname mismatch"
-    if spec["keycloak"].get("nodePlacement") != "any":
-        return "default Keycloak node placement mismatch"
+    identity = spec.get("identityProvider") or {}
+    if identity.get("managed") != "external":
+        return "identity provider must remain external"
+    if identity.get("issuer") != "https://idp.company.kr/application/o/sadp":
+        return f"external OIDC issuer mismatch: {identity.get('issuer')}"
+    if any(path.is_file() for path in (workspace / "platform/keycloak").rglob("*")):
+        return "managed identity-provider manifest was generated"
     quota_documents = [
         item
         for item in yaml.safe_load_all(
@@ -417,6 +420,8 @@ def generated_direct_public(workspace: pathlib.Path, result: subprocess.Complete
     contract = yaml.safe_load((workspace / "contracts/platform-production.yaml").read_text(encoding="utf-8"))
     if contract["spec"]["public"]["mode"] != "direct":
         return "direct public mode was not written to the contract"
+    if contract["spec"]["public"].get("nodeName") != "prod-worker-1":
+        return "direct public node was not written to the contract"
     documents = [
         item
         for item in yaml.safe_load_all(
@@ -426,6 +431,13 @@ def generated_direct_public(workspace: pathlib.Path, result: subprocess.Complete
     ]
     envoy_proxy = next(item for item in documents if item["kind"] == "EnvoyProxy")
     service = envoy_proxy["spec"]["provider"]["kubernetes"]["envoyService"]
+    if service.get("externalTrafficPolicy") != "Local":
+        return "direct public Service does not preserve source IP"
+    deployment = envoy_proxy["spec"]["provider"]["kubernetes"]["envoyDeployment"]
+    if deployment["pod"].get("nodeSelector") != {
+        "kubernetes.io/hostname": "prod-worker-1"
+    }:
+        return "direct public Envoy Pod is not pinned to the public-IP node"
     external_ips = service.get("patch", {}).get("value", {}).get("spec", {}).get("externalIPs")
     if external_ips != ["10.20.30.200", "203.0.113.10"]:
         return f"direct public externalIPs mismatch: {external_ips}"
@@ -482,10 +494,24 @@ case(
 )
 case(
     "SC-12 direct public IP renders Envoy Service externalIPs",
-    mutate(VALID, "PUBLIC_EXPOSURE_MODE=nat", "PUBLIC_EXPOSURE_MODE=direct"),
+    mutate(
+        VALID,
+        "PUBLIC_EXPOSURE_MODE=nat\nPUBLIC_IP_NODE=",
+        "PUBLIC_EXPOSURE_MODE=direct\nPUBLIC_IP_NODE=prod-worker-1",
+    ),
     True,
     generated_direct_public,
     write=True,
+)
+case(
+    "SC-12b direct public mode requires the public-IP node",
+    mutate(VALID, "PUBLIC_EXPOSURE_MODE=nat", "PUBLIC_EXPOSURE_MODE=direct"),
+    False,
+)
+case(
+    "SC-12c nat mode rejects a stale public-IP node",
+    mutate(VALID, "PUBLIC_IP_NODE=", "PUBLIC_IP_NODE=prod-worker-1"),
+    False,
 )
 case(
     "SC-13 Portal만 baseDomain apex listener를 선택",
@@ -495,165 +521,40 @@ case(
     write=True,
 )
 
-KEYCLOAK_EXTERNAL = mutate(
-    mutate(VALID, "KEYCLOAK_DEPLOYMENT=in-cluster", "KEYCLOAK_DEPLOYMENT=external"),
-    "KEYCLOAK_EXTERNAL_ADDRESS=",
-    "KEYCLOAK_EXTERNAL_ADDRESS=10.20.30.60",
-)
-
-
-def generated_external_keycloak(workspace: pathlib.Path, _result) -> str:
-    contract = yaml.safe_load(
+def generated_saml_source(workspace: pathlib.Path, _result) -> str:
+    identity = yaml.safe_load(
         (workspace / "contracts/platform-production.yaml").read_text(encoding="utf-8")
-    )["spec"]
-    keycloak = contract.get("keycloak") or {}
-    if keycloak.get("deployment") != "external":
-        return "external keycloak deployment was not written to the contract"
-    if (keycloak.get("external") or {}).get("address") != "10.20.30.60":
-        return f"external keycloak address mismatch: {keycloak.get('external')}"
-    if keycloak.get("samlSpEntityId") != "https://sso.prod.company.kr/realms/platform":
-        return f"external keycloak SAML SP EntityID mismatch: {keycloak.get('samlSpEntityId')}"
-    documents = [
-        item
-        for item in yaml.safe_load_all(
-            (workspace / "platform/keycloak/resources.yaml").read_text(encoding="utf-8")
-        )
-        if item
-    ]
-    kinds = [item["kind"] for item in documents]
-    if "Deployment" in kinds or "StatefulSet" in kinds:
-        return f"external mode still renders in-cluster workloads: {kinds}"
-    if "EndpointSlice" not in kinds:
-        return f"external mode did not render an EndpointSlice: {kinds}"
-    service = next(item for item in documents if item["kind"] == "Service")
-    if service["metadata"]["name"] != "keycloak":
-        return "external Service name changed; HTTPRoute backend would break"
-    if service["spec"].get("selector"):
-        return "external Service must not carry a selector"
-    endpoint_slice = next(item for item in documents if item["kind"] == "EndpointSlice")
-    addresses = [
-        value
-        for endpoint in endpoint_slice.get("endpoints") or []
-        for value in endpoint.get("addresses") or []
-    ]
-    if addresses != ["10.20.30.60"]:
-        return f"EndpointSlice address mismatch: {addresses}"
+    )["spec"]["identityProvider"]
+    if identity.get("sourceProtocol") != "saml":
+        return f"SAML upstream marker mismatch: {identity.get('sourceProtocol')}"
+    if identity.get("issuer") != "https://idp.company.kr/application/o/sadp":
+        return "SAML broker의 OIDC issuer가 바뀌었다"
     return ""
 
 
 case(
-    "SC-13 external Keycloak renders Service/EndpointSlice without workloads",
-    KEYCLOAK_EXTERNAL,
+    "SC-14 SAML upstream은 외부 broker의 OIDC 표면으로 기록",
+    mutate(VALID, "IDENTITY_SOURCE_PROTOCOL=openid", "IDENTITY_SOURCE_PROTOCOL=saml"),
     True,
-    generated_external_keycloak,
+    generated_saml_source,
     write=True,
 )
 case(
-    "SC-14 external Keycloak without an address is rejected",
-    mutate(VALID, "KEYCLOAK_DEPLOYMENT=in-cluster", "KEYCLOAK_DEPLOYMENT=external"),
+    "SC-15 알 수 없는 identity source protocol 거부",
+    mutate(VALID, "IDENTITY_SOURCE_PROTOCOL=openid", "IDENTITY_SOURCE_PROTOCOL=ldap"),
     False,
 )
 case(
-    "SC-15 in-cluster Keycloak with an external address is rejected",
-    mutate(VALID, "KEYCLOAK_EXTERNAL_ADDRESS=", "KEYCLOAK_EXTERNAL_ADDRESS=10.20.30.60"),
-    False,
-)
-
-
-def generated_control_plane_keycloak(workspace: pathlib.Path, _result) -> str:
-    contract = yaml.safe_load(
-        (workspace / "contracts/platform-production.yaml").read_text(encoding="utf-8")
-    )["spec"]
-    if contract["keycloak"].get("nodePlacement") != "control-plane":
-        return "control-plane Keycloak placement was not written to the contract"
-    documents = [
-        item
-        for item in yaml.safe_load_all(
-            (workspace / "platform/keycloak/resources.yaml").read_text(encoding="utf-8")
-        )
-        if item and item.get("kind") in {"Deployment", "StatefulSet"}
-    ]
-    if {item["kind"] for item in documents} != {"Deployment", "StatefulSet"}:
-        return "Keycloak/PostgreSQL workload set mismatch"
-    for document in documents:
-        pod_spec = document["spec"]["template"]["spec"]
-        if pod_spec.get("nodeSelector") != {
-            "node-role.kubernetes.io/control-plane": "true"
-        }:
-            return f"{document['kind']} control-plane selector mismatch"
-        tolerations = pod_spec.get("tolerations") or []
-        expected = {
-            ("CriticalAddonsOnly", "Equal", "true", "NoExecute"),
-            ("node-role.kubernetes.io/control-plane", "Equal", "true", "NoSchedule"),
-        }
-        rendered = {
-            (
-                item.get("key"),
-                item.get("operator"),
-                item.get("value"),
-                item.get("effect"),
-            )
-            for item in tolerations
-        }
-        if rendered != expected:
-            return f"{document['kind']} control-plane tolerations mismatch: {rendered}"
-    return ""
-
-
-case(
-    "SC-15d in-cluster Keycloak/PostgreSQL control-plane 올인원 배치 생성",
-    mutate(VALID, "KEYCLOAK_NODE_PLACEMENT=any", "KEYCLOAK_NODE_PLACEMENT=control-plane"),
-    True,
-    generated_control_plane_keycloak,
-    write=True,
-)
-case(
-    "SC-15e 알 수 없는 Keycloak node placement 거부",
-    mutate(VALID, "KEYCLOAK_NODE_PLACEMENT=any", "KEYCLOAK_NODE_PLACEMENT=worker"),
-    False,
-)
-case(
-    "SC-15f external Keycloak의 stale control-plane placement 거부",
-    mutate(
-        KEYCLOAK_EXTERNAL,
-        "KEYCLOAK_NODE_PLACEMENT=any",
-        "KEYCLOAK_NODE_PLACEMENT=control-plane",
-    ),
-    False,
-)
-case(
-    "SC-15b SAML SP EntityID의 IdP 호환 끝 슬래시를 보존",
+    "SC-15b OIDC endpoint의 평문 HTTP 거부",
     mutate(
         VALID,
-        "KEYCLOAK_SAML_SP_ENTITY_ID=",
-        "KEYCLOAK_SAML_SP_ENTITY_ID=https://sso.prod.company.kr/realms/platform/",
-    ),
-    True,
-    lambda workspace, _result: "" if (
-        yaml.safe_load(
-            (workspace / "contracts/platform-production.yaml").read_text(encoding="utf-8")
-        )["spec"]["keycloak"]["samlSpEntityId"]
-        == "https://sso.prod.company.kr/realms/platform/"
-    ) else "SAML SP EntityID 끝 슬래시가 계약에 보존되지 않음",
-    write=True,
-)
-case(
-    "SC-15c SAML SP EntityID가 issuer와 다른 URI면 거부",
-    mutate(
-        VALID,
-        "KEYCLOAK_SAML_SP_ENTITY_ID=",
-        "KEYCLOAK_SAML_SP_ENTITY_ID=https://wrong.prod.company.kr/realms/platform",
+        "OIDC_AUTHORIZATION_ENDPOINT=https://idp.company.kr/application/o/authorize/",
+        "OIDC_AUTHORIZATION_ENDPOINT=http://idp.company.kr/application/o/authorize/",
     ),
     False,
 )
-
 SYSTEMS_ENTRY = (
     "\nSYSTEMS=analytics=analytics.prod.company.kr\n"
-    "SYSTEM_ANALYTICS_KEYCLOAK_DEPLOYMENT=external\n"
-    "SYSTEM_ANALYTICS_KEYCLOAK_REALM=analytics\n"
-    "SYSTEM_ANALYTICS_PORTAL_CLIENT_ID=analytics-portal\n"
-    "SYSTEM_ANALYTICS_KEYCLOAK_EXTERNAL_ADDRESS=10.20.30.60\n"
-    "SYSTEM_ANALYTICS_KEYCLOAK_EXTERNAL_PORT=8080\n"
 )
 SYSTEMS_VALID = VALID + SYSTEMS_ENTRY
 
@@ -668,21 +569,12 @@ def generated_system(workspace: pathlib.Path, _result) -> str:
     system = systems[0]
     if system["domain"] != "analytics.prod.company.kr":
         return f"system domain 불일치: {system['domain']}"
-    if system["keycloak"]["issuer"] != "https://sso.analytics.prod.company.kr/realms/analytics":
-        return f"system keycloak issuer 불일치: {system['keycloak']['issuer']}"
+    if "keycloak" in system or "identityProvider" in system:
+        return "system에 독자 IdP 관리 계약이 생성됨"
     if system["workloadNamespace"] not in (contract["gateway"]["allowedRouteNamespaces"] or []):
         return "system workloadNamespace 가 allowedRouteNamespaces 에 없다"
-    system_path = workspace / "platform/systems/analytics/keycloak.yaml"
-    if not system_path.exists():
-        return "platform/systems/analytics/keycloak.yaml 이 생성되지 않았다"
-    documents = [item for item in yaml.safe_load_all(system_path.read_text(encoding="utf-8")) if item]
-    kinds = [item["kind"] for item in documents]
-    if "Deployment" in kinds or "StatefulSet" in kinds:
-        return f"external 시스템 Keycloak에 워크로드가 렌더됨: {kinds}"
-    if "EndpointSlice" not in kinds:
-        return f"external 시스템 Keycloak에 EndpointSlice 가 없다: {kinds}"
-    if "Namespace" in kinds:
-        return "시스템 Keycloak 파일에 중복 Namespace 문서가 있다(exposure 렌더러가 이미 생성함)"
+    if (workspace / "platform/systems/analytics/keycloak.yaml").exists():
+        return "system IdP manifest가 생성됨"
     gateway_doc = None
     for item in yaml.safe_load_all(
         (workspace / "platform/exposure/resources.yaml").read_text(encoding="utf-8")
@@ -698,7 +590,7 @@ def generated_system(workspace: pathlib.Path, _result) -> str:
 
 
 case(
-    "SC-16 SYSTEMS 선언 시 시스템별 Namespace/Keycloak/Gateway listener 생성",
+    "SC-16 SYSTEMS 선언 시 시스템별 Namespace/Gateway listener 생성",
     SYSTEMS_VALID,
     True,
     generated_system,
@@ -822,7 +714,7 @@ def generated_machine_auth(workspace: pathlib.Path, _result) -> str:
     auth = contract.get("machineAuth") or {}
     if entry["machineAuth"] is not True:
         return "platformServices.machineAuth는 전역 계약을 가리키는 marker여야 한다"
-    if auth.get("mode") != "keycloak":
+    if auth.get("mode") != "oidc":
         return f"mode 불일치: {auth.get('mode')}"
     if auth["clients"] != ["grafana-central"]:
         return f"clients 불일치: {auth['clients']}"
@@ -879,7 +771,7 @@ case(
 MACHINE_API_KEY_VALID = mutate(
     mutate(
         MACHINE_AUTH_VALID,
-        "MACHINE_AUTH_MODE=keycloak",
+        "MACHINE_AUTH_MODE=oidc",
         "MACHINE_AUTH_MODE=api-key",
     ),
     "MACHINE_AUTH_CLIENTS=grafana-central",
@@ -894,8 +786,8 @@ def generated_machine_api_key(workspace: pathlib.Path, _result) -> str:
     auth = contract.get("machineAuth") or {}
     if auth.get("mode") != "api-key":
         return f"api-key mode 미반영: {auth.get('mode')!r}"
-    if "keycloak" in auth:
-        return "api-key mode 계약에 machine-auth Keycloak 설정이 남았다"
+    if "oidc" in auth:
+        return "api-key mode 계약에 machine-auth OIDC 설정이 남았다"
     if set((auth.get("apiKey") or {})) != {
         "header", "remotePathPrefix", "secretStoreName", "esoServiceAccount",
         "esoRole", "credentialSecretPrefix",
@@ -945,12 +837,12 @@ case(
 )
 case(
     "SC-24b MACHINE_AUTH_MODE 누락 거부",
-    mutate(VALID, "MACHINE_AUTH_MODE=keycloak", "MACHINE_AUTH_MODE="),
+    mutate(VALID, "MACHINE_AUTH_MODE=oidc", "MACHINE_AUTH_MODE="),
     False,
 )
 case(
     "SC-24c 잘못된 MACHINE_AUTH_MODE 거부",
-    mutate(VALID, "MACHINE_AUTH_MODE=keycloak", "MACHINE_AUTH_MODE=basic"),
+    mutate(VALID, "MACHINE_AUTH_MODE=oidc", "MACHINE_AUTH_MODE=basic"),
     False,
 )
 case(
@@ -1235,6 +1127,31 @@ case(
     ),
     False,
 )
+
+monitoring_backend_disabled = mutate(
+    mutate(
+        mutate(
+            VALID + "SADP_INSTALL_MONITORING=false\n",
+            "MACHINE_AUTH_SERVICES=",
+            "MACHINE_AUTH_SERVICES=metrics=monitoring/prometheus-server:80",
+        ),
+        "MACHINE_AUTH_CLIENTS=",
+        "MACHINE_AUTH_CLIENTS=grafana-central",
+    ),
+    "MACHINE_AUTH_ALLOWED_CIDRS=",
+    "MACHINE_AUTH_ALLOWED_CIDRS=192.0.2.40/32",
+)
+case(
+    "SC-44 monitoring 비활성인데 monitoring backend 노출을 요청하면 거부한다",
+    monitoring_backend_disabled,
+    False,
+)
+case(
+    "SC-45 monitoring 비활성이고 관련 backend가 없으면 허용한다",
+    VALID + "SADP_INSTALL_MONITORING=false\n",
+    True,
+)
+
 
 print(f"통과 {PASSED} / 실패 {FAILED}")
 raise SystemExit(FAILED != 0)

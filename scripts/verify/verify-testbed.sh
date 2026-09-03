@@ -9,14 +9,12 @@ require_command curl
 require_command python3
 require_command jq
 require_command sha256sum
-require_command ssh
 fail=0
 check() { if "$@"; then ok "$*"; else printf '[FAIL] %s\n' "$*" >&2; fail=1; fi; }
 WORKLOAD_NAMESPACE=$(workload_namespace) || exit 1
 
 mapfile -t contract_values < <(python3 - <<'PY'
 import yaml
-from urllib.parse import urlparse
 
 doc = yaml.safe_load(open("contracts/platform-production.yaml", encoding="utf-8"))
 spec = doc["spec"]
@@ -32,17 +30,10 @@ print(interfaces.get("internal") or "")
 print(interfaces.get("external") or "")
 print(",".join(str(item) for item in interfaces.get("guarded") or []))
 print(",".join(str(item) for item in spec["network"]["allowedPorts"]["internalTCP"]))
-# Gateway 이름과 realm 을 박아 두면 이름을 바꾼 사이트에서 멀쩡한 클러스터가
+# Gateway 이름을 박아 두면 이름을 바꾼 사이트에서 멀쩡한 클러스터가
 # [FAIL] 로 보인다. 검수 스크립트도 계약에서 읽는다.
 print(spec["gateway"]["name"])
 print(spec["gateway"]["namespace"])
-print((spec.get("keycloak") or {}).get("realm") or "")
-keycloak = spec.get("keycloak") or {}
-print((keycloak.get("identityProvider") or {}).get("alias") or "")
-print(keycloak.get("samlSpEntityId") or keycloak.get("issuer") or "")
-external = keycloak.get("external") or {}
-print(external.get("address") or "")
-print(external.get("port") or "")
 portal = yaml.safe_load(open("apps/portal-lite/values-beta.yaml", encoding="utf-8"))
 hello = yaml.safe_load(open("apps/hello/values-beta.yaml", encoding="utf-8"))
 portal_host = str((portal.get("exposure") or {}).get("host") or "")
@@ -50,12 +41,11 @@ hello_host = str((hello.get("exposure") or {}).get("host") or "")
 print(portal_host)
 public_hosts = [hello_host, portal_host]
 public_hosts.extend(str(item.get("host") or "") for item in spec.get("platformServices") or [])
-issuer_host = urlparse(str(keycloak.get("issuer") or "")).hostname or ""
-public_hosts.append(issuer_host)
 print(",".join(dict.fromkeys(item for item in public_hosts if item)))
 app_groups = spec.get("appGroups") or {}
 print(app_groups.get("namespacePrefix") or "")
 print(app_groups.get("maxServices") or 0)
+print(public.get("nodeName") or "")
 PY
 )
 base_domain=${contract_values[0]}
@@ -69,15 +59,11 @@ guarded_interfaces=${contract_values[7]}
 blocked_tcp_ports=${contract_values[8]}
 gateway_name=${contract_values[9]}
 gateway_namespace=${contract_values[10]}
-keycloak_realm=${contract_values[11]}
-keycloak_idp_alias=${contract_values[12]}
-keycloak_saml_sp_entity_id=${contract_values[13]}
-keycloak_external_address=${contract_values[14]}
-keycloak_external_port=${contract_values[15]}
-portal_host=${contract_values[16]:?Portal values에 exposure.host가 없다}
-public_https_hosts=${contract_values[17]}
-app_group_namespace_prefix=${contract_values[18]:?AppGroup Namespace prefix가 없다}
-app_group_max_services=${contract_values[19]:?AppGroup 서비스 상한이 없다}
+portal_host=${contract_values[11]:?Portal values에 exposure.host가 없다}
+public_https_hosts=${contract_values[12]}
+app_group_namespace_prefix=${contract_values[13]:?AppGroup Namespace prefix가 없다}
+app_group_max_services=${contract_values[14]:?AppGroup 서비스 상한이 없다}
+public_ip_node=${contract_values[15]}
 
 [[ $(kctl get nodes --no-headers | awk '$2=="Ready"' | wc -l) -eq 3 ]] \
   && ok "RKE2 노드 3/3 Ready" || { echo '[FAIL] RKE2 Ready 노드 수' >&2; fail=1; }
@@ -357,11 +343,11 @@ grep -Eqi 'SADP' <<<"${portal_main}" \
   || { echo '[FAIL] Portal 메인 페이지 로그인 진입점 없음' >&2; fail=1; }
 portal_providers=$(curl -ksS --resolve "${portal_resolve}" --connect-timeout 5 --max-time 20 \
   "${portal_url}/api/auth/providers" || true)
-jq -e '.keycloak.id == "keycloak" and .keycloak.type == "oidc"' <<<"${portal_providers}" >/dev/null \
-  && ok "Portal Auth.js Keycloak provider" || { echo '[FAIL] Portal Keycloak provider' >&2; fail=1; }
+jq -e '.oidc.id == "oidc" and .oidc.type == "oidc"' <<<"${portal_providers}" >/dev/null \
+  && ok "Portal Auth.js 외부 OIDC provider" || { echo '[FAIL] Portal OIDC provider' >&2; fail=1; }
 portal_login=$(curl -ksS --resolve "${portal_resolve}" --connect-timeout 5 --max-time 20 \
   "${portal_url}/login" || true)
-grep -q 'Keycloak으로 로그인' <<<"${portal_login}" \
+grep -q 'SSO로 로그인' <<<"${portal_login}" \
   && ok "Portal 로그인 UI" || { echo '[FAIL] Portal 로그인 UI' >&2; fail=1; }
 # API v1 계약 marker는 app/layout.tsx meta라 로그인 없이 보이는 /login에서도 확인할 수 있다.
 grep -q 'nextjs-authjs-server' <<<"${portal_login}" \
@@ -377,9 +363,9 @@ grep -Eq '^HTTP/[^ ]+ 30[2378]' <<<"${portal_account_headers}" \
   && ok "Portal 미인증 /account 로그인 이동" \
   || { echo '[FAIL] Portal 보호 페이지 redirect' >&2; fail=1; }
 if bash scripts/verify/verify-portal-auth.sh; then
-  ok "Portal 실제 Keycloak 로그인·세션·역할·로그아웃"
+  ok "Portal 외부 OIDC discovery와 로그인 시작 흐름"
 else
-  echo '[FAIL] Portal 실제 Keycloak 인증 흐름' >&2
+  echo '[FAIL] Portal 외부 OIDC 인증 흐름' >&2
   fail=1
 fi
 portal_public_api_code=$(curl -ksS --resolve "${portal_resolve}" --connect-timeout 5 --max-time 20 \
@@ -451,7 +437,7 @@ portal_profile=$(jq -r '.body // empty' <<<"${portal_profile_result}" 2>/dev/nul
 jq -e '
   .valid == true and
   .generated.valuesTemplate == "apps/_template/values-sso.yaml" and
-  .generated.keycloakClientId == "acceptance-app-prod" and
+  .generated.oidcClientId == "acceptance-app-prod" and
   .generated.expectedAnonymousStatus == 302
 ' <<<"${portal_profile}" >/dev/null \
   && ok "Portal AppProfile OIDC 사전검증 API" \
@@ -514,7 +500,7 @@ assert any(
     parameter.get("$ref") == "#/components/parameters/OptionalIdempotencyKey"
     for parameter in deployment_post["parameters"]
 )
-assert spec["components"]["securitySchemes"]["keycloak"]["type"] == "oauth2"
+assert spec["components"]["securitySchemes"]["oidc"]["type"] == "oauth2"
 assert "forgejoConnected" in spec["components"]["schemas"]["Catalog"]["required"]
 def resolve(schema):
     # DeploymentRequestInput 처럼 $ref 한 겹으로 감싼 스키마도 계약을 검사한다.
@@ -549,144 +535,8 @@ oidc_code=$(curl -ksS --resolve "secure-demo.${base_domain}:443:${vip}" \
 [[ ${oidc_code} == 302 ]] && ok "secure-demo 미인증 요청 OIDC redirect" \
   || { echo "[FAIL] secure-demo OIDC redirect -> ${oidc_code}" >&2; fail=1; }
 
-if keycloak_is_external; then
-  # 외부 Keycloak은 EndpointSlice가 유일한 연결 고리다. 비어 있으면 sso 라우트가 503이 된다.
-  keycloak_endpoints=$(kctl get endpointslice -n keycloak \
-    -l kubernetes.io/service-name=keycloak -o json 2>/dev/null | jq -r '
-      .items[]?.endpoints[]?
-      | select(.conditions.ready != false)
-      | .addresses[]?
-    ')
-  [[ -n ${keycloak_endpoints} ]] && ok "외부 Keycloak EndpointSlice 주소 존재" \
-    || { echo '[FAIL] 외부 Keycloak EndpointSlice 에 주소가 없다' >&2; fail=1; }
-
-  # 앱마다 가입시키는 대신 IdP의 First Broker Login을 realm 공통으로 고정한다. 이 검사가
-  # 빠지면 새 OIDC client를 설치할 때 정상 계정이 다시 profile 입력 화면으로 떨어져도
-  # discovery/302 검사는 모두 통과한다. 관리자 Secret을 control-plane에 복사하지 않고
-  # VM 안의 EnvironmentFile로 로그인해 boolean 결과만 돌려받는다.
-  external_env_file=${KEYCLOAK_REMOTE_ENV_FILE:-/etc/keycloak/keycloak.env}
-  external_kcadm=${KEYCLOAK_REMOTE_KCADM:-/opt/keycloak/bin/kcadm.sh}
-  external_ssh_port=${KEYCLOAK_SSH_PORT:-22}
-  external_identity_file=${KEYCLOAK_SSH_IDENTITY_FILE:-}
-  external_ssh_args=(
-    -o BatchMode=yes
-    -o ConnectTimeout=10
-    -o StrictHostKeyChecking=yes
-    -p "${external_ssh_port}"
-  )
-  [[ -z ${external_identity_file} ]] || external_ssh_args+=(-i "${external_identity_file}")
-  external_verification=$(ssh "${external_ssh_args[@]}" \
-    "root@${keycloak_external_address}" bash -s -- \
-    "${external_env_file}" "${external_kcadm}" "${keycloak_realm}" \
-    "${keycloak_idp_alias}" "${keycloak_saml_sp_entity_id}" \
-    "${keycloak_external_address}" \
-    "${keycloak_external_port}" <<'REMOTE' || true
-set -euo pipefail
-env_file=$1
-kcadm=$2
-realm=$3
-idp_alias=$4
-saml_sp_entity_id=$5
-server=http://$6:$7
-
-env_file_value() {
-  local key=$1 line value
-  line=$(grep -m1 -E "^[[:space:]]*${key}=" "${env_file}") || return 1
-  value=${line#*=}
-  if [[ ${value} == \"*\" && ${value} == *\" ]]; then
-    value=${value:1:${#value}-2}
-  elif [[ ${value} == \'*\' && ${value} == *\' ]]; then
-    value=${value:1:${#value}-2}
-  fi
-  [[ -n ${value} ]] || return 1
-  printf '%s' "${value}"
-}
-
-kcadm_home=$(mktemp -d /run/sadp-keycloak-verify.XXXXXX)
-kcadm_config=${kcadm_home}/kcadm.config
-cleanup() {
-  rm -f "${kcadm_config}"
-  rmdir "${kcadm_home}/.keycloak" 2>/dev/null || true
-  rmdir "${kcadm_home}" 2>/dev/null || true
-}
-trap cleanup EXIT
-export HOME=${kcadm_home}
-kc() {
-  "${kcadm}" "$@" --config "${kcadm_config}"
-}
-export KC_CLI_PASSWORD
-KC_CLI_PASSWORD=$(env_file_value KC_BOOTSTRAP_ADMIN_PASSWORD)
-admin_user=$(env_file_value KC_BOOTSTRAP_ADMIN_USERNAME)
-kc config credentials --server "${server}" --realm master \
-  --user "${admin_user}" >/dev/null 2>&1
-unset KC_CLI_PASSWORD
-
-realm_document=$(kc get "realms/${realm}")
-idp_document=$(kc get "identity-provider/instances/${idp_alias}" -r "${realm}")
-flow_document=$(kc get \
-  authentication/flows/sadp-trusted-saml-first-login/executions -r "${realm}")
-mapper_document=$(kc get \
-  "identity-provider/instances/${idp_alias}/mappers" -r "${realm}")
-
-realm_ok=$(jq '
-  .registrationAllowed == false
-  and .duplicateEmailsAllowed == false
-  and .editUsernameAllowed == false
-' <<<"${realm_document}")
-idp_ok=$(jq --arg entity_id "${saml_sp_entity_id}" '
-  .firstBrokerLoginFlowAlias == "sadp-trusted-saml-first-login"
-  and .trustEmail == true
-  and .config.entityId == $entity_id
-  and .config.validateSignature == "true"
-  and .config.wantAssertionsSigned == "true"
-' <<<"${idp_document}")
-flow_ok=$(jq '
-  length == 2
-  and ([.[] | select(
-    .providerId == "idp-create-user-if-unique" and .requirement == "ALTERNATIVE"
-  )] | length == 1)
-  and ([.[] | select(
-    .providerId == "idp-auto-link" and .requirement == "ALTERNATIVE"
-  )] | length == 1)
-  and (all(.[]; .providerId != "idp-review-profile"))
-' <<<"${flow_document}")
-mapper_ok=$(jq '
-  [.[] | select(
-    .identityProviderMapper == "saml-username-idp-mapper"
-    and .config.syncMode == "IMPORT"
-    and .config.template == "${ATTRIBUTE.http://schemas.goauthentik.io/2021/02/saml/username}"
-    and .config.target == "LOCAL"
-  )] | length == 1
-' <<<"${mapper_document}")
-jq -nc --argjson realm "${realm_ok}" --argjson idp "${idp_ok}" \
-  --argjson flow "${flow_ok}" --argjson mapper "${mapper_ok}" \
-  '{realm:$realm,idp:$idp,flow:$flow,mapper:$mapper}'
-REMOTE
-)
-  if jq -e '.realm and .idp and .flow and .mapper' \
-      <<<"${external_verification}" >/dev/null 2>&1; then
-    ok "외부 Keycloak SAML Audience/LIFE 자동 연결이 모든 OIDC 앱에 공통 적용"
-  else
-    echo '[FAIL] 외부 Keycloak trusted SAML first login flow 원격 검증 실패' >&2
-    fail=1
-  fi
-fi
-
-if ! keycloak_is_external && [[ $(keycloak_node_placement) == control-plane ]]; then
-  if keycloak_workloads_on_control_plane; then
-    ok "Keycloak/PostgreSQL control-plane 올인원 배치"
-  else
-    echo '[FAIL] Keycloak/PostgreSQL이 control-plane 노드에 함께 배치되지 않음' >&2
-    fail=1
-  fi
-fi
-
-issuer=$(curl -ksS --resolve "sso.${base_domain}:443:${vip}" \
-  "https://sso.${base_domain}/realms/${keycloak_realm}/.well-known/openid-configuration" \
-  | jq -r '.issuer // empty')
-[[ ${issuer} == "https://sso.${base_domain}/realms/${keycloak_realm}" ]] \
-  && ok "Keycloak discovery issuer 일치" || { echo '[FAIL] Keycloak issuer 불일치' >&2; fail=1; }
-
+# 외부 IdP는 SADP의 관리 대상이 아니다. discovery와 Portal OIDC 시작 흐름은
+# verify-portal-auth.sh가 공개 endpoint만 사용해 읽기 전용으로 검증한다.
 status=$(kctl exec -n openbao openbao-0 -- env \
   BAO_ADDR=https://openbao.openbao.svc.cluster.local:8200 BAO_CACERT=/openbao/tls/ca.crt \
   bao status -format=json 2>/dev/null || true)
@@ -698,10 +548,16 @@ jq -e '.initialized == true and .sealed == false and .storage_type == "raft"' <<
 machine_auth_load_contract
 if [[ ${MACHINE_AUTH_MODE} == api-key ]]; then
   if machine_auth_validate_api_key_contract; then
+    store_ready=$(kctl -n "${MACHINE_AUTH_NAMESPACE}" get secretstore \
+      "${MACHINE_AUTH_SECRET_STORE}" \
+      -o jsonpath='{.status.conditions[?(@.type=="Ready")].status}' 2>/dev/null || true)
+    [[ ${store_ready} == True ]] && ok "machine-auth SecretStore Ready" \
+      || { echo '[FAIL] machine-auth SecretStore가 Ready가 아님' >&2; fail=1; }
     for client in "${MACHINE_AUTH_CLIENTS[@]}"; do
       credential_file=$(machine_auth_export_path "${client}")
       if [[ -s ${credential_file} && $(stat -c '%a' "${credential_file}") == 600 \
-          && $(stat -c '%u' "${credential_file}") == 0 ]]; then
+          && $(stat -c '%u' "${credential_file}") == 0 \
+          && $(stat -c '%g' "${credential_file}") == 0 ]]; then
         ok "${client} machine-auth 전달 파일 root:0600"
       else
         echo "[FAIL] ${client} machine-auth 전달 파일 권한/소유자" >&2
@@ -719,20 +575,27 @@ if [[ ${MACHINE_AUTH_MODE} == api-key ]]; then
         || { echo "[FAIL] ${client} Gateway credential key 이름" >&2; fail=1; }
     done
     for service in "${MACHINE_AUTH_SERVICES[@]}"; do
-      kctl -n "${MACHINE_AUTH_NAMESPACE}" get securitypolicy "${service}-machine-auth" \
-        -o json 2>/dev/null | jq -e --arg header "${MACHINE_AUTH_HEADER}" '
+      policy_document=$(kctl -n "${MACHINE_AUTH_NAMESPACE}" get securitypolicy \
+        "${service}-machine-auth" -o json 2>/dev/null || true)
+      jq -e --arg header "${MACHINE_AUTH_HEADER}" '
           .spec.apiKeyAuth.sanitize == true
           and .spec.apiKeyAuth.extractFrom[0].headers == [$header]
           and (.spec.jwt | not)
           and .spec.authorization.defaultAction == "Deny"
-        ' >/dev/null \
+        ' <<<"${policy_document}" >/dev/null \
         && ok "${service} API key/CIDR 정책 및 header sanitize" \
         || { echo "[FAIL] ${service} API key/CIDR 정책" >&2; fail=1; }
+      jq -e '
+        any(.status.ancestors[]?.conditions[]?;
+          .type == "Accepted" and .status == "True")
+        ' <<<"${policy_document}" >/dev/null \
+        && ok "${service} SecurityPolicy Accepted" \
+        || { echo "[FAIL] ${service} SecurityPolicy 미수락" >&2; fail=1; }
     done
   else
     fail=1
   fi
-elif [[ ${MACHINE_AUTH_MODE} == keycloak ]]; then
+elif [[ ${MACHINE_AUTH_MODE} == oidc ]]; then
   for service in "${MACHINE_AUTH_SERVICES[@]}"; do
     kctl -n "${MACHINE_AUTH_NAMESPACE}" get securitypolicy "${service}-machine-auth" \
       -o json 2>/dev/null | jq -e '
@@ -740,8 +603,8 @@ elif [[ ${MACHINE_AUTH_MODE} == keycloak ]]; then
         and (.spec.apiKeyAuth | not)
         and .spec.authorization.defaultAction == "Deny"
       ' >/dev/null \
-      && ok "${service} Keycloak JWT/CIDR machine-auth 정책" \
-      || { echo "[FAIL] ${service} Keycloak machine-auth 정책" >&2; fail=1; }
+      && ok "${service} 외부 OIDC JWT/CIDR machine-auth 정책" \
+      || { echo "[FAIL] ${service} 외부 OIDC machine-auth 정책" >&2; fail=1; }
   done
 else
   echo '[FAIL] machine-auth mode 계약 오류' >&2
@@ -756,15 +619,65 @@ http_code=$(curl -sS --resolve "hello.${base_domain}:80:${vip}" -o /dev/null \
 if [[ ${public_mode} == direct ]]; then
   # direct 모드는 공인 IP가 노드 외부 NIC에 있으므로 Envoy Service가 그 주소를
   # externalIPs로 들고 있어야 한다. 없으면 공인 443이 nginx나 빈 소켓으로 떨어진다.
-  envoy_service=$(kctl get svc -n envoy-gateway-system \
+  envoy_service=$(kctl get svc -n "${gateway_namespace}" \
     -l "gateway.envoyproxy.io/owning-gateway-name=${gateway_name}" -o name | head -1)
-  if [[ -n ${envoy_service} ]] && kctl get -n envoy-gateway-system "${envoy_service}" \
-    -o jsonpath='{.spec.externalIPs[*]}' 2>/dev/null | tr ' ' '\n' | grep -Fxq "${public_ip}"; then
+  envoy_service_document=""
+  if [[ -n ${envoy_service} ]]; then
+    envoy_service_document=$(kctl get -n "${gateway_namespace}" "${envoy_service}" \
+      -o json 2>/dev/null || true)
+  fi
+  if jq -e --arg ip "${public_ip}" '
+      (.spec.externalIPs // []) | index($ip) != null
+    ' <<<"${envoy_service_document}" >/dev/null 2>&1; then
     ok "direct 모드 Envoy Service externalIPs 에 공인 IP 존재"
   else
     echo '[FAIL] Envoy Service externalIPs 에 공인 IP가 없다(platform/exposure/resources.yaml 미적용).' >&2
     fail=1
   fi
+
+  if [[ -n ${public_ip_node} ]] \
+      && kctl get node "${public_ip_node}" >/dev/null 2>&1; then
+    ok "direct 모드 공인 IP 노드 계약과 실제 Node 존재"
+  else
+    echo '[FAIL] direct 모드 spec.public.nodeName이 없거나 실제 Node와 불일치' >&2
+    fail=1
+  fi
+  jq -e '.spec.externalTrafficPolicy == "Local"' \
+    <<<"${envoy_service_document}" >/dev/null 2>&1 \
+    && ok "direct 모드 Envoy Service externalTrafficPolicy=Local" \
+    || { echo '[FAIL] direct 모드 Envoy Service가 Local이 아님' >&2; fail=1; }
+
+  proxy_node=$(kctl -n "${gateway_namespace}" get envoyproxy \
+    "$(python3 -c 'import yaml; print(yaml.safe_load(open("contracts/platform-production.yaml"))["spec"]["gateway"]["proxyConfigName"])')" \
+    -o jsonpath='{.spec.provider.kubernetes.envoyDeployment.pod.nodeSelector.kubernetes\.io/hostname}' \
+    2>/dev/null || true)
+  [[ -n ${public_ip_node} && ${proxy_node} == "${public_ip_node}" ]] \
+    && ok "direct 모드 Envoy Pod 공인 IP 노드 선택자" \
+    || { echo '[FAIL] direct 모드 Envoy Pod nodeSelector 불일치' >&2; fail=1; }
+
+  service_name=${envoy_service#service/}
+  service_selector=$(jq -r '
+    (.spec.selector // {}) | to_entries | map("\(.key)=\(.value)") | join(",")
+  ' <<<"${envoy_service_document}")
+  envoy_pods=$(kctl -n "${gateway_namespace}" get pod -l "${service_selector}" -o json \
+    2>/dev/null || true)
+  jq -e --arg node "${public_ip_node}" '
+    (.items | length) > 0
+    and all(.items[];
+      .spec.nodeName == $node
+      and any(.status.conditions[]?; .type == "Ready" and .status == "True"))
+  ' <<<"${envoy_pods}" >/dev/null 2>&1 \
+    && ok "direct 모드 Envoy Pod 위치/Readiness" \
+    || { echo '[FAIL] direct 모드 Envoy Pod 위치 또는 Readiness' >&2; fail=1; }
+
+  endpoint_slices=$(kctl -n "${gateway_namespace}" get endpointslice \
+    -l "kubernetes.io/service-name=${service_name}" -o json 2>/dev/null || true)
+  jq -e --arg node "${public_ip_node}" '
+    any(.items[]?.endpoints[]?;
+      .nodeName == $node and .conditions.ready != false)
+  ' <<<"${endpoint_slices}" >/dev/null 2>&1 \
+    && ok "direct 모드 Local Service의 공인 IP 노드 endpoint Ready" \
+    || { echo '[FAIL] direct 모드 Local Service endpoint가 공인 IP 노드에서 Ready가 아님' >&2; fail=1; }
 
   # 공인 IP가 실제로 Envoy 인증서를 내미는지까지 본다. nginx fake 인증서면 즉시 실패다.
   public_subject=$(echo | openssl s_client -connect "${public_ip}:443" \

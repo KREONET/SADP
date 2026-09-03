@@ -70,8 +70,6 @@ spec:
     server: https://kubernetes.default.svc
   - namespace: cattle-system
     server: https://kubernetes.default.svc
-  - namespace: keycloak
-    server: https://kubernetes.default.svc
   - namespace: openbao
     server: https://kubernetes.default.svc
   - namespace: devtroncd
@@ -129,8 +127,6 @@ spec:
   - namespace: reloader
     server: https://kubernetes.default.svc
   - namespace: openbao
-    server: https://kubernetes.default.svc
-  - namespace: keycloak
     server: https://kubernetes.default.svc
   - namespace: local
     server: https://kubernetes.default.svc

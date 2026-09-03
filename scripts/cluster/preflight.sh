@@ -4,36 +4,60 @@ set -euo pipefail
 
 source "$(dirname "$0")/../lib/testbed-common.sh"
 
-for command in python3 jq "${HELM_BIN}"; do require_command "${command}"; done
+IMAGE_PULL_ONLY=false
+while (($#)); do
+  case "$1" in
+    --image-pull-only) IMAGE_PULL_ONLY=true ;;
+    -h|--help)
+      cat <<'EOF'
+usage: sudo bash ./sadp --preflight [--image-pull-only]
+
+기본은 3-node topology, 기본 StorageClass provisioning, 실제 CRI image pull을 검사한다.
+--image-pull-only는 topology/StorageClass를 생략하고 모든 Linux node의 proxy/containerd
+재시작 반영 여부를 digest 고정 image의 Always pull로 빠르게 재검사한다.
+EOF
+      exit 0
+      ;;
+    *) die "알 수 없는 인자: $1" ;;
+  esac
+  shift
+done
+
+for command in python3 jq; do require_command "${command}"; done
+if [[ ${IMAGE_PULL_ONLY} != true ]]; then
+  require_command "${HELM_BIN}"
+fi
 [[ -x ${KUBECTL_BIN} ]] || die "kubectl 없음: ${KUBECTL_BIN}"
 
-echo "== 버전 =="
-kctl version --short 2>/dev/null || kctl version
-"${HELM_BIN}" version --short
+if [[ ${IMAGE_PULL_ONLY} != true ]]; then
+  echo "== 버전 =="
+  kctl version --short 2>/dev/null || kctl version
+  "${HELM_BIN}" version --short
 
-echo "== 노드 =="
-kctl get nodes -o wide
-node_count=$(kctl get nodes -o json | jq '.items | length')
-not_ready=$(kctl get nodes -o json | jq -r '.items[] | select(any(.status.conditions[]?; .type == "Ready" and .status == "True") | not) | .metadata.name')
-[[ ${node_count} -eq 3 ]] || die "RKE2 노드는 정확히 3대여야 함: ${node_count}"
-[[ -z ${not_ready} ]] || die "Ready가 아닌 RKE2 노드: ${not_ready//$'\n'/,}"
-server_count=$(kctl get nodes -o json | jq '[.items[] | select(
-  .metadata.labels["node-role.kubernetes.io/control-plane"] != null
-  or .metadata.labels["node-role.kubernetes.io/master"] != null
-)] | length')
-worker_count=$((node_count - server_count))
-[[ ${server_count} -eq 1 && ${worker_count} -eq 2 ]] \
-  || die "RKE2 역할은 server 1대 + worker 2대여야 함: server=${server_count}, worker=${worker_count}"
-ok "RKE2 노드 3/3 Ready(server 1 + worker 2)"
+  echo "== 노드 =="
+  kctl get nodes -o wide
+  node_count=$(kctl get nodes -o json | jq '.items | length')
+  not_ready=$(kctl get nodes -o json | jq -r '.items[] | select(any(.status.conditions[]?; .type == "Ready" and .status == "True") | not) | .metadata.name')
+  [[ ${node_count} -eq 3 ]] || die "RKE2 노드는 정확히 3대여야 함: ${node_count}"
+  [[ -z ${not_ready} ]] || die "Ready가 아닌 RKE2 노드: ${not_ready//$'\n'/,}"
+  server_count=$(kctl get nodes -o json | jq '[.items[] | select(
+    .metadata.labels["node-role.kubernetes.io/control-plane"] != null
+    or .metadata.labels["node-role.kubernetes.io/master"] != null
+  )] | length')
+  worker_count=$((node_count - server_count))
+  [[ ${server_count} -eq 1 && ${worker_count} -eq 2 ]] \
+    || die "RKE2 역할은 server 1대 + worker 2대여야 함: server=${server_count}, worker=${worker_count}"
+  ok "RKE2 노드 3/3 Ready(server 1 + worker 2)"
 
-echo "== StorageClass(기본값 1개 필수) =="
-kctl get storageclass
-default_storage_classes=$(kctl get storageclass -o json | jq '[.items[] | select(
-  .metadata.annotations["storageclass.kubernetes.io/is-default-class"] == "true"
-  or .metadata.annotations["storageclass.beta.kubernetes.io/is-default-class"] == "true"
-)] | length')
-[[ ${default_storage_classes} -eq 1 ]] \
-  || die "기본 StorageClass는 정확히 1개여야 함: ${default_storage_classes}"
+  echo "== StorageClass(기본값 1개 필수) =="
+  kctl get storageclass
+  default_storage_classes=$(kctl get storageclass -o json | jq '[.items[] | select(
+    .metadata.annotations["storageclass.kubernetes.io/is-default-class"] == "true"
+    or .metadata.annotations["storageclass.beta.kubernetes.io/is-default-class"] == "true"
+  )] | length')
+  [[ ${default_storage_classes} -eq 1 ]] \
+    || die "기본 StorageClass는 정확히 1개여야 함: ${default_storage_classes}"
+fi
 
 preflight_namespace="sadp-preflight-$(date +%s)-$$"
 preflight_created=false
@@ -45,10 +69,11 @@ cleanup() {
 trap cleanup EXIT
 trap 'exit 130' INT TERM
 
-echo "== 동적 provisioning 실검증 =="
-kctl create namespace "${preflight_namespace}" >/dev/null
 preflight_created=true
-kctl -n "${preflight_namespace}" apply -f - <<'PVC'
+kctl create namespace "${preflight_namespace}" >/dev/null
+if [[ ${IMAGE_PULL_ONLY} != true ]]; then
+  echo "== 동적 provisioning 실검증 =="
+  kctl -n "${preflight_namespace}" apply -f - <<'PVC'
 apiVersion: v1
 kind: PersistentVolumeClaim
 metadata: {name: preflight-pvc}
@@ -68,7 +93,7 @@ spec:
     seccompProfile: {type: RuntimeDefault}
   containers:
     - name: volume-consumer
-      image: registry.k8s.io/pause:3.10
+      image: registry.k8s.io/pause:3.10@sha256:ee6521f290b2168b6e0935a181d4cff9be1ac3f505666ef0e3c98fae8199917a
       imagePullPolicy: IfNotPresent
       securityContext:
         allowPrivilegeEscalation: false
@@ -79,15 +104,62 @@ spec:
     - name: data
       persistentVolumeClaim: {claimName: preflight-pvc}
 PVC
-kctl -n "${preflight_namespace}" wait --for=jsonpath='{.status.phase}'=Bound pvc/preflight-pvc --timeout=90s
-ok "기본 StorageClass dynamic provisioning 정상"
+  kctl -n "${preflight_namespace}" wait --for=jsonpath='{.status.phase}'=Bound pvc/preflight-pvc --timeout=90s
+  ok "기본 StorageClass dynamic provisioning 정상"
 
-echo "== 여유 자원(Devtron CI는 worker) =="
-kctl top nodes 2>/dev/null || echo "metrics-server 미설치(선택)"
+  echo "== 여유 자원(Devtron CI는 worker) =="
+  kctl top nodes 2>/dev/null || echo "metrics-server 미설치(선택)"
 
-if kctl get crd applications.argoproj.io >/dev/null 2>&1 \
-  && kctl get deployment -n devtroncd argocd-repo-server >/dev/null 2>&1; then
-  ok "Devtron/Argo CD 기존 설치 감지"
-else
-  note "Devtron/Argo CD 없음: 원툴 cluster apply가 고정 버전으로 설치함"
+  if kctl get crd applications.argoproj.io >/dev/null 2>&1 \
+    && kctl get deployment -n devtroncd argocd-repo-server >/dev/null 2>&1; then
+    ok "Devtron/Argo CD 기존 설치 감지"
+  else
+    note "Devtron/Argo CD 없음: 원툴 cluster apply가 고정 버전으로 설치함"
+  fi
 fi
+
+echo "== 모든 Linux node 실제 CRI pull =="
+kctl -n "${preflight_namespace}" apply -f - <<'PULL'
+apiVersion: apps/v1
+kind: DaemonSet
+metadata:
+  name: cri-image-pull
+spec:
+  selector:
+    matchLabels: {app.kubernetes.io/name: sadp-cri-image-pull}
+  template:
+    metadata:
+      labels: {app.kubernetes.io/name: sadp-cri-image-pull}
+    spec:
+      automountServiceAccountToken: false
+      hostNetwork: true
+      nodeSelector: {kubernetes.io/os: linux}
+      tolerations: [{operator: Exists}]
+      containers:
+        - name: pull
+          image: registry.k8s.io/pause:3.10@sha256:ee6521f290b2168b6e0935a181d4cff9be1ac3f505666ef0e3c98fae8199917a
+          imagePullPolicy: Always
+PULL
+
+if ! kctl rollout status -n "${preflight_namespace}" daemonset/cri-image-pull --timeout=180s >/dev/null; then
+  kctl get pods -n "${preflight_namespace}" -o json | jq -r '
+    .items[]
+    | [
+        (.spec.nodeName // "<unassigned>"),
+        (.metadata.name // "<unknown>"),
+        (.status.phase // "<unknown>"),
+        (.status.containerStatuses[0].state.waiting.reason // "<none>"),
+        (.status.containerStatuses[0].state.waiting.message // "<none>")
+      ]
+    | @tsv
+  ' | awk 'BEGIN {print "NODE\tPOD\tPHASE\tWAITING_REASON\tWAITING_MESSAGE"} {print}' >&2 || true
+  cat >&2 <<'EOF'
+[NEXT] sudo bash ./sadp --manage-containerd-proxy
+[NEXT] sudo bash ./sadp --manage-containerd-proxy --apply
+[NEXT] 위 plan이 출력한 worker 한 대씩 → server 마지막 순서로 RKE2를 수동 재시작한다.
+[NEXT] sudo bash ./sadp --manage-containerd-proxy --check
+[NEXT] sudo bash ./sadp --preflight --image-pull-only
+EOF
+  die "모든 Linux node의 실제 CRI pull이 성공하지 않음(Pod log와 환경값은 출력하지 않음)"
+fi
+ok "모든 Linux node에서 digest 고정 public image Always CRI pull 성공"

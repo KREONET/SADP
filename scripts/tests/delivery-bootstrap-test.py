@@ -18,6 +18,7 @@ FAILED = 0
 VERSIONS = yaml.safe_load((ROOT / "versions.lock.yaml").read_text(encoding="utf-8"))["delivery"]
 DEVTRON_APP_VERSION = str(VERSIONS["devtronOperator"])
 DEVTRON_CHART_VERSION = str(VERSIONS["devtronOperatorChart"])
+DEVTRON_INSTALLER_SOURCE = (ROOT / "scripts/cluster/install-devtron.sh").read_text(encoding="utf-8")
 
 
 def write_executable(path: pathlib.Path, text: str) -> None:
@@ -36,6 +37,14 @@ def report(label: str, result: subprocess.CompletedProcess[str], expected: int, 
     print(f"[FAIL] {label}: exit={result.returncode}, expected={expected}")
     for line in output.splitlines()[-30:]:
         print(f"       {line}")
+
+
+if "== Applied" in DEVTRON_INSTALLER_SOURCE and "== Downloaded" not in DEVTRON_INSTALLER_SOURCE:
+    PASSED += 1
+    print("[OK]   DB-Downloaded는 완료가 아니며 최종 Applied만 성공")
+else:
+    FAILED += 1
+    print("[FAIL] DB-Installer 완료 조건이 Applied 단독이 아님")
 
 
 with tempfile.TemporaryDirectory(prefix="sadp-delivery-test-") as raw_tmp:

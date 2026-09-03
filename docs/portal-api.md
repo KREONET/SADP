@@ -16,7 +16,7 @@
 - 조회에는 `deployments:read`, 검증·생성·상태 변경·삭제에는 `deployments:write`가 필요합니다.
 - BFF는 브라우저가 보낸 `X-Portal-User`, `Authorization`, `requester`를 제거합니다.
 - Go API의 `X-Portal-User`는 BFF가 세션의 사용자명 또는 subject로 넣는 내부 header입니다.
-- access/refresh token과 Keycloak client secret은 Client Component로 전달하지 않습니다.
+- access/refresh token과 OIDC client secret은 Client Component로 전달하지 않습니다.
 
 따라서 문서의 `curl` 예시는 정상 로그인으로 얻은 Auth.js session cookie가 있어야 합니다.
 `X-Portal-User`를 직접 넣어 사용자를 가장하는 호출은 지원하지 않습니다.
@@ -96,7 +96,7 @@ OpenBao path, GitOps 다음 단계가 포함됩니다. `classification=openbao`�
 접근 정책 제약:
 
 - `external + none`: 공개 HTTPS Route
-- `external + oidc`: Keycloak 로그인 Route
+- `external + oidc`: 외부 OIDC 로그인 Route
 - `internal + none`: 외부 Route 없이 Service만 생성
 - `internal + oidc`: 지원하지 않음
 - `web` egress: 인터넷 TCP 80/443 포트 정책이며 도메인 allowlist가 아님

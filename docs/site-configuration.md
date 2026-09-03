@@ -57,7 +57,7 @@ pull/push Docker config 경로와 권한은 분리합니다.
 | 영역 | 확인할 사실 |
 | --- | --- |
 | 이름 | site/environment/cluster, Namespace, Gateway, TLS resource 이름 |
-| 도메인 | base domain과 Portal/SSO/Rancher/OpenBao host |
+| 도메인 | base domain과 Portal/Rancher/OpenBao host, 외부 OIDC issuer |
 | Git/Registry | Forgejo GitOps URL/revision, OCI host/project, immutable 초기 tag |
 | 노드 | control-plane 1대, worker 2대의 hostname과 내부 IPv4 |
 | 클러스터 | 기존 RKE2 Pod/Service CIDR, cluster DNS, API 주소 |
@@ -65,7 +65,7 @@ pull/push Docker config 경로와 권한은 분리합니다.
 | 공개 경로 | public IP 소유, `nat`/`direct`, Gateway VIP/pool |
 | egress | Squid host/port/client CIDR, upstream DNS |
 | TLS | ACME mode, RFC2136 endpoint/key metadata, 진행 상태 |
-| 인증 | Keycloak deployment/node placement/realm/client와 선택적 SAML IdP |
+| 인증 | 외부 OIDC endpoint/client/claim과 upstream protocol 표식 |
 | 스토리지 | StorageClass와 AppGroup 고정 volume 크기 |
 
 ### NIC와 CIDR
@@ -98,9 +98,12 @@ ip -brief address | grep '<PUBLIC_IP>'
 | 노드에 없음 | `nat` | 경계 장비 80/443 → Gateway VIP 80/443 |
 | 노드 external NIC에 있음 | `direct` | Envoy Service `externalIPs` |
 
-`direct`는 Envoy Pod가 다른 노드에 있어도 전달하도록 `externalTrafficPolicy: Cluster`를 사용하므로
-원본 client IP가 SNAT될 수 있습니다. `nat`는 hairpin NAT가 필요합니다. 외부 허용 port는 TCP
-80/443뿐입니다.
+`direct`에서는 `PUBLIC_IP_NODE`에 공인 IP를 실제로 가진 Node의 `kubernetes.io/hostname` 값을
+적습니다. renderer는 Envoy Pod를 그 Node에 고정하고 Service를 `externalTrafficPolicy: Local`로
+만듭니다. 이 조합은 CIDR 인증에 필요한 원본 client IP를 보존하지만, 그 Node의 Envoy endpoint가
+Ready가 아니면 외부 트래픽이 DROP됩니다. Pod 위치와 EndpointSlice readiness를 배포 직후 반드시
+확인합니다. `nat`에서는 `PUBLIC_IP_NODE`를 비워 두고 경계 NAT 이후 Envoy가 실제로 보는 주소를
+허용 CIDR로 사용합니다. 외부 허용 port는 TCP 80/443뿐입니다.
 
 ### DNS-01
 
@@ -121,31 +124,26 @@ production Certificate Ready
 
 클러스터가 HTTPS인데 env가 뒤처지면 다음 render가 listener를 HTTP로 되돌릴 수 있습니다.
 
-### Keycloak 배치
+### 외부 인증 연결
 
-외부 VM을 사용할 때는 기존 주소를 EndpointSlice로 연결합니다.
-
-```dotenv
-KEYCLOAK_DEPLOYMENT=external
-KEYCLOAK_NODE_PLACEMENT=any
-KEYCLOAK_EXTERNAL_ADDRESS=<PRIVATE_KEYCLOAK_IPV4>
-KEYCLOAK_EXTERNAL_PORT=8080
-```
-
-RKE2 안에 설치할 때는 외부 주소를 비우고 node placement를 선택합니다.
+SADP는 인증 서버를 배포하거나 구성하지 않습니다. OpenID IdP를 직접 쓰면 `openid`, SAML 전용
+상위 IdP를 외부 broker가 OIDC로 변환하면 `saml`을 기록합니다. 두 경우 모두 SADP가 소비하는 값은
+OIDC 공개 endpoint입니다.
 
 ```dotenv
-KEYCLOAK_DEPLOYMENT=in-cluster
-KEYCLOAK_NODE_PLACEMENT=control-plane
-KEYCLOAK_EXTERNAL_ADDRESS=
-KEYCLOAK_EXTERNAL_PORT=8080
+IDENTITY_SOURCE_PROTOCOL=openid|saml
+OIDC_ISSUER=https://<IDP_HOST>/<ISSUER_PATH>
+OIDC_AUTHORIZATION_ENDPOINT=https://<IDP_HOST>/<AUTHORIZATION_PATH>
+OIDC_TOKEN_ENDPOINT=https://<IDP_HOST>/<TOKEN_PATH>
+OIDC_JWKS_URI=https://<IDP_HOST>/<JWKS_PATH>
+OIDC_END_SESSION_ENDPOINT=https://<IDP_HOST>/<LOGOUT_PATH>
+OIDC_GROUPS_CLAIM=groups
+OIDC_CLIENT_ID_CLAIM=azp
+PORTAL_OIDC_CLIENT_ID=<PORTAL_CLIENT_ID>
 ```
 
-`any`는 스케줄러가 일반 노드를 선택하는 기존 동작입니다. `control-plane`은 Keycloak과
-PostgreSQL을 함께 RKE2 server에 고정하며 필요한 두 taint toleration도 생성합니다. external과
-`control-plane`을 함께 쓰거나 알 수 없는 placement를 쓰면 `configure-site.py`가 거부합니다.
-통합 설치 동작과 기존 로컬 PVC 이전 주의사항은
-[설치 가이드](installation.md#control-plane-내부-keycloak-올인원-설치)를 따릅니다.
+client secret과 SAML metadata/signing key는 이 파일에 넣지 않습니다. client 등록, callback, secret
+전달 절차는 [외부 인증](identity-provider.md)을 따릅니다.
 
 ## 4. 검증·생성·드리프트 확인
 
@@ -196,20 +194,14 @@ diff -u '<ORIGINAL_REPOSITORY>/contracts/platform-production.yaml' \
 
 ### 용도별 system
 
-`SYSTEMS`는 한 Envoy Gateway 아래 별도 domain, Namespace, Rancher Project, wildcard Certificate,
-Keycloak을 가진 system을 추가합니다.
+`SYSTEMS`는 한 Envoy Gateway 아래 별도 domain, Namespace, Rancher Project, wildcard Certificate를
+가진 system을 추가합니다. 모든 system은 같은 외부 OIDC 계약을 소비합니다.
 
 ```dotenv
 SYSTEMS=<SYSTEM>=<SYSTEM_DOMAIN>
-SYSTEM_<SYSTEM>_KEYCLOAK_DEPLOYMENT=external
-SYSTEM_<SYSTEM>_KEYCLOAK_REALM=<REALM>
-SYSTEM_<SYSTEM>_PORTAL_CLIENT_ID=<CLIENT_ID>
-SYSTEM_<SYSTEM>_KEYCLOAK_EXTERNAL_ADDRESS=<KEYCLOAK_IPV4>
-SYSTEM_<SYSTEM>_KEYCLOAK_EXTERNAL_PORT=<PORT>
 ```
 
-선언한 system마다 다섯 Keycloak key가 필요합니다. domain은 base domain의 하위여야 하며 이 기능은
-ACME를 요구합니다. `in-cluster`이면 external address/port를 비웁니다.
+domain은 base domain의 하위여야 하며 이 기능은 ACME를 요구합니다.
 
 ### 외부 VM backend
 
@@ -227,32 +219,34 @@ repo-server cache를 재시작합니다.
 
 ### machine-auth backend
 
-인증 모드는 endpoint를 아직 열지 않더라도 반드시 지정합니다. 사람용 Keycloak SSO와 별개이며,
+인증 모드는 endpoint를 아직 열지 않더라도 반드시 지정합니다. 사람용 외부 OIDC 로그인과 별개이며,
 외부 Grafana/Wazuh를 연결할 때 기존 `site.env`를 갱신하고 render와 cluster phase를 다시 적용합니다.
 
 ```dotenv
-MACHINE_AUTH_MODE=keycloak|api-key
+MACHINE_AUTH_MODE=oidc|api-key
 MACHINE_AUTH_SERVICES=<NAME>=<NAMESPACE>/<SERVICE>:<PORT>
 MACHINE_AUTH_CLIENTS=<CLIENT_NAME>
 MACHINE_AUTH_ALLOWED_CIDRS=<SOURCE_IPV4_CIDR>
 ```
 
-`keycloak`은 client_credentials JWT의 `azp`, `api-key`는 OpenBao가 자동 생성한
+`oidc`는 외부 IdP의 client_credentials JWT claim, `api-key`는 OpenBao가 자동 생성한
 `X-SADP-API-Key`를 source CIDR과 함께 검사합니다. `api-key`에서 client/CIDR 누락과 CIDR `/0`은
 거부합니다. 생성물이나 live 리소스를 직접 patch하지 말고
 [외부 기계 클라이언트 인증](external-observability.md)을 사용합니다.
 
-### 외부 SAML IdP
+### SAML upstream
 
-alias, display name, provider ID, metadata URL, SSO URL 다섯 값을 모두 채우거나 모두 비웁니다.
-provider는 현재 `saml`만 받습니다. 인증서와 password는 env에 넣지 않습니다. 외부 Keycloak과
-remote 수렴은 [Keycloak 안내](keycloak-external.md)를 사용합니다.
+SADP는 SAML SP가 아닙니다. `IDENTITY_SOURCE_PROTOCOL=saml`은 외부 broker의 upstream이 SAML이라는
+운영 표식이며, 나머지 endpoint는 broker가 제공하는 OIDC 값입니다. SAML metadata, Audience,
+인증서와 계정 매핑은 broker 운영자가 관리합니다. 자세한 경계는 [외부 인증](identity-provider.md)을
+따릅니다.
 
 ## 6. 통합 설치 제어
 
 | key | 동작 |
 | --- | --- |
 | `SADP_INSTALL_GITOPS` | Argo repository와 app-of-apps 구성 |
+| `SADP_INSTALL_MONITORING` | Prometheus/Loki/Alloy image/Application 준비; false이면 monitoring backend 노출도 금지 |
 | `SADP_BUILD_IMAGES` | 기본 로컬 이미지 빌드·세 노드 import |
 | `SADP_BUILD_NODE` | 빌드 worker 지정, 비우면 자동 선택 |
 | `SADP_DEPLOY_APPS` | 기본 앱과 Portal 배포 |

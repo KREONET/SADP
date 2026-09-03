@@ -155,7 +155,8 @@ spec:
       - storage.googleapis.com
       - asia-northeast2-docker.pkg.dev
       - prod-registry-k8s-io-ap-northeast-1.s3.dualstack.ap-northeast-1.amazonaws.com
-      identityProviderDomains: []
+      identityProviderDomains:
+      - idp.example.invalid
       dnsProviderEndpoints: []
     clusterUpstreamDNS: 10.20.30.11:53
   public:
@@ -170,13 +171,15 @@ spec:
       type: A
     - name: sadp.example.invalid
       type: A
+  monitoring:
+    enabled: true
   machineAuth:
-    mode: keycloak
+    mode: oidc
     clients: []
     allowedCIDRs: []
-    keycloak:
-      issuer: https://sso.sadp.example.invalid/realms/sadp
-      jwksURI: https://sso.sadp.example.invalid/realms/sadp/protocol/openid-connect/certs
+    oidc:
+      issuer: https://idp.example.invalid/application/o/sadp
+      jwksURI: https://idp.example.invalid/application/o/sadp/jwks/
       clientClaim: azp
   platformServices:
   - name: rancher
@@ -184,11 +187,6 @@ spec:
     namespace: cattle-system
     service: rancher
     port: 80
-  - name: sso
-    host: sso.sadp.example.invalid
-    namespace: keycloak
-    service: keycloak
-    port: 8080
   - name: openbao
     host: openbao.sadp.example.invalid
     namespace: openbao
@@ -213,27 +211,27 @@ spec:
     - role: platform-admin
       scope: global
       globalRole: admin
-      group: pending
+      principal: pending
       projects: []
     - role: app-admin
       scope: project
       roleTemplate: project-owner
       projects:
       - proj-sadp-apps
-      group: pending
+      principal: pending
     - role: developer
       scope: project
       roleTemplate: project-member
       projects:
       - proj-sadp-apps
-      group: pending
+      principal: pending
     - role: viewer
       scope: project
       roleTemplate: read-only
       projects:
       - proj-sadp-apps
       - proj-sadp-platform
-      group: pending
+      principal: pending
   openbao:
     server: https://openbao.openbao.svc.cluster.local:8200
     kvMount: kv
@@ -246,16 +244,17 @@ spec:
       zoneApp: portal-zone-app-eso
       groupApp: portal-group-app-eso
       groupRegistry: portal-group-registry-eso
-  keycloak:
-    realm: sadp
+  identityProvider:
+    managed: external
+    sourceProtocol: openid
+    issuer: https://idp.example.invalid/application/o/sadp
+    authorizationEndpoint: https://idp.example.invalid/application/o/authorize/
+    tokenEndpoint: https://idp.example.invalid/application/o/token/
+    jwksURI: https://idp.example.invalid/application/o/sadp/jwks/
+    endSessionEndpoint: ''
+    groupsClaim: groups
+    clientIDClaim: azp
     portalClientID: sadp-portal
-    issuer: https://sso.sadp.example.invalid/realms/sadp
-    samlSpEntityId: https://sso.sadp.example.invalid/realms/sadp
-    deployment: in-cluster
-    nodePlacement: any
-    external:
-      address: ''
-      port: 8080
   registry:
     url: registry.example.invalid
     project: example/sadp
@@ -296,5 +295,5 @@ status:
   publicExposureAndDns: pending
   rancher: ready
   rancherRbac: pending
-  keycloak: ready
+  identityProvider: external
   openbao: ready

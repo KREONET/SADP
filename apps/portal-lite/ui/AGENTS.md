@@ -34,7 +34,7 @@ npm run dev        # 개발 서버
 npm run build      # 프로덕션 빌드 (output: "standalone")
 npm run lint       # eslint (0 error 유지 필수)
 npm run typecheck  # tsc --noEmit (0 error 유지 필수)
-npm run test       # vitest (lib/keycloak-token.test.ts)
+npm run test       # vitest (lib/oidc-token.test.ts 포함)
 ```
 
 - 코드를 고쳤으면 **최소 `npm run typecheck` + `npm run lint` + `npm run build`** 를 통과시키고 끝내라. warning은 남아 있어도 되지만 error는 0이어야 한다.
@@ -65,7 +65,7 @@ components/
 ├── ui/        # shadcn 프리미티브 (직접 손으로 만들지 말고 `npx shadcn@latest add <name>`)
 ├── paas/      # 신규 화면 도메인 컴포넌트
 └── portal.tsx # 레거시
-lib/     # site-config, paas-api, format-date, env-parse, new-app-draft, keycloak-token,
+lib/     # site-config, paas-api, format-date, env-parse, new-app-draft, oidc-token,
          # require-session(로그인 게이트 + 개발 우회), i18n/, utils
 types/domain.ts  # 화면 전체가 공유하는 도메인 타입 — 여기서 시작해라
 디자인파일/       # 확정 스크린샷. 스펙의 최종 근거(화면3 문서는 제거되어 해당 시안은 미사용).
@@ -157,7 +157,7 @@ appGroups:          "/api/v1/app-groups",
 
 부가 규칙 (스펙 명시):
 
-- 단일 앱 배포 요청의 `Idempotency-Key` 헤더는 하위 호환을 위해 선택이고, AppGroup 생성에서는 필수다. 보낼 때는 1~128자 `^[A-Za-z0-9._:-]+$`를 지킨다. 인증은 Keycloak OAuth2 (`deployments:read` / `deployments:write`).
+- 단일 앱 배포 요청의 `Idempotency-Key` 헤더는 하위 호환을 위해 선택이고, AppGroup 생성에서는 필수다. 보낼 때는 1~128자 `^[A-Za-z0-9._:-]+$`를 지킨다. 인증은 외부 OIDC (`deployments:read` / `deployments:write`).
 - 요청 본문 64 KiB 제한(413), `application/json` 아니면 415, 의미 검증 실패는 422, 에러는 `application/problem+json`.
 - **Secret 실제 값은 어떤 응답에도 실리지 않는다.** 화면6 마스킹 로직(`MASKED_VALUE`)을 우회하지 마라.
 
@@ -171,9 +171,8 @@ appGroups:          "/api/v1/app-groups",
 |---|---|
 | `NEXT_PUBLIC_PAAS_VERSION`, `NEXT_PUBLIC_PAAS_COPYRIGHT_YEAR` | `AppFooter` |
 | `NEXT_PUBLIC_GIT_BASE_URL`, `NEXT_PUBLIC_GIT_DEFAULT_ORG` | 화면4-5 Step2 저장소 URL placeholder/검증 (`GIT_REPO_PLACEHOLDER`) |
-| `NEXT_PUBLIC_SSO_BASE_URL`, `NEXT_PUBLIC_SSO_REALM` | 화면4-5 Step4(OIDC), 화면7 카탈로그 |
 | `NEXT_PUBLIC_PAAS_APP_DOMAIN` | 배포 앱 호스트명 placeholder |
-| `AUTH_KEYCLOAK_ID/ISSUER/SECRET`, `AUTH_SECRET` | 서버 전용. 브라우저로 나가면 안 된다 |
+| `AUTH_OIDC_ID/ISSUER/SECRET`, `AUTH_OIDC_TOKEN_ENDPOINT`, `AUTH_SECRET` | 서버 전용. 브라우저로 나가면 안 된다 |
 | `PAAS_DEV_AUTH_BYPASS` / `PAAS_DEV_USER` / `PAAS_DEV_ROLES` | **개발 전용 로그인 우회**(아래 §6.1). 배포 values 에 넣으면 `ci-guard.sh` 가 막는다 |
 
 - `NEXT_PUBLIC_` 접두사가 없는 값은 **절대 클라이언트 컴포넌트에서 참조하지 마라.**
@@ -186,7 +185,7 @@ appGroups:          "/api/v1/app-groups",
 
 ### 6.1 개발 전용 로그인 우회
 
-`(paas)` 화면 전체는 `app/(paas)/layout.tsx` 의 `requirePaasSession()` 이 막는다. Keycloak client
+`(paas)` 화면 전체는 `app/(paas)/layout.tsx` 의 `requirePaasSession()` 이 막는다. 외부 OIDC client
 자격증명 없이 화면을 보려면 `lib/require-session.ts` 의 `devBypassSession()` 을 쓴다.
 
 **인증을 끄는 코드이므로 두 조건을 모두 만족할 때만 동작한다.**

@@ -15,7 +15,7 @@ import {
 } from "lucide-react";
 
 import { LocaleToggle } from "@/components/paas/locale-toggle";
-import { signOutFromKeycloak } from "@/app/auth-actions";
+import { signOutFromOIDC } from "@/app/auth-actions";
 import { useI18n } from "@/lib/i18n/context";
 
 type CatalogResponse = {
@@ -72,7 +72,7 @@ export function Portal({ session }: { session: Session | null }) {
           {session?.user ? (
             <div className="auth-menu">
               <span className="auth-user">
-                <small>KEYCLOAK</small>
+                <small>OIDC</small>
                 <strong>
                   {session.user.username ??
                     session.user.name ??
@@ -90,7 +90,7 @@ export function Portal({ session }: { session: Session | null }) {
               <Link className="session-link" href="/account">
                 {t.session}
               </Link>
-              <form action={signOutFromKeycloak} className="auth-logout-form">
+              <form action={signOutFromOIDC} className="auth-logout-form">
                 <button type="submit" className="auth-button quiet-auth">
                   {t.signOut}
                 </button>
@@ -100,7 +100,7 @@ export function Portal({ session }: { session: Session | null }) {
             <button
               type="button"
               className="auth-button"
-              onClick={() => void signIn("keycloak", { redirectTo: "/" })}
+              onClick={() => void signIn("oidc", { redirectTo: "/" })}
             >
               {t.signIn}
             </button>
@@ -133,7 +133,7 @@ export function Portal({ session }: { session: Session | null }) {
                 <button
                   type="button"
                   className="button primary"
-                  onClick={() => void signIn("keycloak", { redirectTo: "/" })}
+                  onClick={() => void signIn("oidc", { redirectTo: "/" })}
                 >
                   {t.heroPrimary}
                   <ArrowRight aria-hidden="true" />
@@ -176,7 +176,7 @@ export function Portal({ session }: { session: Session | null }) {
               </div>
               <div>
                 <dt>{t.envAuth}</dt>
-                <dd>Keycloak OIDC</dd>
+                <dd>External OIDC</dd>
               </div>
               <div>
                 <dt>{t.envUser}</dt>

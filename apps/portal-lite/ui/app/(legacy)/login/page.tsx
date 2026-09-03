@@ -6,7 +6,7 @@ import { getI18n } from "@/lib/i18n/server";
 import {
   needsAuthenticationRecovery,
   safeLoginCallback,
-  startKeycloakLogin,
+  startOIDCLogin,
 } from "@/lib/login-flow";
 import { isUsablePaasSession } from "@/lib/paas-session-policy";
 
@@ -54,7 +54,7 @@ export default async function LoginPage({
         <form
           action={async () => {
             "use server";
-            await startKeycloakLogin(
+            await startOIDCLogin(
               { signIn, signOut },
               { callbackUrl, locale, fresh: recovery },
             );

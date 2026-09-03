@@ -1,5 +1,6 @@
 #!/usr/bin/env bash
-# 현재 테스트베드 자격증명을 Git 밖의 root-only 인수인계 파일로 모은다.
+# SADP가 보관하는 자격증명만 Git 밖의 root-only 인수인계 파일로 모은다.
+# 외부 IdP 계정과 관리 자격증명은 SADP의 소유물이 아니므로 읽거나 내보내지 않는다.
 set -euo pipefail
 source "$(dirname "$0")/../lib/testbed-common.sh"
 
@@ -15,16 +16,9 @@ case ${output} in
 esac
 
 required_files=(
-  keycloak-test-user
-  keycloak-test-password
-  keycloak-admin-user
-  keycloak-admin-password
-  keycloak-db-name
-  keycloak-db-user
-  keycloak-db-password
-  keycloak-secure-demo-client-secret
-  keycloak-openbao-client-secret
-  keycloak-portal-client-secret
+  oidc-secure-demo-client-secret
+  oidc-openbao-client-secret
+  oidc-portal-client-secret
   portal-auth-secret
   app-db-password
   app-api-token
@@ -47,22 +41,21 @@ import yaml
 
 spec = yaml.safe_load(open(sys.argv[1], encoding="utf-8"))["spec"]
 hosts = {item["name"]: item["host"] for item in spec.get("platformServices") or []}
+identity = spec["identityProvider"]
 print(spec["baseDomain"])
-print(hosts["sso"])
 print(hosts["rancher"])
 print(hosts["openbao"])
-print(spec["keycloak"]["realm"])
-print(spec["keycloak"]["portalClientID"])
+print(identity["issuer"])
+print(identity["portalClientID"])
 print(spec["environment"])
 PY
 )
 BASE_DOMAIN=${site_values[0]}
-SSO_HOST=${site_values[1]}
-RANCHER_HOST=${site_values[2]}
-OPENBAO_HOST=${site_values[3]}
-KEYCLOAK_REALM=${site_values[4]}
-PORTAL_CLIENT_ID=${site_values[5]}
-APP_ENVIRONMENT=${site_values[6]}
+RANCHER_HOST=${site_values[1]}
+OPENBAO_HOST=${site_values[2]}
+OIDC_ISSUER=${site_values[3]}
+PORTAL_CLIENT_ID=${site_values[4]}
+APP_ENVIRONMENT=${site_values[5]}
 
 temporary=$(mktemp "${TESTBED_STATE_DIR}/.test-credentials.XXXXXX")
 cleanup() { rm -f "${temporary}"; }
@@ -70,19 +63,13 @@ trap cleanup EXIT
 
 {
   printf '# SADP TEST ONLY - 절대 Git/메신저/티켓에 첨부하지 말 것\n'
+  printf '# 외부 IdP 사용자/관리자 자격증명은 이 파일에 포함하지 않음\n'
   printf '# 생성: %s\n\n' "$(date --iso-8601=seconds)"
 
-  printf '[일반 사용자 - Keycloak %s realm / secure-demo / OpenBao OIDC]\n' "${KEYCLOAK_REALM}"
-  printf 'URL=https://secure-demo.%s\n' "${BASE_DOMAIN}"
-  printf 'KEYCLOAK_URL=https://%s\n' "${SSO_HOST}"
-  printf 'OPENBAO_URL=https://%s\n' "${OPENBAO_HOST}"
-  printf 'USERNAME=%s\n' "$(read_secret_file "${CREDENTIAL_DIR}/keycloak-test-user")"
-  printf 'PASSWORD=%s\n\n' "$(read_secret_file "${CREDENTIAL_DIR}/keycloak-test-password")"
-
-  printf '[Keycloak 관리자 - break-glass]\n'
-  printf 'URL=https://%s/admin/master/console/\n' "${SSO_HOST}"
-  printf 'USERNAME=%s\n' "$(read_secret_file "${CREDENTIAL_DIR}/keycloak-admin-user")"
-  printf 'PASSWORD=%s\n\n' "$(read_secret_file "${CREDENTIAL_DIR}/keycloak-admin-password")"
+  printf '[외부 OIDC 연결]\n'
+  printf 'OIDC_ISSUER=%s\n' "${OIDC_ISSUER}"
+  printf 'SECURE_DEMO_URL=https://secure-demo.%s\n' "${BASE_DOMAIN}"
+  printf 'OPENBAO_URL=https://%s\n\n' "${OPENBAO_HOST}"
 
   printf '[Rancher 관리자 - bootstrap 값, 최초 로그인 후 변경 여부 확인]\n'
   printf 'URL=https://%s\n' "${RANCHER_HOST}"
@@ -98,31 +85,26 @@ trap cleanup EXIT
   printf '[OIDC confidential client secrets - 일반 사용자에게 전달 금지]\n'
   printf 'SECURE_DEMO_CLIENT_ID=secure-demo-%s\n' "${APP_ENVIRONMENT}"
   printf 'SECURE_DEMO_CLIENT_SECRET=%s\n' \
-    "$(read_secret_file "${CREDENTIAL_DIR}/keycloak-secure-demo-client-secret")"
+    "$(read_secret_file "${CREDENTIAL_DIR}/oidc-secure-demo-client-secret")"
   printf 'OPENBAO_CLIENT_ID=openbao\n'
   printf 'OPENBAO_CLIENT_SECRET=%s\n\n' \
-    "$(read_secret_file "${CREDENTIAL_DIR}/keycloak-openbao-client-secret")"
+    "$(read_secret_file "${CREDENTIAL_DIR}/oidc-openbao-client-secret")"
   printf 'PORTAL_CLIENT_ID=%s\n' "${PORTAL_CLIENT_ID}"
   printf 'PORTAL_CLIENT_SECRET=%s\n' \
-    "$(read_secret_file "${CREDENTIAL_DIR}/keycloak-portal-client-secret")"
+    "$(read_secret_file "${CREDENTIAL_DIR}/oidc-portal-client-secret")"
   printf 'PORTAL_AUTH_SECRET_FILE=%s/portal-auth-secret\n\n' "${CREDENTIAL_DIR}"
 
   printf '[secure-demo runtime test secrets - 로그인 자격증명 아님]\n'
   printf 'DB_PASSWORD=%s\n' "$(read_secret_file "${CREDENTIAL_DIR}/app-db-password")"
   printf 'API_TOKEN=%s\n\n' "$(read_secret_file "${CREDENTIAL_DIR}/app-api-token")"
 
-  printf '[Keycloak PostgreSQL - 클러스터 내부 전용]\n'
-  printf 'DATABASE=%s\n' "$(read_secret_file "${CREDENTIAL_DIR}/keycloak-db-name")"
-  printf 'USERNAME=%s\n' "$(read_secret_file "${CREDENTIAL_DIR}/keycloak-db-user")"
-  printf 'PASSWORD=%s\n\n' "$(read_secret_file "${CREDENTIAL_DIR}/keycloak-db-password")"
-
   printf '[RKE2 join token - 사이트 로그인용 아님]\n'
   printf 'TOKEN=%s\n\n' "$(tr -d '\r\n' </var/lib/rancher/rke2/server/token)"
 
   printf '[현재 없는 자격증명]\n'
+  printf 'IDP=사용자와 관리자 계정은 외부 IdP 운영자가 별도로 관리함\n'
   printf 'FORGEJO=서버 endpoint만 확인됨, Actions/Registry/GitOps 계정은 아직 연결하지 않음\n'
-  printf 'PUBLIC=hello는 로그인 없음; portal-lite의 /account는 Keycloak 로그인이 필요함\n'
 } >"${temporary}"
 
 install -m 0600 "${temporary}" "${output}"
-ok "root 전용 테스트 자격증명표 생성: ${output}"
+ok "root 전용 SADP 자격증명표 생성: ${output}"

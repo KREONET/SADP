@@ -3,7 +3,7 @@
 > 대상: Portal에서 앱 하나를 등록하는 신규 사용자와 이를 준비하는 플랫폼 관리자
 
 Portal은 앱 정보를 검증한 뒤 플랫폼 공용 Forgejo 봇으로 GitOps Pull Request를 만듭니다.
-사용자는 Forgejo token, Registry credential, Keycloak client secret을 입력하지 않습니다.
+사용자는 Forgejo token, Registry credential, OIDC client secret을 입력하지 않습니다.
 
 ## 사용자가 입력하는 값
 
@@ -17,14 +17,14 @@ Portal은 앱 정보를 검증한 뒤 플랫폼 공용 Forgejo 봇으로 GitOps 
 
 `latest`, `main`, `master`, `stable` 같은 가변 image tag는 사용할 수 없습니다. OIDC를
 선택하면 Portal이 앱 identity로 client ID, `/oauth2/callback`, 허용 그룹과 ExternalSecret
-계약을 계산합니다. Keycloak client secret 입력란은 없습니다.
+계약을 계산합니다. OIDC client secret 입력란은 없습니다.
 
 ## 플랫폼 관리자가 미리 준비하는 값
 
 - Portal 런타임의 `FORGEJO_BOT_TOKEN` ExternalSecret 동기화
 - Zone 또는 AppGroup의 Registry pull ExternalSecret 동기화
 - OpenBao workload reader policy와 고정 ESO role
-- OIDC 앱의 Keycloak client, callback, 허용 그룹과 현재 client secret 시드
+- OIDC 앱의 외부 IdP client, callback, 허용 그룹과 현재 client secret 시드
 - Portal이 사용하는 Forgejo 저장소·branch와 Registry push 자격증명
 
 Portal은 Git 기록을 만들기 전에 이 준비 상태를 확인합니다. 준비가 덜 됐으면 외부 API 응답
@@ -44,7 +44,7 @@ Portal은 Git 기록을 만들기 전에 이 준비 상태를 확인합니다. �
   → Deployment Ready
 ```
 
-Secret이 없는 `authentication.mode=none` 앱은 Keycloak client나 앱별 ExternalSecret을 만들지
+Secret이 없는 `authentication.mode=none` 앱은 OIDC client나 앱별 ExternalSecret을 만들지
 않습니다. runtime Secret이 있는 앱에만 다음 canonical 경계를 사용합니다.
 
 ```text
@@ -65,7 +65,7 @@ OIDC client secret도 같은 앱 경계의 OpenBao 문서에 저장되지만 앱
 
 - Forgejo bot token
 - Registry username/password 또는 Docker config JSON
-- Keycloak client secret과 관리자 자격증명
+- OIDC client secret과 IdP 관리자 자격증명
 - 앱 runtime token/password/private key
 - root-only credential 파일의 내용이나 host 경로
 

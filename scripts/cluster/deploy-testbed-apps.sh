@@ -2,6 +2,7 @@
 # 로컬 containerd 이미지로 hello, secure-demo, Portal Lite를 배포한다.
 set -euo pipefail
 source "$(dirname "$0")/../lib/testbed-common.sh"
+source "$(dirname "$0")/../lib/openbao-eso.sh"
 
 PULL_DOCKERCONFIG=${SADP_REGISTRY_PULL_DOCKERCONFIG:-${CREDENTIAL_DIR}/registry-pull-dockerconfig.json}
 PUSH_DOCKERCONFIG=${SADP_REGISTRY_PUSH_DOCKERCONFIG:-${CREDENTIAL_DIR}/registry-push-dockerconfig.json}
@@ -178,6 +179,7 @@ fi
 
 # AppGroup Namespace는 Zone Secret을 직접 읽지 않는다. pull 전용 값만 OpenBao 공통
 # 경로에 넣고 ESO가 Namespace별 dockerconfigjson Secret으로 동기화한다.
+openbao_require_unsealed 2m
 OPENBAO_INIT_FILE=${TESTBED_STATE_DIR}/openbao-init.json
 [[ -s ${OPENBAO_INIT_FILE} ]] || die "OpenBao 초기화 파일 없음: ${OPENBAO_INIT_FILE}"
 OPENBAO_POD=openbao-0
@@ -197,26 +199,38 @@ pull_config | jq -Rs '{data:{dockerconfigjson:.}}' |
   bao_root_input write -format=json "kv/data/${REGISTRY_REMOTE_PATH}" - >/dev/null
 ok "AppGroup registry pull 전용 credential를 OpenBao 공통 경로에 동기화"
 
-render_apply() {
+render_profile() {
   local release=$1 values=$2
   # 렌더에 -n 을 넘겨야 Release.Namespace 가 워크로드 Namespace 로 고정된다.
-  # 차트가 모든 객체에 metadata.namespace 를 명시하고 status-reader Role 처럼
-  # 다른 Namespace 로 나가는 객체도 있으므로 apply 에는 -n 을 주지 않는다.
   hctl template "${release}" charts/app-profile -n "${WORKLOAD_NAMESPACE}" \
-    -f contracts/values-platform-production.yaml -f "${values}" | kctl apply -f - >/dev/null
+    -f contracts/values-platform-production.yaml -f "${values}"
 }
-render_apply hello apps/hello/values-beta.yaml
-render_apply secure-demo apps/secure-demo/values-beta.yaml
-render_apply portal-lite apps/portal-lite/values-beta.yaml
+render_apply_prerequisites() {
+  local release=$1 values=$2
+  # 새 Deployment를 함께 apply하면 ESO가 Secret을 만들기 전에 소비 Pod rollout이 시작된다.
+  # 나머지 문서를 먼저 적용하고 대상 Secret 존재 확인 뒤 아래에서 원본 렌더를 완성한다.
+  render_profile "${release}" "${values}" | python3 -c '
+import sys
+import yaml
+
+documents = [
+    document for document in yaml.safe_load_all(sys.stdin)
+    if document and document.get("kind") != "Deployment"
+]
+yaml.safe_dump_all(documents, sys.stdout, sort_keys=False)
+' | kctl apply -f - >/dev/null
+}
+render_apply_workload() {
+  local release=$1 values=$2
+  # 객체가 다른 Namespace로 나갈 수 있으므로 apply에는 -n을 주지 않는다.
+  render_profile "${release}" "${values}" | kctl apply -f - >/dev/null
+}
+render_apply_prerequisites hello apps/hello/values-beta.yaml
+render_apply_prerequisites secure-demo apps/secure-demo/values-beta.yaml
+render_apply_prerequisites portal-lite apps/portal-lite/values-beta.yaml
 
 bash scripts/node/install-squid-egress.sh --check
 kctl apply -f platform/network/egress-policies.yaml >/dev/null
-
-# 테스트베드는 registry 대신 동일한 local tag를 노드 containerd에 다시 import한다.
-# Deployment spec이 같아도 새 image digest를 사용하도록 Pod template을 명시적으로 갱신한다.
-for deployment in hello secure-demo portal-lite; do
-  kctl rollout restart -n "${WORKLOAD_NAMESPACE}" deployment/${deployment} >/dev/null
-done
 
 security_policy_accepted() {
   kctl get securitypolicy -n "${WORKLOAD_NAMESPACE}" secure-demo-oidc -o json 2>/dev/null | \
@@ -237,9 +251,17 @@ if ! security_policy_accepted; then
 fi
 security_policy_accepted || die "secure-demo OIDC SecurityPolicy 미수락"
 
-kctl wait -n "${WORKLOAD_NAMESPACE}" externalsecret/secure-demo-runtime --for=condition=Ready --timeout=5m >/dev/null
-kctl wait -n "${WORKLOAD_NAMESPACE}" externalsecret/secure-demo-oidc-client --for=condition=Ready --timeout=5m >/dev/null
-kctl wait -n "${WORKLOAD_NAMESPACE}" externalsecret/portal-lite-auth --for=condition=Ready --timeout=5m >/dev/null
+wait_external_secret_ready "${WORKLOAD_NAMESPACE}" secure-demo-runtime 5m
+wait_external_secret_ready "${WORKLOAD_NAMESPACE}" secure-demo-oidc-client 5m
+wait_external_secret_ready "${WORKLOAD_NAMESPACE}" portal-lite-auth 5m
+render_apply_workload hello apps/hello/values-beta.yaml
+render_apply_workload secure-demo apps/secure-demo/values-beta.yaml
+render_apply_workload portal-lite apps/portal-lite/values-beta.yaml
+# 같은 local tag를 다시 import한 경우에도 새 digest를 쓰게 하되, Store/ExternalSecret/대상
+# Secret 확인보다 소비 workload 생성/재시작이 앞서지 않게 한다.
+for deployment in hello secure-demo portal-lite; do
+  kctl rollout restart -n "${WORKLOAD_NAMESPACE}" deployment/${deployment} >/dev/null
+done
 for deployment in hello secure-demo portal-lite; do
   kctl rollout status -n "${WORKLOAD_NAMESPACE}" deployment/${deployment} --timeout=10m >/dev/null
 done

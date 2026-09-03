@@ -5,13 +5,13 @@ const CALLBACK_BASE = "https://portal.invalid";
 type LoginActions = {
   signOut(options: { redirect: false }): Promise<unknown>;
   signIn(
-    provider: "keycloak",
+    provider: "oidc",
     options: { redirectTo: string },
     authorizationParams: Record<string, string>,
   ): Promise<unknown>;
 };
 
-type StartKeycloakLoginOptions = {
+type StartOIDCLoginOptions = {
   callbackUrl: unknown;
   locale: unknown;
   fresh: boolean;
@@ -47,7 +47,7 @@ export function needsAuthenticationRecovery(
     : false;
 }
 
-export function keycloakAuthorizationParams(
+export function oidcAuthorizationParams(
   locale: unknown,
   fresh: boolean,
 ): Record<string, string> {
@@ -62,17 +62,17 @@ export function keycloakAuthorizationParams(
  * 복구 요청은 사용자가 버튼을 누른 시점에만 기존 앱 세션을 지우고 Auth.js signIn을 새로 호출한다.
  * state/nonce/PKCE는 이 함수가 보관하지 않으며 매 signIn 호출마다 Auth.js가 새로 생성한다.
  */
-export async function startKeycloakLogin(
+export async function startOIDCLogin(
   actions: LoginActions,
-  options: StartKeycloakLoginOptions,
+  options: StartOIDCLoginOptions,
 ): Promise<void> {
   const callbackUrl = safeLoginCallback(options.callbackUrl);
   const locale: Locale = normalizeLocale(options.locale);
 
   if (options.fresh) await actions.signOut({ redirect: false });
   await actions.signIn(
-    "keycloak",
+    "oidc",
     { redirectTo: callbackUrl },
-    keycloakAuthorizationParams(locale, options.fresh),
+    oidcAuthorizationParams(locale, options.fresh),
   );
 }

@@ -105,7 +105,7 @@ systemctl is-active --quiet "rke2-${ROLE}.service" \
   || die "업데이트 전 rke2-${ROLE}.service가 active가 아님"
 
 if [[ ${ROLE} == server ]]; then
-  note "server 업데이트 전 RKE2/OpenBao/Keycloak 전체 백업"
+  note "server 업데이트 전 RKE2/OpenBao 전체 백업"
   bash scripts/ops/backup-testbed.sh
 fi
 

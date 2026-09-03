@@ -17,6 +17,7 @@ ROOT = Path(__file__).resolve().parents[2]
 DEPLOY = ROOT / "scripts/cluster/deploy-testbed-apps.sh"
 BOOTSTRAP = ROOT / "scripts/cluster/bootstrap-testbed-services.sh"
 CONFIGURE = ROOT / "scripts/ops/configure-openbao-app-access.sh"
+CONFIGURE_OIDC = ROOT / "scripts/ops/configure-openbao-oidc.sh"
 VERIFY = ROOT / "scripts/verify/verify-testbed.sh"
 INSTALL_PORTAL = ROOT / "scripts/cluster/install-portal-backend.sh"
 BACKUP = ROOT / "scripts/ops/backup-testbed.sh"
@@ -35,7 +36,7 @@ def typed_name(prefix: str, slug: str, canonical: str) -> str:
     return f"{prefix}{human}-{digest}"
 
 
-for script in (DEPLOY, BOOTSTRAP, CONFIGURE, VERIFY, INSTALL_PORTAL, BACKUP):
+for script in (DEPLOY, BOOTSTRAP, CONFIGURE, CONFIGURE_OIDC, VERIFY, INSTALL_PORTAL, BACKUP):
     subprocess.run(["bash", "-n", str(script)], check=True, cwd=ROOT)
 check(True, "registry/OpenBao 운영 스크립트 bash syntax")
 
@@ -73,6 +74,7 @@ secret_argv_scripts = (
     (BOOTSTRAP, bootstrap),
     (DEPLOY, deploy),
     (CONFIGURE, configure),
+    (CONFIGURE_OIDC, CONFIGURE_OIDC.read_text(encoding="utf-8")),
     (INSTALL_PORTAL, INSTALL_PORTAL.read_text(encoding="utf-8")),
     (BACKUP, BACKUP.read_text(encoding="utf-8")),
 )
@@ -185,7 +187,7 @@ check(
     "bootstrap은 기존 KV 문서를 key patch하고 최초 문서만 put",
 )
 portal_seed = bootstrap.split(
-    'seed_kv_file_key "${kv_prefix}/portal-lite" AUTH_KEYCLOAK_SECRET', 1
+    'seed_kv_file_key "${kv_prefix}/portal-lite" AUTH_OIDC_SECRET', 1
 )[1].split('if ! bao auth list', 1)[0]
 check(
     "FORGEJO_BOT_TOKEN" not in portal_seed,

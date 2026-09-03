@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# wildcard TLS 를 확인하고 Keycloak 과 사이트 고유 리소스를 설치한다.
+# wildcard TLS와 사이트 고유 리소스를 설치한다. 외부 IdP는 관리하지 않는다.
 # Helm 차트(ESO/Reloader/OpenBao/monitoring)의 소유자는 Argo 이고 여기서는 Ready 만 확인한다.
 set -euo pipefail
 source "$(dirname "$0")/../lib/testbed-common.sh"
@@ -45,10 +45,7 @@ if tls["source"] == "acme" and tls["issuerMode"] != "production":
     secret += "-staging"
 print(secret)
 print(tls["source"])
-# CoreDNS hosts 항목은 render-network.py 가 계약에서 만든다. 여기서 문자열을 따로
-# 적어 두면 사이트가 바뀔 때 조용히 다른 사이트 값을 검사하게 된다.
-sso = next(item for item in spec["platformServices"] if item["name"] == "sso")
-print(f"{spec['gateway']['vip']} {sso['host']}")
+print(str(bool((spec.get("monitoring") or {}).get("enabled", True))).lower())
 PY
 )
 BASE_DOMAIN=${contract_values[0]}
@@ -56,9 +53,8 @@ CERT_FILE=${TESTBED_ROOT}/${contract_values[1]}
 KEY_FILE=${TESTBED_ROOT}/${contract_values[2]}
 TLS_SECRET=${contract_values[3]}
 TLS_SOURCE=${contract_values[4]}
-SSO_HOSTS_ENTRY=${contract_values[5]}
+INSTALL_MONITORING=${contract_values[5]}
 REUSE_EXISTING_TLS=false
-VALIDATE_WILDCARD=true
 temporary_paths=()
 cleanup() {
   local path
@@ -88,25 +84,7 @@ load_gateway_tls() {
     -o jsonpath='{.data.tls\.key}' | base64 -d >"${KEY_FILE}"
 }
 
-if [[ ${TLS_SOURCE} == acme ]]; then
-  # DNS-01 경로에서 wildcard Secret 의 주인은 cert-manager 다. 제공 PEM 을 요구해서도,
-  # 아래 provided 분기처럼 Certificate 를 지우고 정적 Secret 으로 덮어써서도 안 된다.
-  REUSE_EXISTING_TLS=true
-  if load_gateway_tls; then
-    note "cert-manager 발급 Secret envoy-gateway-system/${TLS_SECRET}을 검증 후 그대로 사용"
-  else
-    # 아직 발급 전일 수 있다. 그 상태는 계약이 이미 routeListener=http 로 표현하므로
-    # 여기서 설치를 막지 않는다.
-    VALIDATE_WILDCARD=false
-    note "envoy-gateway-system/${TLS_SECRET} 아직 없음(cert-manager 발급 대기). Gateway 는 계약대로 HTTP listener 로 뜬다"
-  fi
-elif [[ ! -r ${CERT_FILE} || ! -r ${KEY_FILE} ]]; then
-  load_gateway_tls || die "제공 PEM도 기존 Gateway TLS Secret도 없음"
-  REUSE_EXISTING_TLS=true
-  note "로컬 제공 PEM이 없어 기존 envoy-gateway-system/${TLS_SECRET}을 검증 후 재사용"
-fi
-
-if [[ ${VALIDATE_WILDCARD} == true ]]; then
+validate_wildcard_files() {
   openssl x509 -in "${CERT_FILE}" -noout >/dev/null
   openssl pkey -in "${KEY_FILE}" -noout >/dev/null
   openssl x509 -in "${CERT_FILE}" -checkend 604800 -noout >/dev/null \
@@ -120,6 +98,21 @@ if [[ ${VALIDATE_WILDCARD} == true ]]; then
   key_mode=$(stat -c '%a' "${KEY_FILE}")
   (( (8#${key_mode} & 077) == 0 )) || die "private key 권한이 너무 넓음(${key_mode}); 600 권장"
   ok "wildcard SAN/유효기간/key 일치/파일 권한 검증"
+}
+
+if [[ ${TLS_SOURCE} == acme ]]; then
+  # DNS-01 경로에서 wildcard Secret 의 주인은 cert-manager 다. 제공 PEM 을 요구해서도,
+  # 아래 provided 분기처럼 Certificate 를 지우고 정적 Secret 으로 덮어써서도 안 된다.
+  REUSE_EXISTING_TLS=true
+  note "cert-manager 설치와 DNS-01 node route preflight 뒤 Certificate ${TLS_SECRET} Ready를 기다림"
+elif [[ ! -r ${CERT_FILE} || ! -r ${KEY_FILE} ]]; then
+  load_gateway_tls || die "제공 PEM도 기존 Gateway TLS Secret도 없음"
+  REUSE_EXISTING_TLS=true
+  note "로컬 제공 PEM이 없어 기존 envoy-gateway-system/${TLS_SECRET}을 검증 후 재사용"
+fi
+
+if [[ ${TLS_SOURCE} == provided ]]; then
+  validate_wildcard_files
 fi
 
 nodes_not_ready=$(kctl get nodes --no-headers | awk '$2 != "Ready" {print $1}')
@@ -128,18 +121,8 @@ nodes_not_ready=$(kctl get nodes --no-headers | awk '$2 != "Ready" {print $1}')
 ok "RKE2 3개 노드 Ready"
 
 kctl apply -f platform/dns/rke2-coredns-config.yaml >/dev/null
-for _ in {1..60}; do
-  if kctl get configmap -n kube-system rke2-coredns-rke2-coredns \
-    -o jsonpath='{.data.Corefile}' | grep -Fq "${SSO_HOSTS_ENTRY}"; then
-    break
-  fi
-  sleep 2
-done
-kctl get configmap -n kube-system rke2-coredns-rke2-coredns \
-  -o jsonpath='{.data.Corefile}' | grep -Fq "${SSO_HOSTS_ENTRY}" \
-  || die "CoreDNS split-horizon 설정 반영 timeout: ${SSO_HOSTS_ENTRY}"
 kctl rollout status -n kube-system deployment/rke2-coredns-rke2-coredns --timeout=5m >/dev/null
-ok "CoreDNS split-horizon: ${SSO_HOSTS_ENTRY}"
+ok "CoreDNS 계약 설정 적용"
 
 # Forgejo에 push할 자격증명이 없는 동안 원격 main의 예전 manifest가 수동 배포를 되돌리지 않게 한다.
 for application in platform-bootstrap platform-resources hello-beta; do
@@ -176,6 +159,32 @@ for component in cert-manager-webhook cert-manager-cainjector; do
 done
 ok "cert-manager controller 전용 Squid proxy와 내부 recursive DNS 적용"
 
+# 일반 인터넷 DNS 성공은 RFC2136 authoritative endpoint의 TCP/UDP 경로 증거가 아니다.
+# 실제 controller가 Ready인 node마다 host network probe를 통과해야 Certificate 대기를 시작한다.
+bash scripts/cluster/preflight-cert-manager-dns01.sh --apply
+if [[ ${TLS_SOURCE} == acme ]]; then
+  certificate_found=false
+  for _ in {1..60}; do
+    if kctl get certificate -n envoy-gateway-system "${TLS_SECRET}" >/dev/null 2>&1; then
+      certificate_found=true
+      break
+    fi
+    sleep 2
+  done
+  [[ ${certificate_found} == true ]] \
+    || die "wildcard Certificate ${TLS_SECRET}이 생성되지 않음. platform-resources 동기화를 확인하라"
+  if ! kctl wait certificate -n envoy-gateway-system "${TLS_SECRET}" \
+      --for=condition=Ready --timeout=15m >/dev/null; then
+    note "값 비노출 검사: kubectl -n envoy-gateway-system get certificate ${TLS_SECRET} -o jsonpath='{.status.conditions}{\"\\n\"}'"
+    note "값 비노출 검사: kubectl -n cert-manager get challenge,order"
+    die "wildcard Certificate Ready 실패. DNS-01 route/Order/Challenge를 복구한 뒤 이 단계부터 재실행하라"
+  fi
+  load_gateway_tls \
+    || die "Certificate Ready인데 대상 TLS Secret 객체가 없음: envoy-gateway-system/${TLS_SECRET}"
+  validate_wildcard_files
+  ok "DNS-01 preflight 뒤 wildcard Certificate와 대상 TLS Secret Ready"
+fi
+
 ensure_namespace envoy-gateway-system
 if [[ ${REUSE_EXISTING_TLS} == false ]]; then
   if kctl get certificate -n envoy-gateway-system "${TLS_SECRET}" >/dev/null 2>&1; then
@@ -193,39 +202,10 @@ kctl apply -f platform/exposure/internal-ca.yaml >/dev/null
 kctl wait -n cert-manager certificate/beta-internal-ca --for=condition=Ready --timeout=5m >/dev/null
 ok "내부 서비스 TLS용 CA Ready"
 
-ensure_namespace keycloak
-ensure_text_file "${CREDENTIAL_DIR}/keycloak-db-name" keycloak
-ensure_text_file "${CREDENTIAL_DIR}/keycloak-db-user" keycloak
-ensure_text_file "${CREDENTIAL_DIR}/keycloak-admin-user" kc-admin
-ensure_text_file "${CREDENTIAL_DIR}/keycloak-test-user" test-admin
-for name in keycloak-db-password keycloak-admin-password keycloak-test-password \
-  keycloak-secure-demo-client-secret keycloak-openbao-client-secret \
-  keycloak-portal-client-secret portal-auth-secret app-db-password app-api-token; do
+for name in portal-auth-secret app-db-password app-api-token; do
   ensure_random_file "${CREDENTIAL_DIR}/${name}"
 done
-if keycloak_is_external; then
-  # 외부 Keycloak은 자체 VM에서 DB와 admin 자격증명을 관리한다. 클러스터에는 Service와
-  # EndpointSlice만 두고, DB/bootstrap Secret은 만들지 않는다.
-  kctl apply -f platform/keycloak/resources.yaml >/dev/null
-  ok "외부 Keycloak Service/EndpointSlice 적용(클러스터 DB/bootstrap Secret 없음)"
-else
-  apply_generic_secret_from_files keycloak keycloak-db \
-    --from-file=database="${CREDENTIAL_DIR}/keycloak-db-name" \
-    --from-file=username="${CREDENTIAL_DIR}/keycloak-db-user" \
-    --from-file=password="${CREDENTIAL_DIR}/keycloak-db-password"
-  apply_generic_secret_from_files keycloak keycloak-bootstrap \
-    --from-file=username="${CREDENTIAL_DIR}/keycloak-admin-user" \
-    --from-file=password="${CREDENTIAL_DIR}/keycloak-admin-password"
-  kctl apply -f platform/keycloak/resources.yaml >/dev/null
-  # Keycloak은 선택한 연합 IdP의 SAML metadata/JWKS를 서버 측에서 직접 가져온다.
-  # 워커 노드에는 직접 egress가 없으므로 outgoing HTTP client가 Squid를 쓰게 만든다.
-  kctl patch deployment -n keycloak keycloak --type=strategic \
-    --patch-file platform/keycloak/proxy-patch.yaml >/dev/null
-  keycloak_proxy=$(kctl get deployment -n keycloak keycloak \
-    -o jsonpath='{.spec.template.spec.containers[?(@.name=="keycloak")].env[?(@.name=="HTTPS_PROXY")].value}')
-  [[ ${keycloak_proxy} == "${HTTPS_PROXY}" ]] || die "Keycloak에 Squid proxy env 미적용"
-  ok "Keycloak/PostgreSQL 리소스와 runtime Secret 적용(값은 ${CREDENTIAL_DIR}에만 보관)"
-fi
+note "Identity Provider는 외부 운영 경계다. SADP는 IdP/realm/client/사용자/그룹을 설치하거나 변경하지 않음"
 
 ensure_namespace external-secrets
 ensure_namespace reloader
@@ -253,32 +233,11 @@ kctl wait -n openbao pod/openbao-0 --for=jsonpath='{.status.phase}'=Running --ti
   || die "openbao-0 미기동. Argo Application openbao 동기화 상태를 먼저 확인하라"
 ok "OpenBao Raft/PVC/audit/internal TLS Ready 확인(Argo 소유, 초기화 전)"
 
+# ReferenceGrant/HTTPRoute가 가리키는 선택 Namespace가 manifest 중간보다 늦게 나오면 같은
+# apply가 NamespaceNotFound로 중단된다. parser 기반 preflight가 Namespace만 먼저 만든다.
+python3 scripts/cluster/prepare-exposure-namespaces.py --apply
 kctl apply -f platform/exposure/resources.yaml >/dev/null
-if keycloak_is_external; then
-  # external 모드는 Service/EndpointSlice만 만들기 때문에 in-cluster workload를 기다리면
-  # 정상 사이트도 여기서 실패한다. Gateway가 실제로 사용할 endpoint가 있는지만 확인한다.
-  # kubectl JSONPath는 List 아래의 endpoints/addresses 중첩 wildcard를 빈 결과로
-  # 처리하는 버전이 있다. 이미 필수 도구인 jq로 ready endpoint만 명시적으로 순회한다.
-  external_keycloak_endpoints=$(kctl get endpointslice -n keycloak \
-    -l kubernetes.io/service-name=keycloak -o json | jq -r '
-      .items[]?.endpoints[]?
-      | select(.conditions.ready != false)
-      | .addresses[]?
-    ')
-  [[ -n ${external_keycloak_endpoints} ]] \
-    || die "외부 Keycloak Service의 EndpointSlice address가 없음"
-  ok "HTTPS Gateway/플랫폼 routes 및 외부 Keycloak Service/EndpointSlice Ready"
-else
-  kctl rollout status -n keycloak statefulset/keycloak-postgresql --timeout=10m >/dev/null
-  kctl rollout status -n keycloak deployment/keycloak --timeout=15m >/dev/null
-  if [[ $(keycloak_node_placement) == control-plane ]]; then
-    keycloak_workloads_on_control_plane \
-      || die "Keycloak/PostgreSQL이 control-plane 노드에 함께 배치되지 않음"
-    ok "HTTPS Gateway/플랫폼 routes 및 Keycloak Ready(control-plane 올인원 배치)"
-  else
-    ok "HTTPS Gateway/플랫폼 routes 및 Keycloak Ready"
-  fi
-fi
+ok "HTTPS Gateway와 플랫폼 routes 적용 완료"
 # 외부 Grafana 통합 운영용 읽기 백엔드. Grafana 자체는 클러스터 밖에 있으므로 설치하지 않고,
 # Prometheus/Loki 와 로그 수집기(Alloy)만 둔다. 노출과 인증은 계약의 MACHINE_AUTH_SERVICES 가
 # 담당한다(docs/external-observability.md).
@@ -294,7 +253,9 @@ if [[ -s ${TESTBED_STATE_DIR}/monitoring-images.txt ]]; then
   monitoring_images=${TESTBED_STATE_DIR}/monitoring-images.txt
   note "사이트 전용 monitoring 이미지 목록 사용: ${monitoring_images}"
 fi
-if [[ ! -s ${monitoring_images} ]]; then
+if [[ ${INSTALL_MONITORING} != true ]]; then
+  note "spec.monitoring.enabled=false: Prometheus/Loki/Alloy 설치 확인을 건너뜀"
+elif [[ ! -s ${monitoring_images} ]]; then
   note "monitoring 이미지 목록이 없어 스택 설치를 건너뜀: ${monitoring_images}"
   note "docs/external-observability.md 의 이미지 배포 절차를 먼저 수행한다"
 else

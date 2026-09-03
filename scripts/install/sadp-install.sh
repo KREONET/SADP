@@ -105,12 +105,7 @@ fi
 # configure-site의 엄격한 parser/validator를 통과한 값만 source한다. 원본 site.env를
 # source하지 않으므로 command substitution이나 Secret처럼 보이는 key가 shell에 들어오지 않는다.
 eval "$(python3 scripts/site/configure-site.py --env-file "${ENV_FILE}" --print-install-env)"
-
-if [[ ${KEYCLOAK_DEPLOYMENT} == in-cluster ]]; then
-  note "Keycloak 통합 설치: in-cluster, node-placement=${KEYCLOAK_NODE_PLACEMENT}"
-else
-  note "Keycloak 통합 설치: external Service/EndpointSlice와 원격 정책 수렴"
-fi
+note "외부 OIDC issuer 연결: ${OIDC_ISSUER} (IdP 설정은 설치기 관리 대상 아님)"
 
 if [[ ${APPLY} == true ]]; then
   case "${BASE_DOMAIN}" in
@@ -285,7 +280,9 @@ if [[ -s ${state_root}/monitoring-images.txt ]]; then
   note "사이트 전용 monitoring 이미지 목록 사용: ${monitoring_images}"
 fi
 monitoring_images_preloaded=false
-if [[ -s ${monitoring_images} ]]; then
+if [[ ${SADP_INSTALL_MONITORING} != true ]]; then
+  note "SADP_INSTALL_MONITORING=false: monitoring image 선배포를 건너뜀"
+elif [[ -s ${monitoring_images} ]]; then
   step "Prometheus/Loki/Alloy 이미지 Squid 경유 선배포" \
     bash scripts/cluster/sync-external-images.sh --image-list "${monitoring_images}"
   monitoring_images_preloaded=true
@@ -347,7 +344,13 @@ if [[ ${SADP_BUILD_IMAGES} == true ]]; then
   step "SADP 로컬 이미지 빌드와 전체 노드 import" "${build[@]}"
 fi
 
-step "Keycloak/OpenBao 서비스 초기화" bash scripts/cluster/bootstrap-testbed-services.sh
+step "OpenBao 서비스 초기화(OIDC config 제외)" \
+  bash scripts/cluster/bootstrap-testbed-services.sh --skip-openbao-oidc
+
+# 외부 IdP client는 관리자가 미리 만들고 Secret 파일을 배치한다. Certificate/Gateway/discovery 중
+# 하나라도 실패하면 OpenBao OIDC config API는 호출하지 않는다.
+step "Gateway/TLS/OIDC discovery preflight 후 OpenBao OIDC 설정" \
+  bash scripts/ops/configure-openbao-oidc.sh --apply
 
 if [[ ${SADP_DEPLOY_APPS} == true ]]; then
   if [[ ${APPLY} == true ]]; then

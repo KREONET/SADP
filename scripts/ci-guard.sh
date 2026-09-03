@@ -27,46 +27,29 @@ else
   echo "[OK]   배포 매니페스트에 개발용 인증 우회 없음"
 fi
 
-# 공개 self-registration을 켜면 익명 사용자가 곧바로 Portal write 권한을 얻는다. 신규
-# import는 default group, 기존 연합 사용자는 FORCE mapper로 수렴시키고 Portal client의
-# 브라우저 logout 반환 URI도 두 배포 경로에서 함께 유지한다.
-if grep -q 'registrationAllowed=false' scripts/cluster/bootstrap-testbed-services.sh \
-   && grep -q 'kc update "default-groups/${developer_group_id}"' \
-     scripts/cluster/bootstrap-testbed-services.sh \
-   && grep -q 'update "default-groups/${developer_group_id}"' \
-     platform/keycloak/external/configure-default-developer.sh \
-   && grep -q 'oidc-hardcoded-group-idp-mapper' scripts/cluster/bootstrap-testbed-services.sh \
-   && grep -q 'oidc-hardcoded-group-idp-mapper' \
-     platform/keycloak/external/configure-default-developer.sh \
-   && grep -q 'post.logout.redirect.uris' scripts/cluster/bootstrap-testbed-services.sh \
-   && grep -q 'post.logout.redirect.uris' \
-     platform/keycloak/external/configure-default-developer.sh \
-   && grep -q 'idp-auto-link' scripts/cluster/bootstrap-testbed-services.sh \
-   && grep -q 'idp-auto-link' \
-     platform/keycloak/external/configure-default-developer.sh \
-   && grep -q 'firstBrokerLoginFlowAlias' scripts/cluster/bootstrap-testbed-services.sh \
-   && grep -q 'firstBrokerLoginFlowAlias' \
-     platform/keycloak/external/configure-default-developer.sh \
-   && grep -Fq 'STABLE_SAML_USERNAME_TEMPLATE='\''${ATTRIBUTE.http://schemas.goauthentik.io/2021/02/saml/username}'\''' \
-     scripts/cluster/bootstrap-testbed-services.sh \
-   && grep -Fq 'STABLE_SAML_USERNAME_TEMPLATE='\''${ATTRIBUTE.http://schemas.goauthentik.io/2021/02/saml/username}'\''' \
-     platform/keycloak/external/configure-default-developer.sh \
-   && grep -q 'saml-username-idp-mapper' scripts/verify/verify-testbed.sh \
-   && grep -q 'configure-external-keycloak.sh --apply' \
-     scripts/cluster/bootstrap-testbed-services.sh \
-   && grep -q 'StrictHostKeyChecking=yes' scripts/cluster/configure-external-keycloak.sh \
-   && grep -q 'SADP_NTP_SERVERS' platform/keycloak/external/configure-time-sync.sh \
-   && grep -q 'systemd-time-wait-sync.service' platform/keycloak/external/configure-time-sync.sh \
-   && grep -q "EXPECTED_NOT_BEFORE='minutes=-5'" scripts/ops/configure-authentik-saml.sh \
-   && grep -q "EXPECTED_NOT_ON_OR_AFTER='minutes=5'" scripts/ops/configure-authentik-saml.sh \
-   && grep -q '로그인마다 새 SAML Response ID와 Assertion ID 발급' \
-     scripts/verify/saml-assertion-contract.py \
-   && ! grep -q 'delete.*default-groups' \
-     scripts/cluster/bootstrap-testbed-services.sh \
-     platform/keycloak/external/configure-default-developer.sh; then
-  echo "[OK]   Keycloak LIFE 자동 연결, developer 수렴, Portal SLO와 self-registration 차단 유지"
+# SADP는 IdP의 realm/client/user/group을 만들거나 고치지 않는다. 과거 프로비저닝 경로가
+# 다시 들어오면 외부 IdP 소유권 경계가 무너지므로 파일과 관리 CLI 흔적을 함께 막는다.
+managed_idp_paths=(
+  platform/keycloak
+  scripts/cluster/configure-keycloak.sh
+  scripts/cluster/configure-external-keycloak.sh
+  scripts/cluster/keycloak-kcadm-in-pod.sh
+  scripts/ops/configure-authentik-saml.sh
+)
+managed_idp_path_found=0
+for path in "${managed_idp_paths[@]}"; do
+  if [[ -d ${path} ]]; then
+    [[ -z $(find "${path}" -type f -print -quit) ]] || managed_idp_path_found=1
+  else
+    [[ ! -e ${path} ]] || managed_idp_path_found=1
+  fi
+done
+if (( managed_idp_path_found )) \
+   || grep -RInE '(^|[[:space:]])kcadm([[:space:]]|$)|registrationAllowed|firstBrokerLoginFlowAlias' \
+     scripts/cluster scripts/ops 2>/dev/null | grep -q .; then
+  echo "[FAIL] 저장소에 IdP 자동 프로비저닝 경로가 남아 있다"; FAIL=1
 else
-  echo "[FAIL] Keycloak 자동 연결/developer/SLO 또는 self-registration fail-close가 깨짐"; FAIL=1
+  echo "[OK]   외부 IdP 소유권 경계 유지(프로비저닝 자동화 없음)"
 fi
 
 if grep -RInE '(BEGIN (RSA|EC|OPENSSH|PRIVATE) KEY|hvs\.[A-Za-z0-9]{20,}|ghp_[A-Za-z0-9]{20,}|AKIA[0-9A-Z]{16})' \
@@ -198,20 +181,13 @@ else:
 
 # 설치 manifest와 컨테이너 빌드 도구도 lock을 소비하는 계약이다. Chart targetRevision만
 # 맞고 실제 image가 예전 값이면 fresh 설치와 기존 클러스터 upgrade 결과가 갈라진다.
-keycloak_image = f'quay.io/keycloak/keycloak:{version_lock["platform"]["keycloak"]}'
-postgresql_image = f'postgres:{version_lock["platform"]["postgresql"]}-bookworm'
 local_path_image = (
     "docker.io/rancher/local-path-provisioner:"
     f'v{version_lock["platform"]["localPathProvisioner"]}'
 )
 versioned_image_files = {
-    "scripts/site/templates/keycloak-in-cluster.yaml.template": {keycloak_image, postgresql_image},
-    "platform/keycloak/external/docker-compose.yml": {keycloak_image, postgresql_image},
     "docs/examples/local-path-storage.yaml": {local_path_image},
 }
-# external 배포에서는 이 파일이 Service/EndpointSlice만 가지므로 workload image가 없는 것이 정상이다.
-if str((contract["spec"].get("keycloak") or {}).get("deployment") or "in-cluster") == "in-cluster":
-    versioned_image_files["platform/keycloak/resources.yaml"] = {keycloak_image, postgresql_image}
 image_lock_errors = []
 for path, expected_images in versioned_image_files.items():
     text = pathlib.Path(path).read_text(encoding="utf-8")
@@ -233,7 +209,7 @@ if f'FROM alpine/helm:{version_lock["delivery"]["helm"]} AS helm' not in portal_
 if image_lock_errors:
     bad("versions.lock.yaml image/tool 계약 불일치: " + "; ".join(image_lock_errors))
 else:
-    ok("Keycloak/PostgreSQL/OpenBao/Helm/local-path image 버전 계약 일치")
+    ok("OpenBao/Helm/local-path image 버전 계약 일치")
 
 # 3. RKE2 config 에 실제 token 이 들어갔는지
 tok_bad = []
@@ -275,7 +251,7 @@ for f in yaml_files("apps/*/values-*.yaml", "apps/_groups/*/apps/*/values-*.yaml
         errs.append(f"{f}: portalPipeline/openbaoWriter는 portal-lite 생성 values에서만 허용")
 
     for key, value in (conf.get("config") or {}).items():
-        if FORBIDDEN.search(key):
+        if FORBIDDEN.search(key) and key != "AUTH_OIDC_TOKEN_ENDPOINT":
             errs.append(f"{f}: ConfigMap key '{key}' 는 민감값 -> OpenBao 로 이동")
         if CREDENTIAL_VALUE.search(str(value)):
             errs.append(f"{f}: ConfigMap key '{key}' 값은 자격증명/비밀키 형태 -> OpenBao 로 이동")
@@ -609,7 +585,7 @@ try:
     create_deployment = portal_paths["/api/v1/deployment-requests"]["post"]
     assert create_deployment["operationId"] == "createDeploymentRequest"
     assert "202" in create_deployment["responses"]
-    assert create_deployment["security"] == [{"keycloak": ["deployments:write"]}]
+    assert create_deployment["security"] == [{"oidc": ["deployments:write"]}]
     assert {item["$ref"] for item in create_deployment["parameters"]} >= {
         "#/components/parameters/RequesterHeader",
         "#/components/parameters/OptionalIdempotencyKey",
@@ -627,11 +603,11 @@ try:
     assert requester_header["in"] == "header" and requester_header["required"] is True
     assert requester_header["x-sadp-injected-by"] == "portal-bff"
     assert portal_components["parameters"]["IdempotencyKey"]["required"] is True
-    assert portal_components["securitySchemes"]["keycloak"]["type"] == "oauth2"
-    issuer = (contract_values["platform"]["keycloak"]["issuer"]).rstrip("/")
-    oauth = portal_components["securitySchemes"]["keycloak"]["flows"]["authorizationCode"]
-    assert oauth["authorizationUrl"] == issuer + "/protocol/openid-connect/auth"
-    assert oauth["tokenUrl"] == issuer + "/protocol/openid-connect/token"
+    assert portal_components["securitySchemes"]["oidc"]["type"] == "oauth2"
+    identity = contract["spec"]["identityProvider"]
+    oauth = portal_components["securitySchemes"]["oidc"]["flows"]["authorizationCode"]
+    assert oauth["authorizationUrl"] == identity["authorizationEndpoint"]
+    assert oauth["tokenUrl"] == identity["tokenEndpoint"]
     assert "forgejoConnected" in portal_components["schemas"]["Catalog"]["required"]
     def resolve(schema):
         # DeploymentRequestInput 처럼 $ref 한 겹으로 감싼 스키마도 계약을 검사한다.
@@ -654,7 +630,7 @@ try:
     assert "internalAddress" not in normalized_service["required"]
     runtime_update = portal_paths["/api/v1/deployment-requests/{requestID}/runtime-state"]["put"]
     assert runtime_update["operationId"] == "updateDeploymentRuntimeState"
-    assert runtime_update["security"] == [{"keycloak": ["deployments:write"]}]
+    assert runtime_update["security"] == [{"oidc": ["deployments:write"]}]
     assert {"202", "500"} <= set(runtime_update["responses"])
     runtime_input = resolve(portal_components["schemas"]["RuntimeStateInput"])
     assert runtime_input["additionalProperties"] is False
@@ -870,26 +846,32 @@ for component in ("prometheus", "loki", "alloy"):
 if monitoring_ok:
     ok("모니터링 스택(Prometheus/Loki/Alloy) Application 버전 계약 일치")
 
-# 이미지 목록에 digest 고정 참조가 있으면 sync-external-images.sh 로 옮길 때 해석되지 않는다.
+# image sync가 digest 입력에도 결정적 local alias를 만들므로 digest 자체를 막지 않는다. 대신
+# latest/tagless/깨진 digest를 merge 전에 거부해 node별로 다른 content가 들어갈 여지를 없앤다.
 monitoring_images_path = pathlib.Path("platform/monitoring/images.txt")
 if not monitoring_images_path.exists():
     bad("platform/monitoring/images.txt 가 없다(워커는 registry 에서 이미지를 받지 못한다)")
 else:
-    digest_pinned = []
     listed = []
+    invalid = []
     for line in monitoring_images_path.read_text(encoding="utf-8").splitlines():
         entry = line.split("#", 1)[0].strip()
         if not entry:
             continue
         listed.append(entry)
-        if "@sha256:" in entry:
-            digest_pinned.append(entry)
-    if digest_pinned:
-        bad("platform/monitoring/images.txt 에 digest 고정 참조가 있다: " + ", ".join(digest_pinned))
-    elif not listed:
+        if "@" in entry:
+            if not re.fullmatch(r"[^@\s]+@sha256:[0-9a-f]{64}", entry):
+                invalid.append(entry)
+            continue
+        last = entry.rsplit("/", 1)[-1]
+        if ":" not in last or not last.rsplit(":", 1)[-1] or last.rsplit(":", 1)[-1] == "latest":
+            invalid.append(entry)
+    if not listed:
         bad("platform/monitoring/images.txt 에 이미지가 없다")
+    elif invalid:
+        bad("platform/monitoring/images.txt 에 비결정적/비정상 참조가 있다: " + ", ".join(invalid))
     else:
-        ok(f"모니터링 이미지 목록 {len(listed)}개(digest 고정 없음)")
+        ok(f"모니터링 이미지 목록 {len(listed)}개(tag/digest 고정)")
 
 # 7. D5 TLS 계약 검사
 tls = contract["spec"].get("tls") or {}
@@ -1009,6 +991,14 @@ if public_mode == "direct":
     )
     if not external_interface:
         bad("spec.public.mode=direct 인데 network.interfaces.external 이 비어 있다")
+    public_node = str(public.get("nodeName") or "")
+    known_nodes = {
+        token
+        for line in open("rke/etc/hosts", encoding="utf-8")
+        for token in line.partition("#")[0].split()[1:]
+    }
+    if not public_node or public_node not in known_nodes:
+        bad("spec.public.mode=direct 인데 public.nodeName이 실제 RKE2 node 이름이 아니다")
     try:
         public_ip = str(ipaddress.IPv4Address(str(public.get("ip") or "")))
     except ipaddress.AddressValueError:
@@ -1028,151 +1018,32 @@ if "rke2-ingress-nginx" not in disabled_addons:
 else:
     ok("RKE2 기본 ingress 비활성 계약 유지")
 
-# Keycloak은 in-cluster 배포와 외부 VM 중 하나만 선택한다. 어느 쪽이든 sso host와 issuer는
-# 같고 외부 진입점은 Envoy Gateway 하나다. 달라지는 것은 keycloak Service의 backend 뿐이다.
-# 시스템마다 독자 Keycloak을 가지므로 같은 검사를 전역/시스템 공통으로 쓴다.
+# 인증 서버는 항상 외부 운영 대상이다. SADP가 소비하는 공개 OIDC endpoint와 claim
+# 이름만 계약에 두며 client secret이나 IdP 관리 정보는 허용하지 않는다.
 systems = contract["spec"].get("systems") or []
-
-
-def check_keycloak_deployment(label, keycloak, manifest_path):
-    mode = str(keycloak.get("deployment") or "in-cluster")
-    placement = str(keycloak.get("nodePlacement") or "any")
-    external = keycloak.get("external") or {}
-    if not manifest_path.exists():
-        bad(f"{label}: {manifest_path} 가 없다")
-        return
-    documents = [
-        item for item in yaml.safe_load_all(manifest_path.read_text(encoding="utf-8")) if item
-    ]
-    kinds = [str(item.get("kind")) for item in documents]
-    if mode not in ("in-cluster", "external"):
-        bad(f"{label}: keycloak.deployment 값이 올바르지 않다: {mode}")
-    elif placement not in ("any", "control-plane"):
-        bad(f"{label}: keycloak.nodePlacement 값이 올바르지 않다: {placement}")
-    elif mode == "external":
-        if placement != "any":
-            bad(f"{label}: external 모드는 keycloak.nodePlacement=any 여야 한다")
-            return
-        external_address = str(external.get("address") or "")
-        try:
-            ipaddress.IPv4Address(external_address)
-        except ValueError:
-            bad(f"{label}: deployment=external 인데 keycloak.external.address 가 IPv4가 아니다")
-            return
-        workloads = [kind for kind in kinds if kind in ("Deployment", "StatefulSet")]
-        if workloads:
-            bad(f"{label}: external 모드인데 클러스터 Keycloak 워크로드가 남아 있다: {workloads}")
-        elif "EndpointSlice" not in kinds:
-            bad(f"{label}: external 모드인데 keycloak EndpointSlice 가 없다")
-        else:
-            slice_document = next(item for item in documents if item.get("kind") == "EndpointSlice")
-            rendered = [
-                str(value)
-                for endpoint in slice_document.get("endpoints") or []
-                for value in endpoint.get("addresses") or []
-            ]
-            if rendered != [external_address]:
-                bad(f"{label}: keycloak EndpointSlice 주소가 계약과 다르다: {rendered}")
-            else:
-                ok(f"{label}: Keycloak external 배포 계약과 EndpointSlice 일치")
+identity_provider = contract["spec"].get("identityProvider") or {}
+if identity_provider.get("managed") != "external":
+    bad("spec.identityProvider.managed 는 external 이어야 한다")
+elif identity_provider.get("sourceProtocol") not in {"openid", "saml"}:
+    bad("spec.identityProvider.sourceProtocol 은 openid 또는 saml 이어야 한다")
+else:
+    endpoint_errors = []
+    for field in ("issuer", "authorizationEndpoint", "tokenEndpoint", "jwksURI"):
+        value = str(identity_provider.get(field) or "").strip()
+        parsed = urllib.parse.urlparse(value)
+        if parsed.scheme != "https" or not parsed.hostname or parsed.fragment:
+            endpoint_errors.append(field)
+    if endpoint_errors:
+        bad("spec.identityProvider HTTPS endpoint 오류: " + ", ".join(endpoint_errors))
+    elif not str(identity_provider.get("portalClientID") or "").strip():
+        bad("spec.identityProvider.portalClientID 가 비어 있다")
+    elif not str(identity_provider.get("groupsClaim") or "").strip():
+        bad("spec.identityProvider.groupsClaim 이 비어 있다")
     else:
-        if external.get("address"):
-            bad(f"{label}: in-cluster 모드인데 keycloak.external.address 가 채워져 있다")
-        elif "Deployment" not in kinds or "StatefulSet" not in kinds:
-            bad(f"{label}: in-cluster 모드인데 Keycloak/PostgreSQL 워크로드가 없다")
-        else:
-            workloads = [
-                item for item in documents
-                if item.get("kind") in ("Deployment", "StatefulSet")
-            ]
-            placement_errors = []
-            for workload in workloads:
-                workload_name = str((workload.get("metadata") or {}).get("name") or "")
-                pod_spec = (((workload.get("spec") or {}).get("template") or {}).get("spec") or {})
-                selector = pod_spec.get("nodeSelector") or {}
-                tolerations = pod_spec.get("tolerations") or []
-                has_critical = any(
-                    item.get("key") == "CriticalAddonsOnly"
-                    and item.get("operator") == "Equal"
-                    and str(item.get("value") or "").lower() == "true"
-                    and item.get("effect") == "NoExecute"
-                    for item in tolerations
-                )
-                has_control = any(
-                    item.get("key") == "node-role.kubernetes.io/control-plane"
-                    and item.get("operator") == "Equal"
-                    and str(item.get("value") or "").lower() == "true"
-                    and item.get("effect") == "NoSchedule"
-                    for item in tolerations
-                )
-                pinned = (
-                    str(selector.get("node-role.kubernetes.io/control-plane") or "").lower()
-                    == "true"
-                    and has_critical
-                    and has_control
-                )
-                if placement == "control-plane" and not pinned:
-                    placement_errors.append(workload_name)
-                if placement == "any" and (
-                    "node-role.kubernetes.io/control-plane" in selector
-                    or has_critical
-                    or has_control
-                ):
-                    placement_errors.append(workload_name)
-            if placement_errors:
-                bad(
-                    f"{label}: nodePlacement={placement} 와 워크로드 scheduling 불일치: "
-                    + ", ".join(placement_errors)
-                )
-            else:
-                ok(f"{label}: Keycloak in-cluster nodePlacement={placement} 계약 유지")
+        ok("외부 IdP OIDC 소비 계약 정상")
 
-
-check_keycloak_deployment(
-    "keycloak", contract["spec"].get("keycloak") or {}, pathlib.Path("platform/keycloak/resources.yaml")
-)
-
-# 상위 SAML IdP 의 metadata/SSO host 는 Keycloak 이 server-side 로 나가므로
-# squid identityProviderDomains 에 열려 있어야 한다. URL 만 바꾸고 egress 를
-# 빼먹으면 로그인이 조용히 깨지므로 여기서 같이 막는다.
-identity_provider = (contract["spec"].get("keycloak") or {}).get("identityProvider") or {}
-if identity_provider:
-    keycloak = contract["spec"].get("keycloak") or {}
-    issuer = str(keycloak.get("issuer") or "").rstrip("/")
-    saml_sp_entity_id = str(keycloak.get("samlSpEntityId") or "")
-    if saml_sp_entity_id not in {issuer, f"{issuer}/"}:
-        bad(
-            "keycloak.samlSpEntityId 는 issuer와 같고 외부 IdP가 요구하는 경우에만 "
-            "끝 슬래시 하나를 가져야 한다"
-        )
-    else:
-        ok("keycloak.samlSpEntityId: SAML Audience 문자열 계약 확인")
-    idp_domains = [
-        str(item).strip()
-        for item in ((contract["spec"].get("network") or {}).get("squid") or {}).get(
-            "identityProviderDomains"
-        )
-        or []
-    ]
-    for field in ("metadataDescriptorUrl", "singleSignOnServiceUrl"):
-        url = str(identity_provider.get(field) or "").strip()
-        if not url:
-            continue
-        host = urllib.parse.urlparse(url).hostname or ""
-        allowed = any(
-            host == domain.lstrip(".") or host.endswith(domain)
-            if domain.startswith(".")
-            else host == domain
-            for domain in idp_domains
-        )
-        if not allowed:
-            bad(
-                f"keycloak.identityProvider.{field} host '{host}' 가 "
-                f"network.squid.identityProviderDomains 에 없다(로그인 egress 차단)"
-            )
-        else:
-            ok(f"keycloak.identityProvider.{field}: squid egress 허용 확인")
-
+if any(str(item.get("name") or "") == "sso" for item in contract["spec"].get("platformServices") or []):
+    bad("외부 IdP를 platformServices로 노출하면 SADP 관리 경계가 다시 생긴다")
 # 시스템 도메인은 baseDomain 의 형제 서브도메인이어야 공유 RFC2136 zone/TSIG 로 발급 가능하다.
 # 이름/도메인/Namespace 중복도 여기서 다시 확인한다(계약을 수동으로 고칠 가능성이 있어서다).
 systems_seen_names: set[str] = set()
@@ -1196,16 +1067,11 @@ for system in systems:
         bad(f"{label}: domain 이 baseDomain 의 서브도메인이 아니다: {domain}")
     if namespace not in (contract["spec"]["gateway"].get("allowedRouteNamespaces") or []):
         bad(f"{label}: workloadNamespace 가 gateway.allowedRouteNamespaces 에 없다")
-    check_keycloak_deployment(
-        label,
-        system.get("keycloak") or {},
-        pathlib.Path("platform/systems") / system_name / "keycloak.yaml",
-    )
 if systems:
     if str((contract["spec"].get("tls") or {}).get("source") or "") != "acme":
         bad("spec.systems 가 있는데 spec.tls.source 가 acme 가 아니다(형제 서브도메인 발급 불가)")
     else:
-        ok(f"시스템 {len(systems)}개 도메인/Namespace/Keycloak 계약 정상")
+        ok(f"시스템 {len(systems)}개 도메인/Namespace 계약 정상")
 
 # 공인 DNS 레코드는 baseDomain 과 시스템 도메인을 벗어날 수 없고, 각 도메인의 wildcard 와
 # apex 를 모두 덮어야 한다. 시스템 도메인은 baseDomain 의 서브도메인이므로 같은 zone/TSIG 로
@@ -1361,17 +1227,18 @@ for project in rancher.get("projects") or []:
             bad(f"spec.rancher.projects[{project.get('name')}] 의 Namespace '{namespace}' 가 "
                 "allowedRouteNamespaces 에 없어 렌더되지 않는다")
 
-# rancherRbac 이 ready 면 모든 역할의 group 이 채워져 있어야 한다.
-pending_groups = sorted(
+# rancherRbac 이 ready 면 모든 역할의 Rancher principal 이 채워져 있어야 한다. 외부 IdP의
+# provider별 principal 문자열은 SADP가 추론하지 않고 Rancher에서 확인한 값을 계약에 기록한다.
+pending_principals = sorted(
     str((b or {}).get("role") or "") for b in rancher.get("roleBindings") or []
-    if pending((b or {}).get("group"))
+    if pending((b or {}).get("principal"))
 )
-if str(status.get("rancherRbac")) == "ready" and pending_groups:
-    bad("status.rancherRbac=ready 인데 group 미확정 역할이 있다: " + ", ".join(pending_groups))
-elif pending_groups:
-    print("[WARN] Keycloak group 미확정(D7 에 활성화): " + ", ".join(pending_groups))
+if str(status.get("rancherRbac")) == "ready" and pending_principals:
+    bad("status.rancherRbac=ready 인데 principal 미확정 역할이 있다: " + ", ".join(pending_principals))
+elif pending_principals:
+    print("[WARN] Rancher principal 미확정: " + ", ".join(pending_principals))
 else:
-    ok("Rancher RBAC group 이 모두 확정됨")
+    ok("Rancher RBAC principal 이 모두 확정됨")
 
 sys.exit(fail)
 PY

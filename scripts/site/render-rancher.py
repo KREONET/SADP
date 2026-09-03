@@ -3,11 +3,11 @@
 
 Two independent pending gates, matching scripts/site/render-exposure.py:
 
-  Projects  always render. They only need the contract, not Keycloak.
-  Bindings  render per role, and only once that role's Keycloak group name lands (D7).
+  Projects  always render. They only need the contract.
+  Bindings  render per role, and only once an administrator records the exact Rancher principal.
 
-Subjects are Keycloak groups, so a binding written before D7 would reference a principal that
-cannot resolve. Rather than guess a group name, each role is skipped until its group is filled in.
+SADP does not configure Rancher authentication or infer provider-specific principal prefixes.
+Rather than guess one, each role is skipped until its principal is filled in.
 Roles reuse Rancher's built-in GlobalRole and RoleTemplate names; no custom RoleTemplate is
 created, because the plan's clause 7.2 role model maps onto the built-ins one to one.
 """
@@ -121,20 +121,25 @@ def binding_documents(
         if role in seen_roles:
             raise ValueError(f"duplicate spec.rancher.roleBindings entry for role {role}")
         seen_roles.add(role)
-        # 개별 사용자 계정이나 자격증명이 계약에 들어오는 것을 막는다(ADR 19: group 만 허용).
+        # 외부 IdP의 개별 사용자 계정이나 자격증명이 계약에 들어오는 것을 막고 group principal만 허용한다.
         for forbidden in ("user", "users", "password", "token"):
             if forbidden in binding:
                 raise ValueError(
-                    f"spec.rancher.roleBindings[{role}].{forbidden} is forbidden; groups only"
+                    f"spec.rancher.roleBindings[{role}].{forbidden} is forbidden; group principals only"
                 )
 
-        group = str(binding.get("group") or "").strip()
-        if is_pending(group):
+        if "group" in binding:
+            raise ValueError(
+                f"spec.rancher.roleBindings[{role}].group is obsolete; record Rancher's exact principal"
+            )
+        principal = str(binding.get("principal") or "").strip()
+        if is_pending(principal):
             skipped.append(role)
             continue
+        if len(principal) > 512 or any(character.isspace() for character in principal):
+            raise ValueError(f"spec.rancher.roleBindings[{role}].principal is invalid")
 
         scope = str(binding.get("scope") or "").strip()
-        principal = f"keycloakoidc_group://{group}"
         if scope == "global":
             global_role = str(binding.get("globalRole") or "").strip()
             if not global_role:
@@ -217,7 +222,7 @@ def main() -> int:
 
     if skipped:
         print(
-            "[WARN] Keycloak group 미확정으로 RBAC binding 생략(D7 에 활성화): "
+            "[WARN] Rancher principal 미확정으로 RBAC binding 생략: "
             + ", ".join(sorted(skipped))
         )
 

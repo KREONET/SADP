@@ -70,7 +70,8 @@ bash ./sadp --render-all
 | `--install-node-config` | 계약이 소유한 RKE2 config field 병합 | 계획, `--apply` 시 쓰기 |
 | `--install-network-identity` | 내부 NIC/IP에 RKE2 identity 고정 | 계획, `--apply` 시 쓰기 |
 | `--install-interface-guard` | external/guarded NIC 관리 port 차단 | 계획, `--apply` 시 쓰기 |
-| `--install-containerd-proxy` | RKE2 embedded containerd proxy unit 생성 | 계획, `--apply` 시 쓰기 |
+| `--install-containerd-proxy` | RKE2/embedded containerd proxy 관리 블록 | 자동 role 계획, `--apply` 쓰기, 재시작 뒤 `--check` |
+| `--node-bundle` | 고정 allowlist의 Secret 없는 node bundle/checksum 생성 | `--output-dir`에 mode 0600으로 생성 |
 | `--install-docker-proxy` | control-plane Docker daemon pull을 Squid로 고정 | 계획, `--apply` 시 쓰기, `--check` 검증 |
 | `--install-squid` | 렌더된 allowlist Squid 설치 | 실행 시 설치, `--check`는 검사 |
 | `--upgrade-rke2` | lock에 고정된 버전으로 기존 RKE2 업데이트 | 계획, `--apply` 시 package/binary 설치 후 수동 재시작 |
@@ -89,19 +90,21 @@ daemon의 proxy 환경도 계약과 같은지 확인하며, 셸 환경변수만 
 
 | 명령 | 역할 |
 | --- | --- |
-| `--preflight` | 기존 3노드 RKE2와 도구·네트워크 선행 조건 검사 |
+| `--preflight` | 3노드/StorageClass와 모든 Linux node CRI pull 검사(`--image-pull-only` 지원) |
+| `--preflight-dns01` | cert-manager controller가 배치된 node에서 authoritative DNS TCP/UDP 경로 검사(기본 계획, `--apply` 시 일시 probe) |
+| `--manage-containerd-proxy` | Ready Canal/Calico image로 전체 node proxy plan/apply/check, 재시작 없음 |
+| `--prepare-exposure` | 노출 YAML의 Namespace/backendRef parser plan, `--apply` 시 Namespace만 생성 |
 | `--install-local-path-storage` | StorageClass가 전혀 없을 때 local-path 설치(기본 계획, `--apply` 시 설치) |
 | `--install-devtron` | Devtron/번들 Argo CD 상태 계획, `--apply` 시 부재 설치 또는 동일 버전 failed release 복구 |
-| `--configure-keycloak` | 이미 실행 중인 in-cluster/external Keycloak을 계약으로 수렴(`--apply` 전은 계획만) |
 | `--configure-argocd-repo` | Argo repository Secret과 per-repository proxy 설정 |
 | `--install-platform` | Argo 소유 플랫폼을 설치·대기하고 외부 이미지를 동기화 |
 | `--configure-openbao-app-access` | 앱별 OpenBao OIDC 접근 정책 구성 |
+| `--configure-openbao-oidc` | Certificate/Gateway/Service/discovery preflight 뒤 `auth/oidc/config` 멱등 수렴(기본 preflight, `--apply` 시 설정) |
 | `--build-images` | Docker dind worker Pod로 로컬 이미지 빌드 후 세 노드 import |
-| `--bootstrap-services` | Keycloak realm/client와 OpenBao auth/KV 초기화 |
+| `--bootstrap-services` | 외부 OIDC client secret을 받아 OpenBao auth/KV 소비 설정 초기화 |
 | `--deploy-apps` | hello, secure-demo, portal-lite 배포와 rollout |
 | `--install-portal-backend` | Portal backend 개별 설치 |
-| `--configure-external-keycloak` | 외부 Keycloak VM NTP를 먼저 정상화한 뒤 정책 원격 수렴 |
-| `--sync-images` | 외부 이미지를 모든 노드 containerd에 동기화 |
+| `--sync-images` | node platform별 새 pull/export, archive blob 검증 후 모든 Linux node complete 확인 |
 | `--bootstrap` | 예전 직접 bootstrap 진입점. 신규 설치에는 사용하지 않음 |
 
 `--bootstrap`은 통합 설치기의 `site.env` 검증·phase 안전 경계를 거치지 않는 레거시 진단
@@ -121,9 +124,9 @@ cluster apply는 TLS 진행 상태를 읽습니다. 운영 인증서가 아직 R
 설치하고 서비스 초기화·앱 배포·검수를 보류한 뒤 정상 종료합니다. `site.env`의 TLS 진행값을
 갱신하고 render→commit/push→cluster를 반복합니다.
 
-`KEYCLOAK_DEPLOYMENT=in-cluster`와 `KEYCLOAK_NODE_PLACEMENT=control-plane`을 함께 쓰면 cluster
-apply가 Keycloak/PostgreSQL을 control-plane에 고정하고 runtime Secret과 realm/client 초기화까지
-한 번에 수행합니다. `--phase all --apply`의 노드 재시작 안전 경계는 그대로 유지됩니다.
+cluster apply는 외부 OIDC client secret이 root-only 파일로 준비됐는지 확인하고 OpenBao→ESO 소비
+설정만 수렴합니다. IdP realm/tenant/client/user/group이나 SAML broker 설정은 변경하지 않습니다.
+`--phase all --apply`의 노드 재시작 안전 경계도 그대로 유지됩니다.
 
 ## 검수와 운영
 
@@ -133,7 +136,6 @@ apply가 Keycloak/PostgreSQL을 control-plane에 고정하고 runtime Secret과 
 | TLS/Gateway | `--verify-d5` |
 | Rancher | `--verify-d6` |
 | Portal 인증 | `--verify-portal-auth` |
-| 외부 SAML federation | `--verify-saml-federation` |
 | Squid | `--verify-squid` |
 | 백업 | `--verify-backups` |
 | 운영 백업 | `--backup` |
@@ -141,12 +143,19 @@ apply가 Keycloak/PostgreSQL을 control-plane에 고정하고 runtime Secret과 
 | 테스트베드 안전 기동/종료 | `--power` |
 | GitHub main/VERSION 기반 SADP 업데이트 | `--update-sadp` |
 | 기존 RKE2 고정 버전 업데이트 | `--upgrade-rke2` |
-| Authentik Assertion 유효시간 | `--configure-authentik-saml` |
 | Forgejo token 회전 | `--rotate-forgejo-token` |
+| OpenBao seal 상태/명시적 복구 | `--unseal-openbao`, `--unseal-openbao --apply` |
+| Secret 제외 control-plane 운영 overlay | `--ops-bundle --output-dir <DIRECTORY>` |
 | root-only 자격증명 내보내기 | `--export-credentials` |
 
 `--verify-testbed`는 control-plane 노드 한 대의 호스트 상태와 클러스터 상태를 검사합니다. 다른
 worker 호스트의 interface/systemd 상태까지 대신 검증하지 않습니다.
+
+OpenBao/ESO manager는 control-plane 전용입니다. `--unseal-openbao`는 Pod Running 뒤
+initialized/sealed만 확인하고, `--apply`에서만 root-only 초기화 파일의 unseal 재료를 Pod stdin으로
+보냅니다. ExternalSecret 대기는 OpenBao active/Ready와 참조 Store Ready를 먼저 확인하고
+force-sync한 뒤, 실패하면 두 condition과 대상 Secret 객체 존재만 출력합니다. Secret data는
+조회하지 않습니다.
 
 전체 전원 작업과 업데이트는 [기동·종료·업데이트 Runbook](../docs/operations-lifecycle.md)을 사용합니다.
 `--power`는 OS 전원 자체를 조작하지 않고 RKE2 서비스와 Kubernetes scheduling 경계만 관리합니다.

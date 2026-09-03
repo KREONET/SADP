@@ -28,8 +28,10 @@ platform:
       zoneApp: ""
       groupApp: ""
       groupRegistry: ""
-  keycloak:
+  identityProvider:
     issuer: ""
+    jwksURI: ""
+    groupsClaim: groups
   network:
     # networkPolicy.egressMode=web 이 0.0.0.0/0 에서 빼는 대역.
     # contracts/values-platform-production.yaml 이 채운다. 비면 web 모드는 렌더에 실패한다.
@@ -113,16 +115,14 @@ oidc:
   clientSecretName: ""     # 비우면 <app>-oidc-client
   callbackPath: /oauth2/callback
   logoutPath: /logout
-  # 하나의 Keycloak realm을 여러 시스템이 나눠 쓴다. 로그인만으로 모든 시스템에 들어갈 수
+  # 하나의 외부 IdP를 여러 시스템이 나눠 쓴다. 로그인만으로 모든 시스템에 들어갈 수
   # 없도록, 시스템마다 허용 그룹을 직접 정한다. 비우면 realm 로그인만으로 통과하므로
   # 시스템 간 경계가 사라진다.
   allowedGroups: []
-  # Keycloak group membership mapper가 토큰에 넣는 claim 이름이다.
+  # 외부 IdP가 토큰에 넣는 그룹 claim 이름이다. 비우면 platform 계약값을 쓴다.
   groupsClaim: groups
   # Envoy가 group claim을 읽으려면 ID token을 upstream 헤더로 넘겨야 한다.
   idTokenHeader: Authorization
-  # JWKS 경로. Keycloak 표준 경로를 issuer 뒤에 붙인다.
-  jwksPath: /protocol/openid-connect/certs
 
 resources:
   requests:

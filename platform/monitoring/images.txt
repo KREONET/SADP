@@ -7,8 +7,8 @@
 #   helm template p prometheus-community/prometheus --version <ver> \
 #     -f platform/monitoring/prometheus-values.yaml | grep -oP 'image:\s*"?\K[^"\s]+' | sort -u
 #
-# digest 가 붙은 참조(tag@sha256:...)는 쓰지 않는다. docker save 로 옮기면 manifest digest 가
-# 사라져 노드에서 해석되지 않는다. 값 파일에서 태그만 쓰도록 고정해 둔다.
+# tag와 sha256 digest 참조를 모두 지원한다. digest 입력은 sync가 원 digest를 검증하고
+# `:sadp-sha256-<digest>` local alias로 export하므로 workload도 그 결정적 alias를 써야 한다.
 
 # prometheus-community/prometheus 29.27.0 (app v3.14.0)
 quay.io/prometheus/prometheus:v3.14.0

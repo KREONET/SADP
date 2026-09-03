@@ -15,7 +15,9 @@ LIBRARY = ROOT / "scripts/lib/machine-auth.sh"
 BOOTSTRAP = ROOT / "scripts/cluster/bootstrap-testbed-services.sh"
 ROTATE = ROOT / "scripts/ops/rotate-machine-api-key.sh"
 VERIFY = ROOT / "scripts/verify/verify-testbed.sh"
+LOG_INSPECTOR = ROOT / "scripts/verify/inspect-machine-auth-access-log.sh"
 DISPATCHER = ROOT / "sadp"
+RUNBOOK = ROOT / "docs/external-observability.md"
 
 
 def check(condition: bool, message: str) -> None:
@@ -24,7 +26,7 @@ def check(condition: bool, message: str) -> None:
     print(f"[OK]   {message}")
 
 
-for script in (LIBRARY, BOOTSTRAP, ROTATE, VERIFY, DISPATCHER):
+for script in (LIBRARY, BOOTSTRAP, ROTATE, VERIFY, LOG_INSPECTOR, DISPATCHER):
     subprocess.run(["bash", "-n", str(script)], check=True, cwd=ROOT)
 check(True, "machine-auth 운영 스크립트 bash syntax")
 
@@ -33,11 +35,13 @@ bootstrap = BOOTSTRAP.read_text(encoding="utf-8")
 rotate = ROTATE.read_text(encoding="utf-8")
 verify = VERIFY.read_text(encoding="utf-8")
 dispatcher = DISPATCHER.read_text(encoding="utf-8")
+log_inspector = LOG_INSPECTOR.read_text(encoding="utf-8")
+runbook = RUNBOOK.read_text(encoding="utf-8")
 
 check(
     "machine_auth_bootstrap" in bootstrap
-    and "mode=keycloak: API 키를 생성하거나 변경하지 않음" in library,
-    "keycloak 모드에서 API 키 생성 경로를 실행하지 않음",
+    and "mode=oidc: API 키를 생성하거나 변경하지 않음" in library,
+    "OIDC 모드에서 API 키 생성 경로를 실행하지 않음",
 )
 check(
     "openssl rand -hex 32" in library
@@ -65,10 +69,38 @@ check(
     "sadp 명시적 machine API key 회전 명령",
 )
 check(
+    "inspect-machine-auth-log|bash|scripts/verify/inspect-machine-auth-access-log.sh"
+    in dispatcher
+    and '"x-forwarded-for": .["x-forwarded-for"]' in log_inspector
+    and "X-SADP-API-Key" not in log_inspector,
+    "access log helper는 판정 필드만 출력하고 API key header를 읽지 않음",
+)
+check(
     "apiKeyAuth.sanitize == true" in verify
     and "Gateway credential key 이름 존재" in verify
+    and "machine-auth SecretStore Ready" in verify
+    and "SecurityPolicy Accepted" in verify
     and "-o jsonpath='{.data" not in verify,
-    "검수는 API 키 값을 출력하지 않고 이름/sanitize/ESO 상태만 확인",
+    "검수는 값을 출력하지 않고 이름/sanitize/ESO/SecurityPolicy 상태만 확인",
+)
+check(
+    all(
+        marker in runbook
+        for marker in (
+            "downstream_remote_address",
+            "x-forwarded-for",
+            "missing_api_key / 401",
+            "unknown_api_key / 401",
+            "rbac_access_denied / 403",
+            "via_upstream / 404",
+            "via_upstream / 200",
+            "/api/v1/status/buildinfo",
+            "/loki/api/v1/query",
+            "verify-portal-auth",
+            "bash ./kisti-RKE --test",
+        )
+    ),
+    "다음 실연결 시험의 로그·경로·SSO·최종 명령 판정표를 고정",
 )
 
 # fake OpenBao는 실제 값 대신 임시 파일 하나를 KV 문서처럼 쓴다. 같은 client를 두 번

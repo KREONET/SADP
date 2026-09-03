@@ -1,6 +1,6 @@
 # SADP 백업·복원 안내
 
-> 대상: 승인된 백업 검증과 RKE2/OpenBao/Keycloak 복원을 수행하는 관리자
+> 대상: 승인된 백업 검증과 RKE2/OpenBao 복원을 수행하는 관리자
 > 백업 구현: `scripts/ops/backup-testbed.sh`
 > 검증 구현: `scripts/verify/verify-backups.sh`
 
@@ -17,13 +17,11 @@
 | `sadp-etcd-*.zip` | 압축된 RKE2 etcd snapshot |
 | `rke2-server-token` | 해당 snapshot과 함께 필요한 server token |
 | `openbao-raft.snap` | OpenBao Raft snapshot |
-| `keycloak-postgresql.dump` | in-cluster Keycloak PostgreSQL custom dump |
 | `cluster-inventory.txt` | 백업 시점 Node 목록 |
 | `gateway-inventory.txt` | 백업 시점 Gateway/HTTPRoute 목록 |
 | `SHA256SUMS` | 같은 디렉터리 파일 checksum |
 
-`KEYCLOAK_DEPLOYMENT=external`이면 PostgreSQL dump를 만들지 않습니다. 외부 VM의 DB 백업과 복원
-훈련은 외부 Keycloak 운영 책임입니다.
+외부 IdP와 SAML→OIDC broker의 백업·복원은 해당 인증 운영팀의 책임이며 SADP 백업에 포함되지 않습니다.
 
 백업에는 cluster 복원 material과 인증 데이터가 포함됩니다. 디렉터리는 root-only로 유지하고
 별도 호스트 또는 암호화된 객체 저장소에 2차 복제합니다. `openbao-init.json`은 snapshot에 포함되지
@@ -50,7 +48,6 @@ sudo bash scripts/verify/verify-backups.sh \
 - `SHA256SUMS` 전체 확인
 - etcd ZIP과 OpenBao gzip 형식 검사
 - RKE2 server token 존재 확인
-- in-cluster Keycloak이면 임시 DB에 dump를 실제 복원하고 realm 수를 확인한 뒤 삭제
 
 검증 성공은 cluster 전체 복원 성공을 대신하지 않습니다. 정기적으로 격리 환경에서 전체 복원
 훈련을 수행합니다.
@@ -62,7 +59,7 @@ sudo bash scripts/verify/verify-backups.sh \
 3. 손상 상황이 허용하면 현재 상태의 새 안전 백업을 만듭니다.
 4. 사용자 쓰기와 배포 파이프라인을 중지합니다.
 5. Argo CD 자동 sync가 복원 중 리소스를 되돌리지 않도록 승인된 방식으로 일시 중지합니다.
-6. snapshot, server token, `openbao-init.json`, Keycloak dump의 site/시각이 일치하는지 확인합니다.
+6. snapshot, server token, `openbao-init.json`의 site/시각이 일치하는지 확인합니다.
 7. 복원 후 component별 검수와 `verify-testbed`를 실행합니다.
 
 Secret 값과 token은 작업 기록, shell trace, 화면 공유에 남기지 않습니다.
@@ -125,36 +122,206 @@ unseal합니다.
 5. ESO SecretStore/ExternalSecret Ready
 6. 앱 rollout과 Secret 비노출
 
-## 6. in-cluster Keycloak PostgreSQL 복원
+## 6. 외부 IdP 장애와 복원 경계
 
-외부 Keycloak 사이트에서는 이 절을 실행하지 않습니다. in-cluster 배포에서 Keycloak 쓰기를
-막고, 현재 DB를 별도 보존한 뒤 승인된 dump를 복원합니다.
+SADP는 외부 IdP나 SAML→OIDC broker의 데이터·설정을 백업하거나 복원하지 않습니다. 인증 장애에서는
+SADP의 issuer/callback/client ID 계약과 client secret 전달 상태를 읽기 전용으로 확인하고, IdP
+복구는 해당 운영팀의 runbook으로 수행합니다. 복구 후에는 discovery, Portal 로그인 시작 흐름,
+승인된 테스트 계정의 실제 로그인과 그룹 claim을 다시 검증합니다.
 
-```bash
-kubectl -n keycloak scale deployment/keycloak --replicas=0
-kubectl -n keycloak cp \
-  /var/lib/sadp/backups/<UTC_TIMESTAMP>/keycloak-postgresql.dump \
-  keycloak-postgresql-0:/tmp/keycloak.dump
 
-kubectl -n keycloak exec keycloak-postgresql-0 -- sh -ceu '
-  PGPASSWORD="$POSTGRES_PASSWORD" dropdb \
-    --if-exists --username="$POSTGRES_USER" "$POSTGRES_DB"
-  PGPASSWORD="$POSTGRES_PASSWORD" createdb \
-    --username="$POSTGRES_USER" "$POSTGRES_DB"
-  PGPASSWORD="$POSTGRES_PASSWORD" pg_restore \
-    --username="$POSTGRES_USER" --dbname="$POSTGRES_DB" \
-    --no-owner --single-transaction --exit-on-error /tmp/keycloak.dump
-'
+## 7. OpenBao seal/ExternalSecret timeout 복구
 
-kubectl -n keycloak scale deployment/keycloak --replicas=1
-kubectl -n keycloak rollout status deployment/keycloak --timeout=15m
-kubectl -n keycloak exec keycloak-postgresql-0 -- rm -f /tmp/keycloak.dump
+다음 timeout은 설치 성공이 아니라 ExternalSecret이 `Ready=True`에 도달하지 못한 실패입니다.
+
+```text
+error: timed out waiting for the condition on externalsecrets/<EXTERNAL_SECRET_NAME>
 ```
 
-DB drop 직전에는 현재 DB의 별도 dump가 실제로 생성됐는지 다시 확인합니다. 복원 후 계약 realm,
-Portal/앱 client, group/role mapper, broker alias, break-glass admin, login callback을 검증합니다.
+OpenBao 재기동 뒤 sealed 상태가 실제 원인일 수 있습니다. 이때 ESO provider는 HTTP 503 `Vault is
+sealed`를 받고 SecretStore 또는 ClusterSecretStore도 일시적으로 Ready가 아닐 수 있습니다.
+OpenBao를 unseal해도 ExternalSecret이 이전 실패 condition에 머물면 force-sync가 필요합니다.
 
-## 7. 전체 복원 후 검수
+control-plane에서 plan부터 실행합니다. 첫 명령이 이미 unsealed라고 확인하면 `--apply`는 생략합니다.
+
+```bash
+sudo bash ./sadp --unseal-openbao
+
+# sealed일 때만 실행
+sudo bash ./sadp --unseal-openbao --apply
+
+kubectl annotate externalsecret \
+  -n <EXTERNAL_SECRET_NAMESPACE> <EXTERNAL_SECRET_NAME> \
+  force-sync="$(date +%s)" --overwrite
+
+kubectl wait \
+  externalsecret/<EXTERNAL_SECRET_NAME> \
+  -n <EXTERNAL_SECRET_NAMESPACE> \
+  --for=condition=Ready --timeout=2m
+```
+
+다시 실패하면 ExternalSecret이 실제 참조하는 Store kind/name과 양쪽 condition만 확인합니다.
+
+```bash
+kubectl get externalsecret \
+  -n <EXTERNAL_SECRET_NAMESPACE> <EXTERNAL_SECRET_NAME> \
+  -o jsonpath='{.spec.secretStoreRef.kind}{"/"}{.spec.secretStoreRef.name}{"\n"}{.status.conditions}{"\n"}'
+
+# 위 kind가 SecretStore일 때
+kubectl get secretstore \
+  -n <EXTERNAL_SECRET_NAMESPACE> <SECRET_STORE_NAME> \
+  -o jsonpath='{.status.conditions}{"\n"}'
+
+# 위 kind가 ClusterSecretStore일 때
+kubectl get clustersecretstore <SECRET_STORE_NAME> \
+  -o jsonpath='{.status.conditions}{"\n"}'
+
+# 대상 Secret은 본문이 아니라 객체 존재 여부만 확인
+kubectl get secret -n <EXTERNAL_SECRET_NAMESPACE> <TARGET_SECRET_NAME> -o name
+```
+
+최종 성공은 ExternalSecret `Ready=True`, Store `Ready=True`, 대상 Secret 객체 존재가 모두 확인된
+상태입니다. Pod 로그 전체, Secret YAML, 환경변수 전체를 자동 수집하지 않으며 Secret data,
+OpenBao token, unseal key, root token을 화면·로그·명령 인자에 남기지 않습니다.
+
+## 8. exposure Namespace/ReferenceGrant 적용 복구
+
+`platform/exposure/resources.yaml` 적용이 `namespaces "monitoring" not found`처럼 중단되면 같은
+`kubectl apply`만 반복하거나 생성 YAML을 손으로 고치지 않습니다. manifest의
+`metadata.namespace`, Namespace 문서와 `HTTPRoute backendRefs[].namespace`를 parser로 읽는 plan을
+먼저 확인합니다.
+
+```bash
+sudo bash ./sadp --prepare-exposure
+sudo bash ./sadp --prepare-exposure --apply
+kubectl get namespace
+```
+
+이 명령은 누락 Namespace만 만들며 workload와 Secret은 만들지 않습니다. Namespace가 확인되면
+원래의 정상 플랫폼 설치를 다시 실행합니다.
+
+```bash
+sudo bash ./sadp --install \
+  --env-file /etc/sadp/site.env \
+  --phase cluster \
+  --apply
+```
+
+이후 Route의 두 조건과 backend Service를 함께 확인합니다.
+
+```bash
+kubectl get httproute -A
+kubectl describe httproute -n <ROUTE_NAMESPACE> <ROUTE_NAME>
+kubectl get service -n <BACKEND_NAMESPACE> <BACKEND_SERVICE>
+```
+
+`Accepted=True`, `ResolvedRefs=False: BackendNotFound`이면 Namespace 순서 문제는 해결됐고 Service가
+아직 없는 상태입니다. Namespace 생성을 반복하지 말고 선택형 Prometheus/Loki Application과
+Service Ready를 진단합니다. monitoring 설치가 꺼졌다면 `site.env`의
+`SADP_INSTALL_MONITORING=true`로 바꾸거나 monitoring backend 입력을 제거한 뒤 render → test →
+commit/push를 다시 수행합니다.
+
+## 9. OpenBao OIDC discovery 오류 복구
+
+대표 증상은 OpenBao의 아래 400이지만 이 문장만으로 DNS, CA, Gateway, issuer 중 무엇인지 알 수
+없습니다.
+
+```text
+Error writing data to auth/oidc/config
+Code: 400
+error checking oidc discovery URL
+```
+
+### 1) 원인 판별
+
+먼저 설정을 쓰지 않는 preflight를 실행합니다. 실패하면 `auth/oidc/config` API를 호출하지 않으며
+응답 본문과 credential을 출력하지 않습니다.
+
+```bash
+sudo bash ./sadp --configure-openbao-oidc
+```
+
+출력 원인과 확인 범위는 다음과 같습니다.
+
+| preflight 원인 | 확인할 완료 증거 |
+| --- | --- |
+| `wildcard TLS ... ready가 아님` | `site.env` 완료 기록과 실제 production Certificate Ready가 일치 |
+| `wildcard Certificate ... Ready가 아님` | Certificate condition, Order/Challenge, authoritative DNS-01 route |
+| `인증서 Secret ... 없음` | Certificate의 대상과 같은 Namespace/이름의 Secret 객체 존재 |
+| `InvalidCertificateRef` 또는 listener 미준비 | HTTPS listener `Accepted=True`, `Programmed=True` |
+| `Gateway Service에 443 포트가 없음` | owning Gateway Service의 `.spec.ports`에 443 존재 |
+| `DNS 해석 실패` | OpenBao Pod에서 issuer host가 CoreDNS/split-horizon으로 해석됨 |
+| `TLS 인증서/CA 검증 실패` | wildcard SAN, chain, 만료와 OpenBao Pod trust store |
+| `연결 거부` / `timeout` | OpenBao Pod→외부 OIDC HTTPS endpoint |
+| `issuer 불일치` | discovery JSON의 issuer와 계약 issuer가 정확히 같음 |
+
+자동 출력된 다음 형태의 명령만 사용합니다. Secret은 객체 이름만 확인하고 `-o yaml`, `.data`, Pod
+환경변수, client Secret 파일은 출력하지 않습니다.
+
+```bash
+kubectl -n <GATEWAY_NAMESPACE> get certificate <WILDCARD_CERTIFICATE> \
+  -o jsonpath='{.status.conditions}{"\n"}'
+kubectl -n <GATEWAY_NAMESPACE> get secret <TLS_SECRET> -o name
+kubectl -n <GATEWAY_NAMESPACE> get gateway <GATEWAY_NAME> \
+  -o jsonpath='{.status.listeners}{"\n"}'
+kubectl -n <GATEWAY_NAMESPACE> get svc \
+  -l gateway.envoyproxy.io/owning-gateway-name=<GATEWAY_NAME> \
+  -o jsonpath='{range .items[*]}{.metadata.name}{" "}{.spec.ports[*].port}{"\n"}{end}'
+kubectl -n openbao exec openbao-0 -- sh -c \
+  'nslookup "$1" >/dev/null' sh '<OIDC_ISSUER_HOST>'
+kubectl -n openbao exec openbao-0 -- sh -c \
+  'wget -T 15 -S -O /dev/null "$1"' sh \
+  '<OIDC_ISSUER>/.well-known/openid-configuration'
+```
+
+### 2) DNS-01 node route 복구
+
+Certificate/Secret이 준비되지 않았다면 일반 인터넷 DNS 질의로 성공 판정하지 않습니다. 실제
+cert-manager controller node의 authoritative DNS TCP/UDP 경로를 다시 검사합니다.
+
+```bash
+sudo bash ./sadp --preflight-dns01
+sudo bash ./sadp --preflight-dns01 --apply
+```
+
+`no-route`, `timeout`, `refused`를 node별로 구분합니다. 특정 node만 이 경로를 쓸 수 있으면 생성된
+Deployment를 patch하지 말고 `/etc/sadp/site.env`에서 아래 완료 전 설정을 고친 뒤 render → 전체
+test → commit/push → cluster를 반복합니다.
+
+```dotenv
+CERT_MANAGER_NODE_PLACEMENT=control-plane
+```
+
+renderer가 cert-manager controller 전용 `nodeSelector`와 control-plane taint `toleration`을 만들며,
+webhook/cainjector는 불필요하게 고정하지 않습니다. route 복구 뒤 Certificate Ready와 대상 Secret
+존재를 확인하기 전에는 `EXISTING_GATEWAY_TLS_READY=true`로 올리지 않습니다.
+
+### 3) OIDC 단계만 복구
+
+Certificate, Secret, Gateway listener, Service 443가 모두 준비된 뒤 OIDC 단계만 적용합니다. 전체
+설치를 처음부터 반복할 필요가 없습니다.
+
+```bash
+sudo bash ./sadp --configure-openbao-oidc
+sudo bash ./sadp --configure-openbao-oidc --apply
+```
+
+HTTP 200이어도 JSON parse 또는 issuer 정확 일치가 실패하면 설정하지 않습니다. 기존 정상 설정은
+client Secret을 읽거나 출력하지 않고 공개 필드 일치만 확인한 뒤 root-only 파일의 Secret을 stdin
+JSON으로 다시 적용하므로 반복 실행해 같은 상태로 수렴합니다.
+
+### 4) 최종 확인
+
+성공 기준은 다음 순서입니다.
+
+1. `--preflight-dns01 --apply` 성공
+2. production wildcard Certificate `Ready=True`와 TLS Secret 객체 존재
+3. Gateway HTTPS listener `Accepted=True`, `Programmed=True`, Service 443 존재
+4. `--configure-openbao-oidc`에서 HTTPS 200/JSON/issuer 정확 일치
+5. `--configure-openbao-oidc --apply`에서 공개 설정과 `user` role 검증 성공
+6. 유지보수 창의 OpenBao UI 실제 외부 OIDC 로그인 또는 승인된 로그인 acceptance 성공
+
+## 10. 전체 복원 후 검수
 
 ```bash
 kubectl get nodes -o wide
@@ -172,7 +339,7 @@ sudo bash ./sadp --verify-testbed
 - 세 Node Ready와 핵심 Application 수렴
 - Gateway/TLS와 public/OIDC/internal 접근 경계
 - OpenBao/ESO Secret 동기화
-- Keycloak login과 role mapping
+- 외부 OIDC login과 group/role mapping
 - Portal 신청 조회와 새 테스트 신청
 - 백업 이후 Git commit과 cluster 상태 차이 검토
 

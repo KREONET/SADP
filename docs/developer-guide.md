@@ -26,7 +26,7 @@
 | 노출 | 인증 | 결과 |
 | --- | --- | --- |
 | external | none | 공개 HTTPS 앱 |
-| external | oidc | Keycloak 로그인이 필요한 HTTPS 앱 |
+| external | oidc | 외부 OIDC 로그인이 필요한 HTTPS 앱 |
 | internal | none | 클러스터 내부 앱 |
 
 internal 앱에 OIDC를 요청할 수 없습니다. 앱이 직접 NodePort, Ingress, LoadBalancer를 만들지 않고

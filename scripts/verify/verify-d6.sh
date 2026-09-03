@@ -138,7 +138,7 @@ for NAMESPACE in $PROJECT_NS; do
 done
 
 if [ -n "${PENDING_ROLES// /}" ]; then
-  skip "RBAC binding 미활성(D7 Keycloak group 대기):${PENDING_ROLES}"
+  skip "RBAC binding 미활성(Rancher principal 대기):${PENDING_ROLES}"
 else
   for PROJECT in $PROJECTS; do
     COUNT="$(kubectl -n "$PROJECT" get projectroletemplatebinding.management.cattle.io \
