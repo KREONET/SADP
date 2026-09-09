@@ -18,6 +18,8 @@ function application(
     project: "research",
     group,
     status,
+    approvalStatus: "approved",
+    securityReviewStatus: "passed",
     cluster: "rke2",
     zone: group ? `app-${group}` : "zone-a",
     internalAddress: `${name}.app-${group ?? "zone-a"}.svc.cluster.local`,

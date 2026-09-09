@@ -65,11 +65,6 @@ var (
 	appGroupVolumeSize         = configured("PORTAL_APP_GROUP_VOLUME_SIZE", "")
 	appGroupVolumeStorageClass = configured("PORTAL_APP_GROUP_VOLUME_STORAGE_CLASS", "")
 
-	// ------------------------------------------------------------ 자동 승인
-	// 승인자가 따로 없는 셀프서비스 모드. PR을 만든 뒤 포털이 스스로 승인(merge)하고
-	// 이미지를 빌드해 배포까지 끌고 간다. false면 사람이 PR을 머지할 때까지 멈춘다.
-	autoApprove = configured("PORTAL_AUTO_APPROVE", "true") == "true"
-
 	// 빌드 Job이 뜨는 네임스페이스. 기본은 Zone과 같은 곳으로, egress 정책과
 	// push 자격증명을 한 벌만 유지한다.
 	buildNamespace = configured("PORTAL_BUILD_NAMESPACE", zoneID)

@@ -45,6 +45,12 @@ export async function DeploymentRequestsTable({
     resultPending: t.resultPending,
     resultFailed: t.resultFailed,
     resultDeleted: t.resultDeleted,
+    approvalPending: t.approvalPending,
+    approvalApproved: t.approvalApproved,
+    approvalRejected: t.approvalRejected,
+    securityPending: t.securityPending,
+    securityPassed: t.securityPassed,
+    securityRejected: t.securityRejected,
     showAll: t.showAllRequests,
     showFewer: t.showFewerRequests,
   };
@@ -69,6 +75,12 @@ export async function DeploymentRequestsTable({
             </TableHead>
             <TableHead className="px-5 py-3.5 text-xs font-semibold tracking-wide text-foreground uppercase">
               {t.colResult}
+            </TableHead>
+            <TableHead className="px-5 py-3.5 text-xs font-semibold tracking-wide text-foreground uppercase">
+              {t.colApproval}
+            </TableHead>
+            <TableHead className="px-5 py-3.5 text-xs font-semibold tracking-wide text-foreground uppercase">
+              {t.colSecurity}
             </TableHead>
             <TableHead className="px-5 py-3.5 text-xs font-semibold tracking-wide text-foreground uppercase">
               {t.colDate}

@@ -88,7 +88,9 @@ type forgejoClient struct {
 	// 같은 멱등 요청을 브라우저가 재전송해도 한 워커에서 두 번 처리하지 않는다.
 	// 큐에 넣을 때부터 process가 끝날 때까지 보존해야 처리 중 재전송도 막힌다.
 	queueMu sync.Mutex
-	queued  map[string]struct{}
+	// 승인 결정과 worker의 병합 시작을 직렬화해 반려 PR이 동시에 병합되는 경쟁을 막는다.
+	decisionMu sync.Mutex
+	queued     map[string]struct{}
 	// processing 중 같은 ID가 다시 enqueue되면 단순 중복이 아니라 상태 전이 뒤 재실행일
 	// 수 있다(배포 완료 직후 DELETE 등). rerun을 남겨 lost wakeup을 막는다.
 	processing map[string]bool
@@ -578,49 +580,11 @@ func (f *forgejoClient) run(ctx context.Context) {
 	}
 }
 
-// prepareSourceUpdate는 자동 source update의 이미지를 PR 전에 만든다. 실행 중 values를
-// CHANGE_ME tag로 먼저 바꾸면 Argo가 존재하지 않는 image를 rollout할 수 있으므로,
-// 빌드가 성공해 Registry에 존재하는 immutable tag만 PR diff에 넣는다.
-func (f *forgejoClient) prepareSourceUpdate(
-	ctx context.Context, request deploymentRequest,
-) (deploymentRequest, bool) {
-	if !request.SourceUpdate || request.PullRequest != nil || request.Generated.Image != "" {
-		return request, true
-	}
-	if request.State != stateReceived && request.State != stateBuilding {
-		return request, true
-	}
-	if f.builder == nil {
-		f.failRequest(request, "자동 source update 빌드가 준비되지 않았습니다.",
-			errors.New("source update build pipeline이 비활성입니다"))
-		return request, false
-	}
-	request.State = stateBuilding
-	request.FailedFromState = ""
-	f.saveRequest(request)
-	tag, err := f.builder.build(ctx, request)
-	if err != nil {
-		f.failRequest(request, "새 source commit 이미지 빌드에 실패했습니다.", err)
-		return request, false
-	}
-	request.Generated.Image = imageDestination(request, tag)
-	request.State = stateReceived
-	request.Message = ""
-	f.saveRequest(request)
-	f.logger.Printf("요청 %s source update 사전 빌드 완료: %s", request.ID, request.Generated.Image)
-	return request, true
-}
-
 // process는 한 요청의 PR을 만들고 결과를 저장소에 반영한다.
 func (f *forgejoClient) process(ctx context.Context, requestID string) {
 	request, ok := f.store.get(requestID)
 	if !ok {
 		return
-	}
-	if prepared, proceed := f.prepareSourceUpdate(ctx, request); !proceed {
-		return
-	} else {
-		request = prepared
 	}
 	// 이미 PR이 있는 요청은 남은 단계(병합·빌드·태그 커밋)만 이어서 밟는다.
 	switch request.State {
@@ -691,7 +655,7 @@ func (f *forgejoClient) process(ctx context.Context, requestID string) {
 				f.logger.Printf("요청 %s PR 결과 기록 실패: %v", requestID, err)
 			}
 			f.logger.Printf("요청 %s PR #%d 생성 완료", requestID, pullRequest.Number)
-			// 자동 승인이 켜져 있으면 이어서 병합·빌드·배포 커밋까지 진행한다.
+			// 보안 검토와 승인 증거가 준비된 요청만 다음 단계로 진행한다.
 			f.advance(ctx, request)
 			return
 		}

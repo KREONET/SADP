@@ -2,6 +2,7 @@
 
 import Link from "next/link";
 
+import { ReviewStatus } from "@/components/paas/review-status";
 import { StatusPill } from "@/components/paas/status-pill";
 import { Button } from "@/components/ui/button";
 import { Card } from "@/components/ui/card";
@@ -87,6 +88,11 @@ function AppGroupServiceRow({ application }: { application: Application }) {
         <p className="truncate font-mono text-sm text-foreground">
           {address ?? "-"}
         </p>
+        <ReviewStatus
+          approval={application.approvalStatus}
+          security={application.securityReviewStatus}
+          labels={card}
+        />
       </div>
 
       <div className="flex items-center justify-between gap-3 sm:justify-end">

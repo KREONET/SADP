@@ -97,7 +97,7 @@ SSO 앱은 Gateway의 `SecurityPolicy`에서 인증을 강제합니다.
 | 인증 | 외부 OIDC 연결, Portal Auth.js 세션, public/OIDC 앱 구분 |
 | Secret | OpenBao KV v2 → ESO → Kubernetes Secret, 변경 시 Reloader rollout |
 | 이미지 배포 | Portal 신청 → kaniko build/push → GitOps tag 반영 → Argo 배포 |
-| GitOps | Forgejo PR 자동 merge, OCI Registry push/pull, Argo CD 동기화 |
+| GitOps | Forgejo 보안 검사 + 관리자 승인 뒤 PR merge, OCI Registry push/pull, Argo CD 동기화 |
 | 제한 egress | cert-manager·패키지는 Squid, 앱은 선언한 NetworkPolicy로 제한 |
 | 외부 공개 | 경계 NAT 또는 노드 공인 NIC 직접 연결, 외부 TCP 80/443만 허용 |
 | 백업 | RKE2 etcd, OpenBao Raft |

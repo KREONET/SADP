@@ -55,6 +55,13 @@ export async function requirePaasRole(required: PortalApiRole): Promise<Session>
   return session;
 }
 
+/** 관리자 화면과 모든 변경 진입점이 공유하는 exact role 검사다. */
+export async function requirePortalAdmin(): Promise<Session> {
+  const session = await requirePaasSession();
+  if (!hasPortalApiRole(paasIdentity(session).roles, "portal:admin")) forbidden();
+  return session;
+}
+
 /**
  * 개발 서버 전용 로그인 우회. 외부 OIDC client 자격증명 없이 `(paas)` 화면을
  * 열기 위한 장치다.

@@ -1,4 +1,7 @@
-export type PortalApiRole = "deployments:read" | "deployments:write";
+export type PortalApiRole =
+  | "deployments:read"
+  | "deployments:write"
+  | "portal:admin";
 
 // Go API는 같은 Pod의 loopback listener만 연다. 신원 헤더를 붙이는 서버 호출이
 // NEXT_PUBLIC 설정으로 외부 origin을 향하면 신뢰 경계가 다시 열리므로 변경 불가 상수다.
@@ -19,8 +22,13 @@ const WRITE_ROLES = new Set([
   "app-admin",
   "developer",
 ]);
+const ADMIN_ROLES = new Set(["platform-admin"]);
 
-export function portalApiRequiredRole(method: string): PortalApiRole {
+export function portalApiRequiredRole(
+  method: string,
+  path: readonly string[] = [],
+): PortalApiRole {
+  if (path[0] === "admin") return "portal:admin";
   return method === "GET" || method === "HEAD"
     ? "deployments:read"
     : "deployments:write";
@@ -34,7 +42,12 @@ export function hasPortalApiRole(
   roles: readonly string[],
   required: PortalApiRole,
 ): boolean {
-  const allowed = required === "deployments:read" ? READ_ROLES : WRITE_ROLES;
+  const allowed =
+    required === "portal:admin"
+      ? ADMIN_ROLES
+      : required === "deployments:read"
+        ? READ_ROLES
+        : WRITE_ROLES;
   return roles.some((role) => allowed.has(role));
 }
 
@@ -77,6 +90,7 @@ export function portalApiUpstreamURL(
 export function portalApiUpstreamHeaders(
   incoming: Headers,
   requester: string,
+  roles: readonly string[] = [],
 ): Headers {
   const headers = new Headers();
   for (const name of REQUEST_HEADERS) {
@@ -84,6 +98,10 @@ export function portalApiUpstreamHeaders(
     if (value) headers.set(name, value);
   }
   headers.set("X-Portal-User", requester);
+  const trustedRoles = [...new Set(roles.map((role) => role.trim()).filter(Boolean))]
+    .sort()
+    .join(",");
+  if (trustedRoles) headers.set("X-Portal-Roles", trustedRoles);
   return headers;
 }
 
@@ -91,11 +109,12 @@ export function portalApiUpstreamHeaders(
 export function portalApiJsonHeaders(
   requester: string,
   idempotencyKey?: string,
+  roles: readonly string[] = [],
 ): Headers {
   const incoming = new Headers({
     accept: "application/json",
     "content-type": "application/json",
   });
   if (idempotencyKey) incoming.set("Idempotency-Key", idempotencyKey);
-  return portalApiUpstreamHeaders(incoming, requester);
+  return portalApiUpstreamHeaders(incoming, requester, roles);
 }

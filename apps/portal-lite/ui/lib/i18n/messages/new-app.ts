@@ -21,7 +21,7 @@ export const ko = {
   toastInvalidDescription: "필수 항목이 비었거나 형식이 올바르지 않습니다.",
   toastPlanTitle: "신청을 접수했습니다.",
   toastPlanDescription:
-    "{name} 배포 신청이 접수되었습니다. Pull Request 링크는 신청 상세에서 확인하세요.",
+    "{name} 배포 신청이 접수되었습니다. 신청 상세에서 보안 검사와 관리자 승인 상태를 확인하세요.",
   toastSubmitFailedTitle: "신청을 접수하지 못했습니다.",
   toastSubmitFailedDescription:
     "{reason} 입력을 고치고 다시 시도하세요. 클러스터는 바뀌지 않았습니다.",
@@ -227,7 +227,7 @@ export const en: typeof ko = {
     "A required field is empty or has an invalid format.",
   toastPlanTitle: "Request accepted.",
   toastPlanDescription:
-    "The deployment request for {name} was accepted. The pull request link is on the request detail page.",
+    "The deployment request for {name} was accepted. Check its security review and administrator approval status on the request detail page.",
   toastSubmitFailedTitle: "The request was not accepted.",
   toastSubmitFailedDescription:
     "{reason} Fix the input and try again. The cluster was not changed.",

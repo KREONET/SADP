@@ -1,5 +1,6 @@
 import type { Locale } from "@/lib/i18n/locale";
 
+import * as admin from "@/lib/i18n/messages/admin";
 import * as common from "@/lib/i18n/messages/common";
 import * as compose from "@/lib/i18n/messages/compose";
 import * as dashboard from "@/lib/i18n/messages/dashboard";
@@ -18,6 +19,7 @@ import * as services from "@/lib/i18n/messages/services";
  */
 const DICTIONARIES = {
   ko: {
+    admin: admin.ko,
     common: common.ko,
     compose: compose.ko,
     dashboard: dashboard.ko,
@@ -28,6 +30,7 @@ const DICTIONARIES = {
     services: services.ko,
   },
   en: {
+    admin: admin.en,
     common: common.en,
     compose: compose.en,
     dashboard: dashboard.en,

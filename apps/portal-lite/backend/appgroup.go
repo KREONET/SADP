@@ -9,7 +9,7 @@ package main
 //
 // 흐름은 단일 앱과 같다.
 //
-//	포털 -> Forgejo PR -> (자동 승인) -> Argo CD -> Namespace + 앱
+//	포털 -> Forgejo PR -> 보안 검사 + 관리자 승인 -> Argo CD -> Namespace + 앱
 //
 // 포털이 클러스터에 직접 쓰지 않는다. Namespace 도 Argo 가 Chart 를 보고 만든다.
 

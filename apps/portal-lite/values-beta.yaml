@@ -35,7 +35,6 @@ configuration:
     PORTAL_WORKLOAD_NAMESPACE: sadp-apps
     PORTAL_ZONE_ID: sadp-apps
     PORTAL_ZONE_LABEL: sadp Zone
-    PORTAL_AUTO_APPROVE: 'true'
     PORTAL_BUILD_NAMESPACE: sadp-apps
     PORTAL_BUILD_DOCKER_CONFIG_NAME: forgejo-registry-push
     PORTAL_BUILD_DOCKER_CONFIG_KEY: config.json

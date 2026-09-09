@@ -30,6 +30,11 @@ func newTestAPI(t *testing.T, forgejo *forgejoClient) (*apiServer, http.Handler)
 	api := &apiServer{store: requestStore, forgejo: forgejo}
 	if forgejo != nil {
 		forgejo.store = requestStore
+		// 기존 파이프라인 회귀는 명시적인 사용자별 자동 승인 예외를 켠 상태로 돈다.
+		// 기본 수동 승인과 권한 경계는 approval 전용 테스트에서 별도로 검증한다.
+		if _, err := requestStore.setApprovalPolicy("owner@example.invalid", "test-platform-admin", true); err != nil {
+			t.Fatalf("test approval policy: %v", err)
+		}
 	}
 	return api, newHandler(api)
 }

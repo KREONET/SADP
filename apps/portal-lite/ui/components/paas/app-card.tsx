@@ -2,6 +2,7 @@
 
 import { MonoKeyValueBox } from "@/components/paas/mono-kv-box";
 import { RelativeTime } from "@/components/paas/relative-time";
+import { ReviewStatus } from "@/components/paas/review-status";
 import { Button } from "@/components/ui/button";
 import { Card } from "@/components/ui/card";
 import { StatusPill } from "@/components/paas/status-pill";
@@ -70,6 +71,11 @@ export function AppCard({
         <p className="text-lg font-bold text-brand-900">{app.name}</p>
 
         <MonoKeyValueBox rows={infoRows} tone={running ? "info" : "muted"} />
+        <ReviewStatus
+          approval={app.approvalStatus}
+          security={app.securityReviewStatus}
+          labels={card}
+        />
       </div>
 
       <div

@@ -306,7 +306,7 @@ func (api *apiServer) handleCreateDeploymentRequest(w http.ResponseWriter, r *ht
 				}
 			}
 			w.Header().Set("Location", "/api/v1/deployment-requests/"+existing.ID)
-			writeJSON(w, http.StatusOK, existing)
+			writeJSON(w, http.StatusOK, publicDeploymentRequest(existing))
 			return
 		}
 	}
@@ -434,6 +434,7 @@ func (api *apiServer) handleCreateDeploymentRequest(w http.ResponseWriter, r *ht
 		return
 	}
 	now := time.Now().UTC()
+	approval, security := newReviewEvidence()
 	request := deploymentRequest{
 		ID:                 id,
 		State:              stateReceived,
@@ -443,6 +444,8 @@ func (api *apiServer) handleCreateDeploymentRequest(w http.ResponseWriter, r *ht
 		Profile:            result.Profile,
 		Generated:          result.Generated,
 		SecretWritePending: len(secrets) > 0,
+		Approval:           approval,
+		SecurityReview:     security,
 	}
 
 	if err := api.store.create(request, idempotencyKey, bodyHash); err != nil {
@@ -500,7 +503,7 @@ func (api *apiServer) handleCreateDeploymentRequest(w http.ResponseWriter, r *ht
 	}
 
 	w.Header().Set("Location", "/api/v1/deployment-requests/"+id)
-	writeJSON(w, http.StatusAccepted, request)
+	writeJSON(w, http.StatusAccepted, publicDeploymentRequest(request))
 }
 
 // 조회 경로는 Forgejo 연동 여부와 무관하게 저장소를 그대로 읽는다.
@@ -526,7 +529,7 @@ func (api *apiServer) handleGetDeploymentRequest(w http.ResponseWriter, r *http.
 		return
 	}
 	request = api.reconcileDeploymentRequest(r.Context(), request)
-	writeJSON(w, http.StatusOK, request)
+	writeJSON(w, http.StatusOK, publicDeploymentRequest(request))
 }
 
 // reconcileDeploymentRequest는 저장된 상태와 실제 클러스터 상태가 어긋난 경우 조회
@@ -686,7 +689,7 @@ func (api *apiServer) handleDeleteDeploymentRequest(w http.ResponseWriter, r *ht
 	if request.State == stateDeleted {
 		status = http.StatusOK
 	}
-	writeJSON(w, status, request)
+	writeJSON(w, status, publicDeploymentRequest(request))
 }
 
 type deploymentRequestList struct {
@@ -718,7 +721,7 @@ func (api *apiServer) handleListDeploymentRequests(w http.ResponseWriter, r *htt
 		items[index] = api.reconcileDeploymentRequest(r.Context(), items[index])
 	}
 	writeJSON(w, http.StatusOK, deploymentRequestList{
-		Items:     items,
+		Items:     publicDeploymentRequests(items),
 		Count:     len(items),
 		Limit:     limit,
 		Requester: requester,

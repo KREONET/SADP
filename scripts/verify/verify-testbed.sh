@@ -413,11 +413,11 @@ portal_catalog=$(jq -r '.body // empty' <<<"${portal_catalog_result}" 2>/dev/nul
 # jq 프로그램은 작은따옴표라 셸이 확장하지 않는다. Namespace 는 --arg 로 넘겨야 한다.
 jq -e --arg ns "${WORKLOAD_NAMESPACE}" '
   .forgejoConnected == true and .submissionEnabled == true and
-  .autoApprove == true and .zone.id == $ns and
+  .autoApprove == false and .zone.id == $ns and
   .secretInputAllowed == true and
   ([.templates[].exposure] | sort) == ["oidc", "public"]
 ' <<<"${portal_catalog}" >/dev/null \
-  && ok "Portal catalog 단일 Zone 및 Forgejo 자동 배포 계약" \
+  && ok "Portal catalog 단일 Zone 및 기본 수동 승인 계약" \
   || { echo '[FAIL] Portal catalog 계약' >&2; fail=1; }
 jq -e --arg prefix "${app_group_namespace_prefix}" --argjson max "${app_group_max_services}" '
   .appGroups.enabled == true and

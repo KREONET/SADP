@@ -644,14 +644,17 @@ func (api *apiServer) handleCreateAppGroup(w http.ResponseWriter, r *http.Reques
 				"잠시 후 다시 시도하세요.", nil)
 			return
 		}
+		approval, security := newReviewEvidence()
 		request := deploymentRequest{
-			ID:        id,
-			State:     stateReceived,
-			CreatedAt: now,
-			UpdatedAt: now,
-			Requester: requester,
-			Profile:   result.Profile,
-			Generated: result.Generated,
+			ID:             id,
+			State:          stateReceived,
+			CreatedAt:      now,
+			UpdatedAt:      now,
+			Requester:      requester,
+			Profile:        result.Profile,
+			Generated:      result.Generated,
+			Approval:       approval,
+			SecurityReview: security,
 		}
 		created.Requests = append(created.Requests, request)
 		requestCopy := request
@@ -689,6 +692,7 @@ func (api *apiServer) handleCreateAppGroup(w http.ResponseWriter, r *http.Reques
 		}
 	}
 	created.Count = len(created.Requests)
+	created.Requests = publicDeploymentRequests(created.Requests)
 	w.Header().Set("Location", "/api/v1/deployment-requests?group="+group.Name)
 	status := http.StatusAccepted
 	if newRequests == 0 {

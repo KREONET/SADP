@@ -21,6 +21,30 @@ export interface NavItem {
  * 각 GitOps 전환이 끝난 deployed/stopped에서만 RUNNING/STOPPED가 된다.
  */
 export type ApplicationStatus = "RUNNING" | "STOPPED" | "PENDING" | "FAILED";
+export type ApprovalStatus = "pending" | "approved" | "rejected";
+export type SecurityReviewStatus = "pending" | "passed" | "rejected";
+
+export interface ApprovalDecision {
+  status: ApprovalStatus;
+  decidedBy?: string;
+  decidedAt?: string;
+  automatic: boolean;
+  rejectReason?: string;
+}
+
+export interface SecurityFinding {
+  package: string;
+  cve: string;
+  fixedVersion: string;
+  message: string;
+}
+
+export interface SecurityReview {
+  status: SecurityReviewStatus;
+  checkedAt?: string;
+  summary?: string;
+  findings: SecurityFinding[];
+}
 
 export interface Application {
   id: string;
@@ -31,6 +55,8 @@ export interface Application {
   /** 비어 있으면 기존 단일 앱, 있으면 AppGroup 서비스다. */
   group?: string;
   status: ApplicationStatus;
+  approvalStatus: ApprovalStatus;
+  securityReviewStatus: SecurityReviewStatus;
   /** stop/start의 서버 저장 목표. runtime 실패 재시도 방향을 추측하지 않게 한다. */
   desiredRuntimeState?: "running" | "stopped";
   /** failed 직전 상태. 일반 배포 실패와 runtime 전환 실패를 구분한다. */
@@ -62,12 +88,8 @@ export interface ApplicationDetail extends Application {
   containerPort: number;
   exposure: string;
   image?: string;
-  pullRequest?: {
-    number: number;
-    url: string;
-    branch: string;
-    state: string;
-  };
+  approval: ApprovalDecision;
+  securityReview: SecurityReview;
 }
 
 /* --------------------------- 화면 2: 대시보드 --------------------------- */
@@ -127,9 +149,56 @@ export interface DeploymentRequest {
   application: string;
   status: DeploymentStatus;
   result: DeploymentResult;
+  approvalStatus: ApprovalStatus;
+  securityReviewStatus: SecurityReviewStatus;
   /** 절대시간(ISO) */
   date: string;
 }
+
+/* ---------------------------- 관리자 승인 대시보드 ---------------------------- */
+
+export interface AdminDeploymentRequest {
+  id: string;
+  requester: string;
+  application: string;
+  project: string;
+  pipelineState: string;
+  createdAt: string;
+  updatedAt: string;
+  sourceRepository: string;
+  approval: ApprovalDecision;
+  securityReview: SecurityReview;
+  pullRequest?: {
+    number: number;
+    url: string;
+    branch: string;
+    state: string;
+  };
+}
+
+export interface ApprovalPolicyChange {
+  enabled: boolean;
+  changedBy: string;
+  changedAt: string;
+}
+
+export interface ApprovalPolicy {
+  requester: string;
+  enabled: boolean;
+  updatedBy?: string;
+  updatedAt?: string;
+  history: ApprovalPolicyChange[];
+}
+
+export interface AdminApprovalDashboard {
+  requests: AdminDeploymentRequest[];
+  policies: ApprovalPolicy[];
+  count: number;
+}
+
+export type AdminMutationResult =
+  | { ok: true }
+  | { ok: false; reason: string };
 
 export interface OverallStatus {
   label: string;

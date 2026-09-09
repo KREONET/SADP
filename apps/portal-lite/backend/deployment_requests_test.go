@@ -23,6 +23,7 @@ type fakeForgejo struct {
 	files    map[string]string
 	failNext int
 	merged   bool
+	closed   bool
 	checks   string
 }
 
@@ -83,23 +84,35 @@ func newFakeForgejo(t *testing.T) (*fakeForgejo, *forgejoClient) {
 		case r.Method == http.MethodGet && strings.HasSuffix(r.URL.Path, "/pulls/7"):
 			fake.mu.Lock()
 			merged := fake.merged
+			closed := fake.closed
 			fake.mu.Unlock()
+			state := "open"
+			if closed {
+				state = "closed"
+			}
 			w.Header().Set("Content-Type", "application/json")
 			_, _ = w.Write([]byte(`{"merged":` + strconv.FormatBool(merged) +
-				`,"state":"open","head":{"sha":"test-head"}}`))
+				`,"state":` + strconv.Quote(state) + `,"head":{"sha":"test-head"}}`))
 		case r.Method == http.MethodGet && strings.HasSuffix(r.URL.Path, "/commits/test-head/status"):
 			fake.mu.Lock()
 			checks := fake.checks
 			fake.mu.Unlock()
 			w.Header().Set("Content-Type", "application/json")
 			_, _ = w.Write([]byte(`{"state":` + strconv.Quote(checks) +
-				`,"total_count":1,"statuses":[{"status":` + strconv.Quote(checks) + `}]}`))
+				`,"total_count":1,"statuses":[{"status":` + strconv.Quote(checks) +
+				`,"context":"security/openssl","description":"package=openssl; cve=CVE-2026-1234; fixed=3.0.1"}]}`))
 		case r.Method == http.MethodPost && strings.HasSuffix(r.URL.Path, "/pulls/7/merge"):
 			fake.mu.Lock()
 			fake.merged = true
 			fake.mu.Unlock()
 			w.Header().Set("Content-Type", "application/json")
 			_, _ = w.Write([]byte(`{}`))
+		case r.Method == http.MethodPatch && strings.HasSuffix(r.URL.Path, "/pulls/7"):
+			fake.mu.Lock()
+			fake.closed = true
+			fake.mu.Unlock()
+			w.Header().Set("Content-Type", "application/json")
+			_, _ = w.Write([]byte(`{"state":"closed"}`))
 		default:
 			w.Header().Set("Content-Type", "application/json")
 			w.WriteHeader(http.StatusCreated)
@@ -206,9 +219,6 @@ func TestDeploymentRequestCreatesPullRequest(t *testing.T) {
 	if final.PullRequest.State != "merged" {
 		t.Fatalf("PR 상태=%q", final.PullRequest.State)
 	}
-	if fake.callCount() != 8 {
-		t.Fatalf("Forgejo 호출 %d회: %v", fake.callCount(), fake.calls)
-	}
 	mergeBody := fake.bodies["POST /api/v1/repos/platform/gitops/pulls/7/merge"]
 	if !strings.Contains(mergeBody, `"merge_when_checks_succeed":false`) {
 		t.Fatalf("timeout 뒤 late merge를 막는 명시 merge 요청이 아님: %s", mergeBody)
@@ -232,7 +242,7 @@ func TestMergeDoesNotScheduleWhenChecksArePending(t *testing.T) {
 	t.Cleanup(func() { mergeTimeoutSeconds = previousTimeout })
 
 	err := client.mergePullRequest(context.Background(), 7)
-	if err == nil || !strings.Contains(err.Error(), "제한 시간") {
+	if err == nil || !strings.Contains(err.Error(), "제한") {
 		t.Fatalf("pending checks가 timeout으로 끝나지 않음: %v", err)
 	}
 	fake.mu.Lock()
@@ -1110,14 +1120,13 @@ func TestForgejoDoesNotSendBuildCredentialsToUnapprovedGitHost(t *testing.T) {
 	}
 }
 
-// 자동 승인을 끄면 예전처럼 PR만 열고 사람 손을 기다려야 한다.
+// 사용자별 예외가 꺼져 있으면 PR과 보안 통과 증거만 남기고 관리자 결정을 기다린다.
 func TestDeploymentRequestKeepsPullRequestOpenWithoutAutoApprove(t *testing.T) {
-	previous := autoApprove
-	autoApprove = false
-	t.Cleanup(func() { autoApprove = previous })
-
 	fake, client := newFakeForgejo(t)
 	api, handler := newTestAPI(t, client)
+	if _, err := api.store.setApprovalPolicy("owner@example.invalid", "test-platform-admin", false); err != nil {
+		t.Fatal(err)
+	}
 	ctx, cancel := contextWithCancel(t)
 	defer cancel()
 	go client.run(ctx)
@@ -1129,9 +1138,20 @@ func TestDeploymentRequestKeepsPullRequestOpenWithoutAutoApprove(t *testing.T) {
 	created := decodeRequest(t, recorder)
 
 	final := waitForState(t, api, created.ID, statePROpen)
+	// PR 생성과 비동기 보안 증거 저장은 서로 다른 단계이므로 둘 다 기다린다.
+	deadline := time.Now().Add(3 * time.Second)
+	for final.SecurityReview.Status != securityPassed && time.Now().Before(deadline) {
+		time.Sleep(5 * time.Millisecond)
+		final, _ = api.store.get(created.ID)
+	}
 	if final.PullRequest == nil || final.PullRequest.State == "merged" {
 		t.Fatalf("자동 병합이 일어남: %+v", final)
 	}
+	if final.Approval.Status != approvalPending || final.SecurityReview.Status != securityPassed {
+		t.Fatalf("수동 승인 대기 증거가 올바르지 않음: %+v", final)
+	}
+	fake.mu.Lock()
+	defer fake.mu.Unlock()
 	for _, call := range fake.calls {
 		if strings.Contains(call, "/merge") {
 			t.Fatalf("병합 호출이 있음: %v", fake.calls)

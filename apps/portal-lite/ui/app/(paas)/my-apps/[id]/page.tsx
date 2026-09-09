@@ -1,4 +1,4 @@
-import { ArrowLeft, ExternalLink } from "lucide-react";
+import { ArrowLeft, ExternalLink, LockKeyhole } from "lucide-react";
 import Link from "next/link";
 
 import { ApplicationRuntimeButton } from "@/components/paas/application-runtime-button";
@@ -8,6 +8,12 @@ import { MonoKeyValueBox } from "@/components/paas/mono-kv-box";
 import { PageHeader } from "@/components/paas/page-header";
 import { RefreshButton } from "@/components/paas/refresh-button";
 import { RelativeTime } from "@/components/paas/relative-time";
+import {
+  approvalLabel,
+  approvalTone,
+  securityReviewLabel,
+  securityReviewTone,
+} from "@/components/paas/review-status";
 import { StatusPill } from "@/components/paas/status-pill";
 import { Button } from "@/components/ui/button";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
@@ -161,18 +167,6 @@ export default async function ApplicationDetailPage({
                 <p className="text-xs text-muted-foreground">
                   <RelativeTime iso={application.lastDeployedAt} />
                 </p>
-                {application.pullRequest ? (
-                  <Button variant="outline" asChild>
-                    <a
-                      href={application.pullRequest.url}
-                      target="_blank"
-                      rel="noreferrer"
-                    >
-                      {t.openPullRequest} #{application.pullRequest.number}
-                      <ExternalLink className="size-4" aria-hidden />
-                    </a>
-                  </Button>
-                ) : null}
               </CardContent>
             </Card>
 
@@ -207,6 +201,135 @@ export default async function ApplicationDetailPage({
                     </a>
                   </Button>
                 ) : null}
+              </CardContent>
+            </Card>
+
+            <Card className="lg:col-span-2">
+              <CardHeader>
+                <CardTitle>{t.review}</CardTitle>
+              </CardHeader>
+              <CardContent className="space-y-5">
+                <div className="flex flex-wrap gap-3">
+                  <div className="flex items-center gap-2">
+                    <span className="text-sm text-muted-foreground">
+                      {t.approval}
+                    </span>
+                    <StatusPill
+                      tone={approvalTone(application.approval.status)}
+                      dot
+                    >
+                      {approvalLabel(application.approval.status, {
+                        approval: t.approval,
+                        security: t.security,
+                        approvalPending: dict.myApps.card.approvalPending,
+                        approvalApproved: dict.myApps.card.approvalApproved,
+                        approvalRejected: dict.myApps.card.approvalRejected,
+                        securityPending: dict.myApps.card.securityPending,
+                        securityPassed: dict.myApps.card.securityPassed,
+                        securityRejected: dict.myApps.card.securityRejected,
+                      })}
+                    </StatusPill>
+                  </div>
+                  <div className="flex items-center gap-2">
+                    <span className="text-sm text-muted-foreground">
+                      {t.security}
+                    </span>
+                    <StatusPill
+                      tone={securityReviewTone(application.securityReview.status)}
+                      dot
+                    >
+                      {securityReviewLabel(application.securityReview.status, {
+                        approval: t.approval,
+                        security: t.security,
+                        approvalPending: dict.myApps.card.approvalPending,
+                        approvalApproved: dict.myApps.card.approvalApproved,
+                        approvalRejected: dict.myApps.card.approvalRejected,
+                        securityPending: dict.myApps.card.securityPending,
+                        securityPassed: dict.myApps.card.securityPassed,
+                        securityRejected: dict.myApps.card.securityRejected,
+                      })}
+                    </StatusPill>
+                  </div>
+                </div>
+
+                <MonoKeyValueBox
+                  rows={[
+                    {
+                      label: t.decisionBy,
+                      value: application.approval.decidedBy ?? "-",
+                    },
+                    {
+                      label: t.decisionAt,
+                      value: application.approval.decidedAt ?? "-",
+                    },
+                    {
+                      label: t.decisionMode,
+                      value: application.approval.decidedAt
+                        ? application.approval.automatic
+                          ? t.automatic
+                          : t.manual
+                        : "-",
+                    },
+                    {
+                      label: t.securityCheckedAt,
+                      value: application.securityReview.checkedAt ?? "-",
+                    },
+                    {
+                      label: t.securitySummary,
+                      value: application.securityReview.summary ?? "-",
+                    },
+                  ]}
+                />
+
+                {application.approval.rejectReason ? (
+                  <p
+                    role="alert"
+                    className="rounded-md border border-status-error bg-status-error-soft px-4 py-3 text-sm text-status-error-strong"
+                  >
+                    <span className="font-semibold">{t.rejectReason}:</span>{" "}
+                    {application.approval.rejectReason}
+                  </p>
+                ) : null}
+
+                {application.securityReview.findings.length > 0 ? (
+                  <div className="space-y-3">
+                    <p className="text-sm font-semibold text-foreground">
+                      {t.securityGuidance}
+                    </p>
+                    <div className="grid gap-3 md:grid-cols-2">
+                      {application.securityReview.findings.map((finding, index) => (
+                        <div
+                          key={`${finding.package}-${finding.cve}-${index}`}
+                          className="rounded-md border border-status-error/40 bg-status-error-soft p-4"
+                        >
+                          <dl className="grid grid-cols-[auto_1fr] gap-x-3 gap-y-1 text-sm">
+                            <dt className="text-muted-foreground">{t.package}</dt>
+                            <dd className="font-mono">{finding.package}</dd>
+                            <dt className="text-muted-foreground">{t.cve}</dt>
+                            <dd className="font-mono">{finding.cve}</dd>
+                            <dt className="text-muted-foreground">
+                              {t.fixedVersion}
+                            </dt>
+                            <dd className="font-mono">{finding.fixedVersion}</dd>
+                          </dl>
+                          <p className="mt-3 text-sm text-status-error-strong">
+                            {finding.message}
+                          </p>
+                        </div>
+                      ))}
+                    </div>
+                  </div>
+                ) : null}
+
+                <div className="rounded-md border border-border bg-muted/30 p-4">
+                  <Button type="button" variant="outline" disabled>
+                    <LockKeyhole className="size-4" aria-hidden />
+                    {t.auditPullRequest}
+                  </Button>
+                  <p className="mt-2 text-sm text-muted-foreground">
+                    {t.auditPullRequestDescription}
+                  </p>
+                </div>
               </CardContent>
             </Card>
           </div>

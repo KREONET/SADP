@@ -13,6 +13,7 @@ export const ko = {
     deployments: "배포",
     newApp: "새 앱",
     docs: "문서",
+    admin: "관리자",
   },
   header: {
     searchPlaceholder: "서비스 검색...",
@@ -59,6 +60,7 @@ export const en: typeof ko = {
     deployments: "Deployments",
     newApp: "New App",
     docs: "Docs",
+    admin: "Admin",
   },
   header: {
     searchPlaceholder: "Search services...",

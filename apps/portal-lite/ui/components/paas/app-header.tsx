@@ -12,7 +12,7 @@ import { SITE } from "@/lib/site-config";
  * 전 화면 공통 상단 내비게이션.
  * 활성 링크 판정과 로케일 전환에 클라이언트 훅이 필요해 전체를 클라이언트로 둔다.
  */
-export function AppHeader() {
+export function AppHeader({ isAdmin = false }: { isAdmin?: boolean }) {
   const { dict } = useI18n();
 
   return (
@@ -25,7 +25,7 @@ export function AppHeader() {
           {SITE.name}
         </Link>
 
-        <PaasNav />
+        <PaasNav isAdmin={isAdmin} />
 
         <div className="ml-auto flex items-center gap-2">
           <LocaleToggle />

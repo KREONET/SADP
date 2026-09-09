@@ -37,12 +37,19 @@ Portal은 Git 기록을 만들기 전에 이 준비 상태를 확인합니다. �
   → Portal 입력/Namespace/이미지/접근 계약 검증
   → Registry pull 및 OpenBao/ExternalSecret 사전검증
   → Portal 런타임의 공용 Forgejo 봇으로 GitOps PR 생성
-  → 승인·merge
+  → 필수 보안 검사
+  → platform-admin 수동 승인(또는 감사되는 사용자별 자동 승인 예외)
+  → merge
   → 이미지 build 또는 기존 image 사용
   → Argo CD sync
   → ESO 동기화 확인
   → Deployment Ready
 ```
+
+전 사용자 기본값은 수동 승인입니다. 사용자별 자동 승인 예외가 켜져 있어도 보안 검사 반려를
+우회하지 않습니다. 보안 문제가 발견되면 사용자는 자신의 소스 저장소에서 취약 package/CVE의
+수정 버전을 반영하는 PR을 만들거나 이슈를 등록해 패치한 뒤 다시 신청합니다. private GitOps
+감사 저장소 링크는 관리자 대시보드에서만 제공합니다.
 
 Secret이 없는 `authentication.mode=none` 앱은 OIDC client나 앱별 ExternalSecret을 만들지
 않습니다. runtime Secret이 있는 앱에만 다음 canonical 경계를 사용합니다.

@@ -73,7 +73,7 @@ func run() error {
 		logger.Printf("카탈로그 상태 프로브 활성: ns=%s,%s,%s",
 			workloadNamespace, rancherNamespace, openbaoNamespace)
 		// 같은 kube 접속 정보로 빌드 파이프라인도 켠다. 클러스터 밖에서는 꺼진 채로 둔다.
-		if api.forgejo != nil && autoApprove {
+		if api.forgejo != nil {
 			api.forgejo.builder = newBuildPipeline(kubeClient, logger)
 			// 같은 client로 앱별 ESO 권한도 만든다. 없으면 Secret을 쓴 앱은 배포돼도
 			// ExternalSecret이 동기화되지 못한다.
@@ -82,13 +82,12 @@ func run() error {
 				zoneID, buildNamespace, registryBase)
 		}
 	}
-	// 이 worker는 PR 생성만 하는 수동 승인 큐가 아니다. 자동 병합 뒤 Argo 동기화와
-	// Namespace 정리까지 한 상태 머신으로 처리하므로, 클러스터 client나 자동 승인이
-	// 없는데 큐를 열면 CHANGE_ME 이미지가 든 PR과 끝나지 않는 삭제 요청만 남는다.
+	// worker는 승인 뒤 Argo 동기화와 Namespace 정리까지 한 상태 머신으로 처리한다.
+	// 클러스터 client 없이 큐를 열면 승인 뒤 빌드가 끝나지 않으므로 신청 API를 닫는다.
 	// 읽기 API는 계속 제공하되 생성/삭제는 submissionEnabled가 503으로 닫게 한다.
-	if api.forgejo != nil && (!autoApprove || api.forgejo.builder == nil) {
-		logger.Printf("자동 배포 전제조건이 없어 배포 요청 API를 비활성화합니다: autoApprove=%t builder=%t",
-			autoApprove, api.forgejo.builder != nil)
+	if api.forgejo != nil && api.forgejo.builder == nil {
+		logger.Printf("배포 전제조건이 없어 배포 요청 API를 비활성화합니다: builder=%t",
+			api.forgejo.builder != nil)
 		api.forgejo = nil
 	}
 
@@ -98,7 +97,7 @@ func run() error {
 
 	var workers sync.WaitGroup
 	if api.forgejo != nil {
-		workers.Add(2)
+		workers.Add(3)
 		go func() {
 			defer workers.Done()
 			api.forgejo.run(ctx)
@@ -106,6 +105,10 @@ func run() error {
 		go func() {
 			defer workers.Done()
 			api.watchSourceUpdates(ctx)
+		}()
+		go func() {
+			defer workers.Done()
+			api.forgejo.watchApprovals(ctx)
 		}()
 		logger.Printf("Forgejo source branch 자동 갱신 활성: poll=%ds", sourcePollIntervalSeconds)
 		// 재시작 전에 PR을 만들지 못한 요청을 다시 대기열에 올린다.

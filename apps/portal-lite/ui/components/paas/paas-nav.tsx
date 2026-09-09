@@ -12,13 +12,19 @@ function isActive(pathname: string, match: string) {
   return pathname === match || pathname.startsWith(`${match}/`);
 }
 
-export function PaasNav({ className }: { className?: string }) {
+export function PaasNav({
+  className,
+  isAdmin = false,
+}: {
+  className?: string;
+  isAdmin?: boolean;
+}) {
   const pathname = usePathname() ?? "/";
   const { dict } = useI18n();
 
   return (
     <nav className={cn("flex items-center gap-1", className)}>
-      {NAV_ITEMS.map((item) => {
+      {NAV_ITEMS.filter((item) => item.key !== "admin" || isAdmin).map((item) => {
         const active = isActive(pathname, item.match);
         return (
           <Link

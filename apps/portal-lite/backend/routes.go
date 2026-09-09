@@ -23,6 +23,9 @@ func newHandler(api *apiServer) http.Handler {
 	mux.HandleFunc("GET /api/v1/deployment-requests/{requestID}", api.handleGetDeploymentRequest)
 	mux.HandleFunc("PUT /api/v1/deployment-requests/{requestID}/runtime-state", api.handleUpdateRuntimeState)
 	mux.HandleFunc("DELETE /api/v1/deployment-requests/{requestID}", api.handleDeleteDeploymentRequest)
+	mux.HandleFunc("GET /api/v1/admin/approval-dashboard", api.handleAdminApprovalDashboard)
+	mux.HandleFunc("POST /api/v1/admin/deployment-requests/{requestID}/decision", api.handleAdminApprovalDecision)
+	mux.HandleFunc("PUT /api/v1/admin/approval-policies/{requester}", api.handleAdminApprovalPolicy)
 	mux.HandleFunc("GET /api/v1/quota-usage", api.handleQuotaUsage)
 	return secure(mux)
 }

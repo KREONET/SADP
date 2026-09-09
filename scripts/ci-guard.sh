@@ -602,6 +602,9 @@ try:
     requester_header = portal_components["parameters"]["RequesterHeader"]
     assert requester_header["in"] == "header" and requester_header["required"] is True
     assert requester_header["x-sadp-injected-by"] == "portal-bff"
+    roles_header = portal_components["parameters"]["RolesHeader"]
+    assert roles_header["in"] == "header" and roles_header["required"] is True
+    assert roles_header["x-sadp-injected-by"] == "portal-bff"
     assert portal_components["parameters"]["IdempotencyKey"]["required"] is True
     assert portal_components["securitySchemes"]["oidc"]["type"] == "oauth2"
     identity = contract["spec"]["identityProvider"]
@@ -636,13 +639,31 @@ try:
     assert runtime_input["additionalProperties"] is False
     assert set(runtime_input["properties"]["state"]["enum"]) == {"running", "stopped"}
     assert "application/problem+json" in portal_components["responses"]["ValidationError"]["content"]
-    response_fields = resolve(portal_components["schemas"]["DeploymentRequest"])["properties"]
+    response_fields = portal_components["schemas"]["DeploymentRequestBase"]["properties"]
     assert {"gitCommitted", "desiredRevision", "applicationSynced", "failedFromState",
             "groupCleanupDecided", "groupCleanupPlanned", "secretWritePending",
-            "desiredRuntimeState", "runtimeGeneration", "runtimePullRequest",
-            "runtimeSupersededPullRequest", "runtimeDesiredRevision",
+            "desiredRuntimeState", "runtimeGeneration", "runtimeDesiredRevision",
             "runtimeApplicationSynced"} <= set(response_fields)
+    assert {"approval", "securityReview"} <= set(response_fields)
+    public_request = portal_components["schemas"]["DeploymentRequest"]
+    assert public_request["unevaluatedProperties"] is False
+    assert public_request["allOf"] == [{"$ref": "#/components/schemas/DeploymentRequestBase"}]
+    admin_request = portal_components["schemas"]["AdminDeploymentRequest"]
+    admin_private_fields = admin_request["allOf"][1]["properties"]
+    assert {"pullRequest", "runtimePullRequest", "runtimeSupersededPullRequest"} <= set(admin_private_fields)
+    assert not {"pullRequest", "runtimePullRequest", "runtimeSupersededPullRequest"} & set(response_fields)
     assert {"stopping", "stopped", "starting"} <= set(response_fields["state"]["enum"])
+    dashboard = portal_paths["/api/v1/admin/approval-dashboard"]["get"]
+    decision = portal_paths["/api/v1/admin/deployment-requests/{requestID}/decision"]["post"]
+    policy = portal_paths["/api/v1/admin/approval-policies/{requester}"]["put"]
+    assert dashboard["security"] == decision["security"] == policy["security"] == [
+        {"oidc": ["portal:admin"]}
+    ]
+    for operation in (dashboard, decision, policy):
+        assert {item["$ref"] for item in operation["parameters"] if "$ref" in item} >= {
+            "#/components/parameters/RequesterHeader",
+            "#/components/parameters/RolesHeader",
+        }
 except (AssertionError, KeyError, TypeError, yaml.YAMLError) as error:
     bad(f"Portal OpenAPI 3.1.1 핵심 계약 오류: {error}")
 else:

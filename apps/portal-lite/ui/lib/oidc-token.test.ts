@@ -11,6 +11,19 @@ function jwt(payload: Record<string, unknown>) {
 }
 
 describe("OIDC token mapping", () => {
+  it("accepts only the Portal client roles alongside group and realm roles", () => {
+    const identity = extractOIDCIdentity(undefined, jwt({
+      groups: ["viewer"],
+      realm_access: { roles: ["platform-admin"] },
+      resource_access: {
+        "portal-beta": { roles: ["app-admin"] },
+        other: { roles: ["untrusted-role"] },
+      },
+    }), "portal-beta");
+    expect(identity.groups).toEqual(["viewer"]);
+    expect(identity.realmRoles).toEqual(["platform-admin"]);
+    expect(identity.clientRoles).toEqual(["app-admin"]);
+  });
   it("maps standard identity and a configurable groups claim", () => {
     const accessToken = jwt({
       sub: "user-123",

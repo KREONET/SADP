@@ -3,7 +3,8 @@ import type { ReactNode } from "react";
 import { AppHeader } from "@/components/paas/app-header";
 import { I18nProvider } from "@/lib/i18n/context";
 import { getI18n } from "@/lib/i18n/server";
-import { requirePaasRole } from "@/lib/require-session";
+import { paasIdentity, requirePaasRole } from "@/lib/require-session";
+import { hasPortalApiRole } from "@/lib/portal-api-bff";
 
 import "./paas.css";
 
@@ -25,13 +26,14 @@ export const dynamic = "force-dynamic";
  * 개별 page 가 각자 auth() 를 확인하다 빠뜨리는 일이 없다.
  */
 export default async function PaasLayout({ children }: { children: ReactNode }) {
-  await requirePaasRole("deployments:read");
+  const session = await requirePaasRole("deployments:read");
   const i18n = await getI18n();
+  const isAdmin = hasPortalApiRole(paasIdentity(session).roles, "portal:admin");
 
   return (
     <I18nProvider value={i18n}>
       <div className="flex min-h-screen flex-col bg-background text-foreground">
-        <AppHeader />
+        <AppHeader isAdmin={isAdmin} />
         {children}
         {/*
           토스트(sonner)는 이 플랫폼에서 쓰지 않는다. CSP 가 style-src 에 'unsafe-inline'

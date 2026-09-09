@@ -160,10 +160,11 @@ func (api *apiServer) createSourceUpdate(expected deploymentRequest, commit stri
 		return err
 	}
 	now := time.Now().UTC()
+	approval, security := newReviewEvidence()
 	request := deploymentRequest{
 		ID: id, State: stateReceived, CreatedAt: now, UpdatedAt: now,
 		Requester: current.Requester, Profile: current.Profile, Generated: current.Generated,
-		SourceUpdate: true,
+		SourceUpdate: true, Approval: approval, SecurityReview: security,
 	}
 	request.Profile.Source.Commit = commit
 	// 이전 immutable image는 현재 앱을 설명할 뿐 새 build 결과가 아니다. pre-PR build가

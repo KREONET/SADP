@@ -65,4 +65,5 @@ export const NAV_ITEMS = [
     match: "/deployments",
   },
   { key: "newApp", href: "/new-app/1", match: "/new-app" },
+  { key: "admin", href: "/admin", match: "/admin" },
 ] as const satisfies readonly { key: string; href: string; match: string }[];

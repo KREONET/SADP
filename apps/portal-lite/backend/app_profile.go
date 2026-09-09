@@ -324,10 +324,10 @@ type quotaSummary struct {
 }
 
 type generatedPlan struct {
-	ValuesTemplate   string `json:"valuesTemplate"`
-	OpenBaoPath      string `json:"openbaoPath"`
-	OIDCClientID     string `json:"oidcClientId,omitempty"`
-	OIDCCallbackURL  string `json:"oidcCallbackUrl,omitempty"`
+	ValuesTemplate  string `json:"valuesTemplate"`
+	OpenBaoPath     string `json:"openbaoPath"`
+	OIDCClientID    string `json:"oidcClientId,omitempty"`
+	OIDCCallbackURL string `json:"oidcCallbackUrl,omitempty"`
 	// 빌드가 끝난 뒤 채워지는 최종 이미지 좌표(레지스트리/이름:태그).
 	Image             string `json:"image,omitempty"`
 	ExpectedAnonymous int    `json:"expectedAnonymousStatus"`

@@ -278,6 +278,8 @@ def verify_generated(workspace: pathlib.Path) -> str:
         return "Portal OCI repository mismatch"
     if portal["configuration"]["config"]["PLATFORM_BASE_DOMAIN"] != "prod.company.kr":
         return "Portal runtime base domain missing"
+    if "PORTAL_AUTO_APPROVE" in portal["configuration"]["config"]:
+        return "Portal global auto approval must not be generated"
     if portal["configuration"]["config"].get("PORTAL_ARGO_NAMESPACE") != "devtroncd":
         return "Portal Argo namespace config missing"
     if portal["configuration"]["config"].get("PORTAL_REGISTRY_PULL_REMOTE_PATH") != (

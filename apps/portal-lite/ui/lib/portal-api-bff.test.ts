@@ -61,12 +61,34 @@ describe("Portal API BFF boundary", () => {
     });
   });
 
+  it("replaces spoofed admin roles with roles from the authenticated session", () => {
+    const headers = portalApiUpstreamHeaders(
+      new Headers({
+        "X-Portal-Roles": "platform-admin",
+        "X-Portal-User": "attacker",
+      }),
+      "session-user",
+      ["viewer", "developer", "viewer"],
+    );
+
+    expect(Object.fromEntries(headers)).toEqual({
+      "x-portal-roles": "developer,viewer",
+      "x-portal-user": "session-user",
+    });
+  });
+
   it("requires read for safe methods and write for mutations", () => {
     expect(portalApiRequiredRole("GET")).toBe("deployments:read");
     expect(portalApiRequiredRole("HEAD")).toBe("deployments:read");
     expect(portalApiRequiredRole("POST")).toBe("deployments:write");
     expect(portalApiRequiredRole("PUT")).toBe("deployments:write");
     expect(portalApiRequiredRole("DELETE")).toBe("deployments:write");
+    expect(portalApiRequiredRole("GET", ["admin", "approval-dashboard"])).toBe(
+      "portal:admin",
+    );
+    expect(
+      portalApiRequiredRole("POST", ["admin", "deployment-requests"]),
+    ).toBe("portal:admin");
   });
 
   it("supports exact API scopes and the external OIDC role contract", () => {
@@ -82,5 +104,8 @@ describe("Portal API BFF boundary", () => {
     expect(hasPortalApiRole(["viewer"], "deployments:write")).toBe(false);
     expect(hasPortalApiRole(["deployments:read"], "deployments:write")).toBe(false);
     expect(hasPortalApiRole(["unrelated"], "deployments:read")).toBe(false);
+    expect(hasPortalApiRole(["platform-admin"], "portal:admin")).toBe(true);
+    expect(hasPortalApiRole(["app-admin"], "portal:admin")).toBe(false);
+    expect(hasPortalApiRole(["deployments:write"], "portal:admin")).toBe(false);
   });
 });

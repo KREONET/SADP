@@ -17,7 +17,12 @@ import {
 } from "@/lib/portal-api-bff";
 import { PLATFORM } from "@/lib/site-config";
 import type {
+  AdminApprovalDashboard,
+  AdminDeploymentRequest,
+  AdminMutationResult,
   Application,
+  ApprovalDecision,
+  ApprovalPolicy,
   ComposePlan,
   ApplicationDetail,
   DeploymentRequest,
@@ -29,6 +34,7 @@ import type {
   ServiceVisibility,
   SystemNotice,
   ResourcePresetOption,
+  SecurityReview,
   WizardOptions,
   WorkloadSummary,
 } from "@/types/domain";
@@ -58,6 +64,8 @@ const ENDPOINTS = {
   appGroupValidate: "/api/v1/app-groups/validate",
   /** AppGroup 신청. Go `POST /api/v1/app-groups`. */
   appGroups: "/api/v1/app-groups",
+  /** 관리자 전용 전체 승인 현황. */
+  adminApprovalDashboard: "/api/v1/admin/approval-dashboard",
 } as const;
 
 /**
@@ -128,6 +136,8 @@ interface DeploymentRequestDto {
     branch: string;
     state: string;
   };
+  approval?: Partial<ApprovalDecision>;
+  securityReview?: Partial<SecurityReview>;
   profile?: {
     app?: { name?: string; project?: string; environment?: string; group?: string };
     source?: { repository?: string; revision?: string; dockerfile?: string };
@@ -183,6 +193,7 @@ function warnOnce(path: string, reason: unknown) {
 async function fetchJson<T>(
   path: string,
   query: Record<string, string | number | undefined> = {},
+  roles: readonly string[] = [],
 ): Promise<T | null> {
   const url = new URL(`${PORTAL_API_ORIGIN}${path}`);
   for (const [key, value] of Object.entries(query)) {
@@ -195,6 +206,10 @@ async function fetchJson<T>(
   const headers: Record<string, string> = { accept: "application/json" };
   const requester = String(query.requester ?? "").trim();
   if (requester) headers["X-Portal-User"] = requester;
+  const trustedRoles = [...new Set(roles.map((role) => role.trim()).filter(Boolean))]
+    .sort()
+    .join(",");
+  if (trustedRoles) headers["X-Portal-Roles"] = trustedRoles;
 
   try {
     const response = await fetch(url, {
@@ -246,7 +261,36 @@ function toDeploymentRequest(dto: DeploymentRequestDto): DeploymentRequest {
     application: dto.profile?.app?.name ?? "(unknown)",
     status,
     result,
+    approvalStatus: approvalOf(dto).status,
+    securityReviewStatus: securityReviewOf(dto).status,
     date: dto.createdAt,
+  };
+}
+
+function approvalOf(dto: DeploymentRequestDto): ApprovalDecision {
+  const status = dto.approval?.status;
+  return {
+    status:
+      status === "approved" || status === "rejected" ? status : "pending",
+    decidedBy: dto.approval?.decidedBy?.trim() || undefined,
+    decidedAt: dto.approval?.decidedAt?.trim() || undefined,
+    automatic: dto.approval?.automatic === true,
+    rejectReason: dto.approval?.rejectReason?.trim() || undefined,
+  };
+}
+
+function securityReviewOf(dto: DeploymentRequestDto): SecurityReview {
+  const status = dto.securityReview?.status;
+  return {
+    status: status === "passed" || status === "rejected" ? status : "pending",
+    checkedAt: dto.securityReview?.checkedAt?.trim() || undefined,
+    summary: dto.securityReview?.summary?.trim() || undefined,
+    findings: (dto.securityReview?.findings ?? []).map((finding) => ({
+      package: finding.package,
+      cve: finding.cve,
+      fixedVersion: finding.fixedVersion,
+      message: finding.message,
+    })),
   };
 }
 
@@ -284,7 +328,12 @@ function toApplications(
       name,
       project: app?.project?.trim() || "-",
       group: group || undefined,
-      status: applicationStatusFromRequestState(dto.state),
+      status:
+        approvalOf(dto).status === "rejected"
+          ? "FAILED"
+          : applicationStatusFromRequestState(dto.state),
+      approvalStatus: approvalOf(dto).status,
+      securityReviewStatus: securityReviewOf(dto).status,
       desiredRuntimeState: isApplicationRuntimeTarget(desiredRuntimeState)
         ? desiredRuntimeState
         : undefined,
@@ -481,11 +530,120 @@ export async function getApplicationDetail(
         dto.profile?.exposure?.type?.trim() ||
         "-",
       image: dto.generated?.image?.trim() || undefined,
-      // stop/start가 한 번이라도 시작됐으면 최초 배포 PR보다 현재 수명주기 PR을
-      // 보여줘야 사용자가 실제 checks와 실패 원인을 열어 볼 수 있다.
-      pullRequest: dto.runtimePullRequest ?? dto.pullRequest,
+      approval: approvalOf(dto),
+      securityReview: securityReviewOf(dto),
     },
   };
+}
+
+interface AdminApprovalDashboardDto {
+  requests: DeploymentRequestDto[];
+  policies: ApprovalPolicy[];
+  count: number;
+}
+
+/** platform-admin 세션만 받을 수 있는 전체 승인 현황과 private PR 좌표다. */
+export async function getAdminApprovalDashboard(
+  requester: string,
+  roles: readonly string[],
+): Promise<{ dashboard: AdminApprovalDashboard | null; source: DataSource }> {
+  if (!requester.trim()) return { dashboard: null, source: "unavailable" };
+  const dto = await fetchJson<AdminApprovalDashboardDto>(
+    ENDPOINTS.adminApprovalDashboard,
+    { requester },
+    roles,
+  );
+  if (!dto) return { dashboard: null, source: "unavailable" };
+  const requests: AdminDeploymentRequest[] = dto.requests.map((item) => ({
+    id: item.id,
+    requester: item.requester?.trim() || "-",
+    application: item.profile?.app?.name?.trim() || "-",
+    project: item.profile?.app?.project?.trim() || "-",
+    pipelineState: item.state,
+    createdAt: item.createdAt,
+    updatedAt: item.updatedAt,
+    sourceRepository: item.profile?.source?.repository?.trim() || "-",
+    approval: approvalOf(item),
+    securityReview: securityReviewOf(item),
+    pullRequest: item.pullRequest,
+  }));
+  return {
+    source: "api",
+    dashboard: {
+      requests,
+      policies: dto.policies.map((policy) => ({
+        ...policy,
+        history: policy.history ?? [],
+      })),
+      count: dto.count,
+    },
+  };
+}
+
+async function adminMutation(
+  path: string,
+  method: "POST" | "PUT",
+  body: unknown,
+  requester: string,
+  roles: readonly string[],
+): Promise<AdminMutationResult> {
+  try {
+    const response = await fetch(`${PORTAL_API_ORIGIN}${path}`, {
+      method,
+      headers: portalApiJsonHeaders(requester, undefined, roles),
+      body: JSON.stringify(body),
+      cache: "no-store",
+      signal: AbortSignal.timeout(15_000),
+    });
+    if (response.ok) return { ok: true };
+    let problem: ProblemDto = {};
+    try {
+      problem = (await response.json()) as ProblemDto;
+    } catch {
+      // 상태 코드 fallback을 사용한다.
+    }
+    return {
+      ok: false,
+      reason:
+        problem.detail?.trim() ||
+        problem.title?.trim() ||
+        `관리자 요청이 거부되었습니다 (HTTP ${response.status}).`,
+    };
+  } catch (error) {
+    warnOnce(`${method} ${path}`, error);
+    return { ok: false, reason: "내부 Portal API에 연결하지 못했습니다." };
+  }
+}
+
+export function decideDeploymentApproval(
+  requestId: string,
+  decision: "approved" | "rejected",
+  reason: string,
+  requester: string,
+  roles: readonly string[],
+): Promise<AdminMutationResult> {
+  return adminMutation(
+    `/api/v1/admin/deployment-requests/${encodeURIComponent(requestId)}/decision`,
+    "POST",
+    { decision, reason },
+    requester,
+    roles,
+  );
+}
+
+export function updateAutoApprovalPolicy(
+  policyRequester: string,
+  enabled: boolean,
+  requester: string,
+  roles: readonly string[],
+): Promise<AdminMutationResult> {
+  return adminMutation(
+    `/api/v1/admin/approval-policies/${encodeURIComponent(policyRequester)}`,
+    "PUT",
+    { enabled },
+    requester,
+    roles,
+  );
 }
 
 /** 화면 7 `/services` — 서비스 카탈로그. Go `GET /api/v1/catalog` 의 실시간 상태를 쓴다. */

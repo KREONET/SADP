@@ -22,7 +22,7 @@ const (
 	stateReceived   = "received"
 	statePRCreating = "pr-creating"
 	statePROpen     = "pr-open"
-	// 자동 승인 파이프라인 단계. merged 이후는 사람 개입 없이 진행된다.
+	// 승인 증거가 별도 필드에 영속화된 뒤에만 merged 이후 단계로 진행한다.
 	stateMerged    = "merged"
 	stateBuilding  = "building"
 	stateDeploying = "deploying"
@@ -48,7 +48,7 @@ var (
 
 type pullRequestRef struct {
 	Number int    `json:"number"`
-	URL    string `json:"url"`
+	URL    string `json:"url,omitempty"`
 	Branch string `json:"branch"`
 	State  string `json:"state"`
 }
@@ -93,6 +93,10 @@ type deploymentRequest struct {
 	// SourceUpdate는 사용자가 등록한 Forgejo branch의 새 commit을 감지해 만든 자동
 	// 재배포다. 최초 신청과 구분해야 빌드를 PR 전에 끝내고 immutable tag만 검토시킬 수 있다.
 	SourceUpdate bool `json:"sourceUpdate,omitempty"`
+	// Approval과 SecurityReview는 파이프라인 state와 분리한다. PR이 열렸다는 사실을
+	// 승인으로 오인하거나, 재시작 뒤 승인 증거 없이 병합하는 일을 막기 위한 경계다.
+	Approval       approvalDecision `json:"approval"`
+	SecurityReview securityReview   `json:"securityReview"`
 }
 
 // storeRecord는 로그 한 줄이다. 같은 ID의 뒤에 오는 줄이 앞의 줄을 덮어쓴다.
@@ -100,7 +104,8 @@ type storeRecord struct {
 	Kind           string             `json:"kind"`
 	IdempotencyKey string             `json:"idempotencyKey,omitempty"`
 	BodyHash       string             `json:"bodyHash,omitempty"`
-	Request        *deploymentRequest `json:"request"`
+	Request        *deploymentRequest `json:"request,omitempty"`
+	Policy         *approvalPolicy    `json:"approvalPolicy,omitempty"`
 }
 
 type idempotencyEntry struct {
@@ -109,13 +114,14 @@ type idempotencyEntry struct {
 }
 
 type store struct {
-	mu      sync.Mutex
-	dir     string
-	file    *os.File
-	lines   int
-	byID    map[string]deploymentRequest
-	byIdem  map[string]idempotencyEntry
-	ordered []string
+	mu       sync.Mutex
+	dir      string
+	file     *os.File
+	lines    int
+	byID     map[string]deploymentRequest
+	byIdem   map[string]idempotencyEntry
+	ordered  []string
+	policies map[string]approvalPolicy
 }
 
 // hashBody는 Idempotency-Key 재사용 시 본문이 같은지 비교할 지문을 만든다.
@@ -129,9 +135,10 @@ func newStore(dir string) (*store, error) {
 		return nil, fmt.Errorf("상태 디렉터리 생성 실패: %w", err)
 	}
 	s := &store{
-		dir:    dir,
-		byID:   make(map[string]deploymentRequest),
-		byIdem: make(map[string]idempotencyEntry),
+		dir:      dir,
+		byID:     make(map[string]deploymentRequest),
+		byIdem:   make(map[string]idempotencyEntry),
+		policies: make(map[string]approvalPolicy),
 	}
 	if err := s.replay(); err != nil {
 		return nil, err
@@ -172,7 +179,10 @@ func (s *store) replay() error {
 			continue
 		}
 		var record storeRecord
-		if err := json.Unmarshal(line, &record); err != nil || record.Request == nil || record.Request.ID == "" {
+		if err := json.Unmarshal(line, &record); err != nil {
+			continue
+		}
+		if record.Request == nil && (record.Policy == nil || record.Policy.Requester == "") {
 			continue
 		}
 		s.lines++
@@ -186,9 +196,17 @@ func (s *store) replay() error {
 
 // apply는 레코드 하나를 메모리 색인에 반영한다. 잠금은 호출자가 잡는다.
 func (s *store) apply(record storeRecord) {
+	if record.Policy != nil {
+		s.policies[record.Policy.Requester] = *record.Policy
+		return
+	}
+	if record.Request == nil {
+		return
+	}
 	// 구버전 JSONL에는 내부 주소가 없다. Service의 논리 좌표에서 다시 만들 수 있는
 	// 파생값이므로 마이그레이션용 쓰기 없이 replay 시 메모리 표현만 보강한다.
 	record.Request.Profile.populateInternalAddress()
+	backfillReviewEvidence(record.Request)
 	id := record.Request.ID
 	if _, seen := s.byID[id]; !seen {
 		s.ordered = append(s.ordered, id)
@@ -256,6 +274,16 @@ func (s *store) compact() error {
 			return fmt.Errorf("압축 기록 실패: %w", err)
 		}
 	}
+	for _, policy := range s.policies {
+		policyCopy := policy
+		encoded, err := json.Marshal(storeRecord{Kind: "approval-policy", Policy: &policyCopy})
+		if err != nil {
+			return fmt.Errorf("승인 정책 압축 직렬화 실패: %w", err)
+		}
+		if _, err := writer.Write(append(encoded, '\n')); err != nil {
+			return fmt.Errorf("승인 정책 압축 기록 실패: %w", err)
+		}
+	}
 	if err := writer.Flush(); err != nil {
 		return fmt.Errorf("압축 flush 실패: %w", err)
 	}
@@ -293,7 +321,7 @@ func (s *store) compact() error {
 	}
 	s.byID = retained
 	s.ordered = kept
-	s.lines = len(kept)
+	s.lines = len(kept) + len(s.policies)
 	return nil
 }
 
@@ -916,15 +944,15 @@ func (s *store) list(limit int, requester string) []deploymentRequest {
 	return requests
 }
 
-// unfinishedState는 아직 사람이든 자동화든 손이 더 가야 하는 상태인지 알려준다.
-// 자동 승인이 켜져 있으면 PR이 열린 것만으로는 끝난 게 아니다(병합·빌드가 남는다).
+// unfinishedState는 worker가 재시작 직후 이어야 하는 상태인지 알려준다. pr-open은
+// 별도 승인 watcher가 보안/정책 증거를 확인하므로 여기서 무조건 재개하지 않는다.
 func unfinishedState(state string) bool {
 	switch state {
 	case stateReceived, statePRCreating, stateMerged, stateBuilding, stateDeploying,
 		stateStopping, stateStarting, stateDeleting:
 		return true
 	case statePROpen:
-		return autoApprove
+		return false
 	}
 	return false
 }

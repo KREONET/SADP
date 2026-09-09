@@ -10,6 +10,10 @@ import {
 import { useRouter } from "next/navigation";
 
 import { RelativeTime } from "@/components/paas/relative-time";
+import {
+  approvalTone,
+  securityReviewTone,
+} from "@/components/paas/review-status";
 import { StatusPill } from "@/components/paas/status-pill";
 import { Button } from "@/components/ui/button";
 import { TableCell, TableRow } from "@/components/ui/table";
@@ -61,6 +65,12 @@ export interface DeploymentRequestRowLabels {
   resultPending: string;
   resultFailed: string;
   resultDeleted: string;
+  approvalPending: string;
+  approvalApproved: string;
+  approvalRejected: string;
+  securityPending: string;
+  securityPassed: string;
+  securityRejected: string;
   showAll: string;
   showFewer: string;
 }
@@ -102,7 +112,7 @@ export function DeploymentRequestRows({
     return (
       <TableRow className="border-b border-border">
         <TableCell
-          colSpan={5}
+          colSpan={7}
           className="px-5 py-10 text-center text-muted-foreground"
         >
           {labels.emptyRequests}
@@ -118,6 +128,18 @@ export function DeploymentRequestRows({
         const resultClassName = resultStyle[request.result];
         const resultLabel = labels[resultLabelKey[request.result]];
         const Icon = status.icon;
+        const approvalLabel =
+          request.approvalStatus === "approved"
+            ? labels.approvalApproved
+            : request.approvalStatus === "rejected"
+              ? labels.approvalRejected
+              : labels.approvalPending;
+        const securityLabel =
+          request.securityReviewStatus === "passed"
+            ? labels.securityPassed
+            : request.securityReviewStatus === "rejected"
+              ? labels.securityRejected
+              : labels.securityPending;
 
         return (
           <TableRow key={request.id} className="border-b border-border">
@@ -136,6 +158,19 @@ export function DeploymentRequestRows({
             <TableCell className={cn("px-5 py-4", resultClassName)}>
               {resultLabel}
             </TableCell>
+            <TableCell className="px-5 py-4">
+              <StatusPill tone={approvalTone(request.approvalStatus)} dot>
+                {approvalLabel}
+              </StatusPill>
+            </TableCell>
+            <TableCell className="px-5 py-4">
+              <StatusPill
+                tone={securityReviewTone(request.securityReviewStatus)}
+                dot
+              >
+                {securityLabel}
+              </StatusPill>
+            </TableCell>
             <TableCell className="px-5 py-4 text-muted-foreground">
               <RelativeTime iso={request.date} />
             </TableCell>
@@ -145,7 +180,7 @@ export function DeploymentRequestRows({
 
       {collapsible ? (
         <TableRow className="hover:bg-transparent">
-          <TableCell colSpan={5} className="p-0">
+          <TableCell colSpan={7} className="p-0">
             <Button
               type="button"
               variant="ghost"

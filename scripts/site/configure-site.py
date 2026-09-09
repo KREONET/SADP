@@ -93,18 +93,18 @@ DEFAULT_PACKAGE_DOMAINS = (
     "helm.devtron.ai",
     "quay.io",
     "cdn01.quay.io",
-       "helm.elastic.co",
+    "cdn02.quay.io",
+    "helm.elastic.co",
     "kubernetes.github.io",
     "fluent.github.io",
     "kubernetes-sigs.github.io",
+    "repo.broadcom.com",
     "charts.bitnami.com",
     "kedacore.github.io",
     "opencost.github.io",
     "nvidia.github.io",
     "vmware-tanzu.github.io",
-    "cdn02.quay.io",
     "cdn03.quay.io",
-    "repo.broadcom.com",
     "raw.githubusercontent.com",
     "public.ecr.aws",
     "ghcr.io",
@@ -1702,7 +1702,9 @@ def app_values(
         config["PORTAL_WORKLOAD_NAMESPACE"] = workload_namespace
         config["PORTAL_ZONE_ID"] = workload_namespace
         config["PORTAL_ZONE_LABEL"] = f"{cfg['siteName']} Zone"
-        config["PORTAL_AUTO_APPROVE"] = "true"
+        # 전역 자동 승인은 승인 증거 없이 재시작 뒤 진행될 수 있으므로 생성물에서도 제거한다.
+        # 예외는 Portal 관리자 화면에서 사용자별 durable 정책으로만 관리한다.
+        config.pop("PORTAL_AUTO_APPROVE", None)
         config["PORTAL_BUILD_NAMESPACE"] = workload_namespace
         config["PORTAL_APP_IMAGE_PULL_NAME"] = cfg["registry"]["pullSecret"]
         config["PORTAL_REGISTRY_PULL_REMOTE_PATH"] = (

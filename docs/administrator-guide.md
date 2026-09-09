@@ -47,6 +47,7 @@ RKE2 자체 설치는 이 저장소의 범위가 아닙니다.
 ### 매일
 
 - Node, Argo Application, Gateway, HTTPRoute 상태를 확인합니다.
+- Portal **관리자** 메뉴에서 승인 대기 신청과 보안 검사 반려를 확인합니다.
 - 실패 Pod와 반복 restart를 확인합니다.
 - ExternalSecret과 인증 오류를 확인하되 Secret 값은 출력하지 않습니다.
 
@@ -71,6 +72,7 @@ diff를 검토하고 commit/push한 뒤 영향 범위에 따라 node 또는 clus
 
 - 일반 사용자에게 kubeconfig, RKE2 token, OpenBao root token을 주지 않습니다.
 - Portal 조회와 쓰기 권한을 분리합니다.
+- Portal `/admin`과 승인 API는 외부 OIDC의 정확한 `platform-admin` 역할만 허용합니다.
 - 앱 Secret 권한은 앱별 group/role로 제한합니다.
 - `platform-admin`은 일상 계정과 분리하고 최소 인원만 사용합니다.
 - Argo Git read, Portal Git write, Registry push, Registry pull credential을 서로 분리합니다.
@@ -78,7 +80,32 @@ diff를 검토하고 commit/push한 뒤 영향 범위에 따라 node 또는 clus
 
 Secret 본문은 Git, `site.env`, 명령 인자, 인수인계 문서에 넣지 않습니다.
 
-## 6. 장애 분류
+## 6. 배포 승인 운영
+
+전 사용자 기본값은 수동 승인입니다. Portal이 배포 PR을 연 뒤 필수 보안 검사가 통과해도 관리자
+결정 전에는 merge, image build, Argo 배포를 시작하지 않습니다. 재시작 뒤에도 PVC의 append-only
+요청 기록에서 승인 증거를 복구하며, 증거가 없으면 `pr-open`에서 멈춥니다.
+
+1. `platform-admin` 세션으로 Portal의 **관리자** 메뉴를 엽니다.
+2. 파이프라인 상태와 승인·보안 상태를 별도로 확인합니다.
+3. 보안 통과 요청만 승인합니다. 반려할 때는 신청자가 조치할 수 있는 사유를 반드시 적습니다.
+4. 반려하면 Portal이 결정자·시각·수동 여부·사유를 먼저 영속화하고 열린 배포 PR을 닫습니다.
+5. 실제 private GitOps PR 링크는 이 화면에서만 엽니다. 일반 사용자에게 저장소 권한이나 링크를
+   전달하지 않습니다.
+
+사용자별 자동 승인 예외는 같은 화면에서 켜거나 끕니다. 변경 관리자·시각과 이력이 PVC에 남고,
+활성화 즉시 그 사용자의 기존 승인 대기 요청과 이후 요청에 적용됩니다. 이 예외는 보안 check가
+하나 이상 성공했다는 증거를 절대 우회하지 않습니다. 예외 계정의 업무 필요성이 끝나면 즉시
+끄고 변경 이력을 검토합니다.
+
+승인은 Secret 준비와 별개입니다. `OIDC_CLIENT_SECRET`이나 OpenBao/ESO policy·role이 없어도
+보안 검사를 통과한 열린 PR의 수동·자동 승인 기록은 저장됩니다. 이후 병합 직전 검사에서
+준비가 확인되지 않으면 승인 상태는 `approved`로 유지되고 배포 상태는 `failed`가 됩니다.
+관리자는 OpenBao의 필수 key와 ESO policy/role을 확인하고 원인을 해결해야 합니다.
+실패 중인 PR을 수동 병합해 검사를 우회하지 마세요. 일반 사용자에게는 배포 실패 메시지만
+안내하고 Secret 값·private PR·보안 감사 상세는 공유하지 않습니다.
+
+## 7. 장애 분류
 
 | 증상 | 첫 확인 | 문서 |
 | --- | --- | --- |
@@ -119,7 +146,7 @@ kubectl wait \
 Secret data, OpenBao token, unseal key를 출력하지 않습니다. 이 manager와 unseal 명령은 Kubernetes
 API와 OpenBao Pod를 직접 다루므로 worker에서 실행하지 않습니다.
 
-## 7. 검수 명령
+## 8. 검수 명령
 
 control-plane 노드에서 실행합니다.
 
@@ -132,7 +159,7 @@ sudo bash ./sadp --verify-testbed
 `verify-testbed`의 host 검사는 실행한 control-plane 한 대만 확인합니다. worker의 NIC와 systemd
 상태는 각 worker에서 별도로 확인합니다.
 
-## 8. 백업과 복구
+## 9. 백업과 복구
 
 백업 대상은 RKE2 etcd와 OpenBao Raft입니다. 외부 IdP 백업은 해당 운영팀의 범위입니다.
 
@@ -144,7 +171,7 @@ sudo bash ./sadp --verify-backups
 복원은 장애 중 쓰기를 멈추고 [복구 Runbook](recovery.md)을 따릅니다. 백업 성공 로그만 믿지 않고
 checksum과 실제 복원 시험 일시를 기록합니다.
 
-## 9. 안전 기동·종료와 업데이트
+## 10. 안전 기동·종료와 업데이트
 
 전체 테스트베드를 끌 때는 전체 백업과 worker drain을 먼저 완료하고 worker 두 대, server 순서로
 RKE2를 중지합니다. 켤 때는 server를 먼저 Ready로 만든 뒤 worker를 시작하고 마지막에 uncordon합니다.
@@ -160,7 +187,7 @@ SADP 업데이트는 GitHub main의 루트 `VERSION`이 더 높을 때만 fast-f
 업데이트한 뒤 worker를 한 대씩 처리합니다. 정확한 순서와 복구 경계는
 [기동·종료·업데이트 Runbook](operations-lifecycle.md)을 따릅니다.
 
-## 10. 인수인계 체크리스트
+## 11. 인수인계 체크리스트
 
 - [ ] site/cluster 이름과 배포 Git revision
 - [ ] Portal과 관리 서비스 주소

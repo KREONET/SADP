@@ -274,7 +274,7 @@ func (api *apiServer) handleUpdateRuntimeState(w http.ResponseWriter, r *http.Re
 	if !enqueue {
 		status = http.StatusOK
 	}
-	writeJSON(w, status, request)
+	writeJSON(w, status, publicDeploymentRequest(request))
 }
 
 func (f *forgejoClient) runtimeBranch(request deploymentRequest) string {

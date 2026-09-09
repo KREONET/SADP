@@ -57,6 +57,7 @@ app/
     ├── layout.tsx             #   AppHeader + Toaster + force-dynamic
     ├── paas.css               #   Tailwind v4 진입점 + 디자인 토큰
     ├── page.tsx               #   화면2 대시보드 (/)
+    ├── admin/                 #   platform-admin 전용 승인 대시보드
     ├── my-apps/               #   화면1
     ├── new-app/[step]/        #   화면4-5 (6-step 위저드)
     ├── deployments/env-classifier/  # 화면6
@@ -138,6 +139,9 @@ types/domain.ts  →  lib/paas-api.ts  →  서버 컴포넌트(page.tsx)  →  
 | `GET /api/v1/openapi.yaml` | 구현됨 |
 | `GET/POST /api/v1/deployment-requests` | 구현됨(Forgejo/GitOps 연결이 준비되지 않으면 **503 Problem Details**) |
 | `GET/DELETE /api/v1/deployment-requests/{requestId}` | 구현됨 |
+| `GET /api/v1/admin/approval-dashboard` | 구현됨(`platform-admin` 전용 전체 승인·private PR 조회) |
+| `POST /api/v1/admin/deployment-requests/{requestId}/decision` | 구현됨(보안 통과 뒤 승인 또는 사유 필수 반려) |
+| `PUT /api/v1/admin/approval-policies/{requester}` | 구현됨(사용자별 자동 승인 예외 감사 이력) |
 | `POST /api/v1/app-groups/validate` | 구현됨(Compose 파싱·서비스별 정책 검증) |
 | `POST /api/v1/app-groups` | 구현됨(AppGroup 멱등 생성) |
 | `GET /api/v1/quota-usage` | 구현됨 |

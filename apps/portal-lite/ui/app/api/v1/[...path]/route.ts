@@ -53,20 +53,20 @@ async function forward(request: Request, context: RouteHandlerContext): Promise<
     return problem(401, "인증 정보 불완전", "로그인 사용자 식별자를 확인할 수 없습니다.");
   }
 
-  const role = portalApiRequiredRole(request.method);
-  if (!hasPortalApiRole(roles, role)) {
-    return problem(403, "권한 없음", `${role} 역할이 필요합니다.`);
-  }
-
   const { path } = await context.params;
   if (!Array.isArray(path) || !isSafePortalApiPath(path)) {
     return problem(404, "API 경로 없음", "전달할 API 경로를 찾을 수 없습니다.");
   }
 
+  const role = portalApiRequiredRole(request.method, path);
+  if (!hasPortalApiRole(roles, role)) {
+    return problem(403, "권한 없음", `${role} 역할이 필요합니다.`);
+  }
+
   const hasBody = request.method !== "GET" && request.method !== "HEAD";
   const init: RequestInit & { duplex?: "half" } = {
     method: request.method,
-    headers: portalApiUpstreamHeaders(request.headers, requester),
+    headers: portalApiUpstreamHeaders(request.headers, requester, roles),
     body: hasBody ? request.body : undefined,
     cache: "no-store",
     redirect: "manual",

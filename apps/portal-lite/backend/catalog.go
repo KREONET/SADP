@@ -72,7 +72,7 @@ func catalog() catalogResponse {
 	return catalogResponse{
 		APIVersion:         "v1",
 		Zone:               catalogZone{ID: zoneID, Label: zoneLabel},
-		AutoApprove:        autoApprove,
+		AutoApprove:        false,
 		Environment:        appEnvironment,
 		BaseDomain:         baseDomain,
 		ForgejoConnected:   false,

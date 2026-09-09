@@ -1,12 +1,12 @@
 package main
 
-// PR이 열린 뒤의 자동화 단계를 담당한다.
+// PR이 열린 뒤의 승인·자동화 단계를 담당한다.
 //
-//	pr-open → (자동 승인) merged → (kaniko 빌드) building → deploying → deployed
+//	pr-open → (보안 검사 + 관리자 승인) merged → (kaniko 빌드) building → deploying → deployed
 //
 // 빌드는 클러스터 안에서 kaniko Job으로 돌린다. 포털 파드는 Job을 만들고 상태만
 // 지켜보며, 레지스트리 자격증명은 Job이 마운트하는 Secret에만 존재한다.
-// 실패하면 요청을 failed로 남기고 사람이 PR을 직접 처리할 수 있게 둔다.
+// 실패하면 요청을 failed로 남기고 관리자가 Portal 승인 기록과 파이프라인을 함께 확인한다.
 
 import (
 	"bytes"
@@ -956,15 +956,14 @@ func (f *forgejoClient) mergePullRequest(ctx context.Context, number int) error 
 				case "failure", "error":
 					return fmt.Errorf("Forgejo required checks가 %s 상태입니다", checks.State)
 				case "success":
-					err = f.do(ctx, http.MethodPost, endpoint, payload, nil)
-					lastErr = err
-				default:
-					// check run이 아직 하나도 등록되지 않았을 때만 명시 merge를 한 번
-					// 시도한다. branch protection이 준비 전 병합을 거부하며 예약은 남지 않는다.
-					if checks.TotalCount == 0 && len(checks.Statuses) == 0 {
+					if checks.TotalCount > 0 && len(checks.Statuses) > 0 {
 						err = f.do(ctx, http.MethodPost, endpoint, payload, nil)
 						lastErr = err
+					} else {
+						lastErr = errors.New("필수 보안 check가 하나도 등록되지 않았습니다")
 					}
+				default:
+					lastErr = errors.New("필수 보안 check가 아직 완료되지 않았습니다")
 				}
 			}
 		}
@@ -1001,11 +1000,15 @@ func (f *forgejoClient) pullRequestStatus(ctx context.Context, number int) (forg
 }
 
 type forgejoCombinedStatus struct {
-	State      string `json:"state"`
-	TotalCount int    `json:"total_count"`
-	Statuses   []struct {
-		Status string `json:"status"`
-	} `json:"statuses"`
+	State      string                `json:"state"`
+	TotalCount int                   `json:"total_count"`
+	Statuses   []forgejoCommitStatus `json:"statuses"`
+}
+
+type forgejoCommitStatus struct {
+	Status      string `json:"status"`
+	Context     string `json:"context"`
+	Description string `json:"description"`
 }
 
 func (f *forgejoClient) commitStatus(ctx context.Context, sha string) (forgejoCombinedStatus, error) {
@@ -1060,10 +1063,50 @@ func (f *forgejoClient) grantSecretAccess(ctx context.Context, request deploymen
 	return nil
 }
 
-// advance는 PR이 열린 뒤의 자동 승인·빌드·배포 커밋을 수행한다.
-// 자동 승인이 꺼져 있으면 아무것도 하지 않고 pr-open 상태를 유지한다.
+// advance는 승인 증거가 저장된 PR만 병합·빌드·배포한다. pr-open이면 보안 검사를
+// 먼저 새로 확인하며, 수동 승인 대기는 아무 상태도 추측하지 않고 그대로 멈춘다.
 func (f *forgejoClient) advance(ctx context.Context, request deploymentRequest) {
-	if !autoApprove || request.PullRequest == nil {
+	if request.PullRequest == nil {
+		return
+	}
+	if request.State == statePROpen {
+		var approved bool
+		request, approved = f.reviewForAdvance(ctx, request)
+		if !approved {
+			return
+		}
+	} else if request.Approval.Status != approvalApproved {
+		// merged 이후 복구도 승인 증거가 없는 손상된 레코드는 진행하지 않는다.
+		return
+	}
+	// source update는 관리자 결정 전에 이미지를 만들지 않는다. 승인 뒤 PR branch에
+	// immutable tag를 넣고 보안 검사를 다시 pending으로 돌려, 새 head가 통과한 뒤만 병합한다.
+	if request.SourceUpdate && request.Generated.Image == "" {
+		if f.builder == nil {
+			f.failRequest(request, "승인된 source update 빌드가 준비되지 않았습니다.",
+				errors.New("source update build pipeline이 비활성입니다"))
+			return
+		}
+		request.State = stateBuilding
+		request.FailedFromState = ""
+		f.saveRequest(request)
+		tag, err := f.builder.build(ctx, request)
+		if err != nil {
+			f.failRequest(request, "새 source commit 이미지 빌드에 실패했습니다.", err)
+			return
+		}
+		request.Generated.Image = imageDestination(request, tag)
+		if err := f.putFile(ctx, request.PullRequest.Branch, appValuesPath(request.Profile),
+			fmt.Sprintf("chore(%s): 승인 후 이미지 태그 %s 반영", request.Profile.App.Name, tag),
+			renderValuesYAML(request)); err != nil {
+			f.failRequest(request, "승인된 source update PR에 이미지 태그를 반영하지 못했습니다.", err)
+			return
+		}
+		request.State = statePROpen
+		request.SecurityReview = securityReview{Status: securityPending}
+		request.Message = "승인 후 생성한 이미지가 포함된 PR head의 보안 검사를 다시 확인하는 중입니다."
+		f.saveRequest(request)
+		f.logger.Printf("요청 %s 승인 후 source update 빌드 완료: %s", request.ID, request.Generated.Image)
 		return
 	}
 	// Argo가 merge 직후 리소스를 만들 수 있으므로 ESO 권한은 반드시 merge 전에 준비한다.
@@ -1072,7 +1115,7 @@ func (f *forgejoClient) advance(ctx context.Context, request deploymentRequest) 
 		return
 	}
 	if err := f.mergePullRequest(ctx, request.PullRequest.Number); err != nil {
-		f.failRequest(request, "Pull Request 자동 승인에 실패했습니다. 저장소에서 직접 병합해 주세요.", err)
+		f.failRequest(request, "승인된 Pull Request 병합에 실패했습니다. 플랫폼 관리자가 관리자 대시보드와 Forgejo 상태를 확인해야 합니다.", err)
 		return
 	}
 	request.PullRequest.State = "merged"

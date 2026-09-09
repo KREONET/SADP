@@ -26,6 +26,13 @@ info:
 
     동작하며 연결 전에는 503 Problem Details를 반환한다.
 
+
+    배포 PR은 필수 보안 검사를 통과한 뒤에도 platform-admin의 수동 승인 또는 감사 이력이
+
+    남는 사용자별 자동 승인 예외가 있어야 병합된다. 일반 사용자 응답에는 private GitOps
+
+    PR 좌표를 포함하지 않는다.
+
     '
   contact:
     name: SADP Platform Team
@@ -44,6 +51,7 @@ tags:
 - name: AppProfile
 - name: AppGroup
 - name: Deployment
+- name: Admin
 paths:
   /api/v1/health:
     get:
@@ -453,7 +461,7 @@ paths:
       tags:
       - Deployment
       operationId: getDeploymentRequest
-      summary: 배포 요청과 GitOps Pull Request 상태 조회
+      summary: 배포 요청의 파이프라인·승인·보안 상태 조회
       description: '조회는 Forgejo 연동 여부와 무관하게 저장소를 읽는다. 없는 id는 404다.
 
         '
@@ -597,6 +605,153 @@ paths:
           $ref: '#/components/responses/InternalError'
         '503':
           $ref: '#/components/responses/ForgejoUnavailable'
+  /api/v1/admin/approval-dashboard:
+    get:
+      tags:
+      - Admin
+      operationId: getAdminApprovalDashboard
+      summary: 전체 배포 신청과 승인 정책 조회
+      description: 'platform-admin 전용이다. 전체 신청의 파이프라인·승인·보안 상태와 private
+
+        GitOps Pull Request 좌표, 사용자별 자동 승인 예외의 변경 이력을 반환한다.
+
+        '
+      security:
+      - oidc:
+        - portal:admin
+      parameters:
+      - $ref: '#/components/parameters/RequesterHeader'
+      - $ref: '#/components/parameters/RolesHeader'
+      responses:
+        '200':
+          description: 전체 승인 대시보드
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/AdminApprovalDashboard'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '403':
+          $ref: '#/components/responses/Forbidden'
+        '503':
+          $ref: '#/components/responses/ServiceUnavailable'
+  /api/v1/admin/deployment-requests/{requestID}/decision:
+    post:
+      tags:
+      - Admin
+      operationId: decideDeploymentApproval
+      summary: 열린 배포 PR 승인 또는 반려
+      description: 'platform-admin 전용이다. 승인은 필수 보안 검사 통과를 다시 확인하고 감사 증거를
+
+        fsync한 뒤에만 병합 worker를 깨운다. 반려는 사유가 필수이며 결정자·시각·수동 여부·사유를
+
+        먼저 영속화한 뒤 열린 PR을 닫는다. 닫힌 PR 또는 보안 검사 미통과 요청은 승인하지 않는다.
+
+        OpenBao Secret, OIDC_CLIENT_SECRET, ESO policy/role 준비 여부는 승인 조건이 아니며
+
+        미준비로 409를 반환하지 않는다. 병합 직전에는 동일 자원을 fail-closed로 검사하고,
+
+        실패 시 approval.status=approved를 유지하며 state=failed와 배포 오류 메시지를 저장한다.
+
+        '
+      security:
+      - oidc:
+        - portal:admin
+      parameters:
+      - name: requestID
+        in: path
+        required: true
+        schema:
+          type: string
+          pattern: ^[0-9a-f]{16}$
+      - $ref: '#/components/parameters/RequesterHeader'
+      - $ref: '#/components/parameters/RolesHeader'
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/ApprovalDecisionInput'
+      responses:
+        '200':
+          description: 반려 완료 또는 같은 결정의 멱등 응답
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/AdminDeploymentRequest'
+        '202':
+          description: 승인 증거 저장 완료, 비동기 병합·빌드·배포 시작
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/AdminDeploymentRequest'
+        '400':
+          $ref: '#/components/responses/BadRequest'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '403':
+          $ref: '#/components/responses/Forbidden'
+        '404':
+          $ref: '#/components/responses/NotFound'
+        '409':
+          $ref: '#/components/responses/Conflict'
+        '415':
+          $ref: '#/components/responses/UnsupportedMediaType'
+        '422':
+          $ref: '#/components/responses/ValidationError'
+        '503':
+          $ref: '#/components/responses/ForgejoUnavailable'
+  /api/v1/admin/approval-policies/{requester}:
+    put:
+      tags:
+      - Admin
+      operationId: updateApprovalPolicy
+      summary: 사용자별 자동 승인 예외 변경
+      description: 'platform-admin 전용이다. 변경 관리자·시각을 append-only 저장소에 영속화한다.
+
+        활성화하면 기존 승인 대기 요청과 이후 요청에 적용하지만 보안 검사 통과를 우회하지 않는다.
+
+        수동 승인과 동일하게 Secret 준비 여부를 선행 검사하지 않으며 병합 직전 검사는 유지한다.
+
+        '
+      security:
+      - oidc:
+        - portal:admin
+      parameters:
+      - name: requester
+        in: path
+        required: true
+        schema:
+          type: string
+          minLength: 1
+          maxLength: 128
+      - $ref: '#/components/parameters/RequesterHeader'
+      - $ref: '#/components/parameters/RolesHeader'
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/ApprovalPolicyInput'
+      responses:
+        '200':
+          description: 저장된 사용자별 정책과 전체 변경 이력
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ApprovalPolicy'
+        '400':
+          $ref: '#/components/responses/BadRequest'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '403':
+          $ref: '#/components/responses/Forbidden'
+        '415':
+          $ref: '#/components/responses/UnsupportedMediaType'
+        '422':
+          $ref: '#/components/responses/ValidationError'
+        '500':
+          $ref: '#/components/responses/InternalError'
 components:
   securitySchemes:
     oidc:
@@ -610,6 +765,8 @@ components:
 
         viewer와 deployments:read만 가진 세션은 변경 요청을 수행할 수 없다.
 
+        관리자 API는 다른 호환 역할 없이 정확한 platform-admin 역할만 허용한다.
+
         '
       flows:
         authorizationCode:
@@ -618,6 +775,7 @@ components:
           scopes:
             deployments:read: 자신의 배포 요청 조회
             deployments:write: 배포 요청 생성
+            portal:admin: platform-admin 전용 승인 관리
   parameters:
     RequesterHeader:
       name: X-Portal-User
@@ -635,6 +793,20 @@ components:
         type: string
         minLength: 1
         maxLength: 128
+    RolesHeader:
+      name: X-Portal-Roles
+      in: header
+      required: true
+      x-sadp-injected-by: portal-bff
+      description: 'Portal BFF가 검증한 OIDC 세션의 group/realm/client role을 정렬해 넣는 내부 header다.
+
+        브라우저가 보낸 같은 이름의 header는 버리고 새로 만든다. loopback Go API의 관리자
+
+        endpoint는 이 값에 정확한 platform-admin이 있어야 한다.
+
+        '
+      schema:
+        type: string
     IdempotencyKey:
       name: Idempotency-Key
       in: header
@@ -726,6 +898,12 @@ components:
         application/problem+json:
           schema:
             $ref: '#/components/schemas/Problem'
+    ServiceUnavailable:
+      description: 승인 저장소 또는 필수 내부 연동 미구성
+      content:
+        application/problem+json:
+          schema:
+            $ref: '#/components/schemas/Problem'
   schemas:
     Health:
       type: object
@@ -783,7 +961,8 @@ components:
               description: 화면에 표시하는 Zone 이름
         autoApprove:
           type: boolean
-          description: PR 자동 병합과 빌드·배포 파이프라인 활성 여부
+          const: false
+          description: 전 사용자 기본 수동 승인 계약. 사용자별 예외는 관리자 승인 정책 API에서만 관리한다.
         environment:
           type: string
           description: 배포 환경 이름. PLATFORM_APP_ENV로 정해진다.
@@ -1712,9 +1891,136 @@ components:
         state:
           type: string
           description: Forgejo가 보고한 Pull Request 상태
-    DeploymentRequest:
+    ApprovalDecision:
       type: object
       additionalProperties: false
+      required:
+      - status
+      - automatic
+      properties:
+        status:
+          type: string
+          enum:
+          - pending
+          - approved
+          - rejected
+        decidedBy:
+          type: string
+          description: 관리자 사용자명 또는 security-checks/legacy migration 식별자
+        decidedAt:
+          type: string
+          format: date-time
+        automatic:
+          type: boolean
+          description: 사용자별 예외 또는 보안 검사에 의한 자동 결정인지 여부
+        rejectReason:
+          type: string
+          maxLength: 2000
+    SecurityFinding:
+      type: object
+      additionalProperties: false
+      required:
+      - package
+      - cve
+      - fixedVersion
+      - message
+      properties:
+        package:
+          type: string
+        cve:
+          type: string
+        fixedVersion:
+          type: string
+        message:
+          type: string
+    SecurityReview:
+      type: object
+      additionalProperties: false
+      required:
+      - status
+      properties:
+        status:
+          type: string
+          enum:
+          - pending
+          - passed
+          - rejected
+        checkedAt:
+          type: string
+          format: date-time
+        summary:
+          type: string
+        findings:
+          type: array
+          items:
+            $ref: '#/components/schemas/SecurityFinding'
+    ApprovalDecisionInput:
+      type: object
+      additionalProperties: false
+      required:
+      - decision
+      properties:
+        decision:
+          type: string
+          enum:
+          - approved
+          - rejected
+        reason:
+          type: string
+          maxLength: 2000
+          description: rejected일 때 필수인 감사 사유
+      if:
+        properties:
+          decision:
+            const: rejected
+      then:
+        required:
+        - reason
+    ApprovalPolicyInput:
+      type: object
+      additionalProperties: false
+      required:
+      - enabled
+      properties:
+        enabled:
+          type: boolean
+    ApprovalPolicyChange:
+      type: object
+      additionalProperties: false
+      required:
+      - enabled
+      - changedBy
+      - changedAt
+      properties:
+        enabled:
+          type: boolean
+        changedBy:
+          type: string
+        changedAt:
+          type: string
+          format: date-time
+    ApprovalPolicy:
+      type: object
+      additionalProperties: false
+      required:
+      - requester
+      - enabled
+      properties:
+        requester:
+          type: string
+        enabled:
+          type: boolean
+        updatedBy:
+          type: string
+        updatedAt:
+          type: string
+          format: date-time
+        history:
+          type: array
+          items:
+            $ref: '#/components/schemas/ApprovalPolicyChange'
+    DeploymentRequestBase:
+      type: object
       required:
       - id
       - state
@@ -1722,6 +2028,8 @@ components:
       - updatedAt
       - profile
       - generated
+      - approval
+      - securityReview
       properties:
         id:
           type: string
@@ -1765,8 +2073,6 @@ components:
           $ref: '#/components/schemas/NormalizedProfile'
         generated:
           $ref: '#/components/schemas/GeneratedPlan'
-        pullRequest:
-          $ref: '#/components/schemas/PullRequestRef'
         message:
           type: string
           description: 실패 사유 등 사람이 읽는 설명
@@ -1807,10 +2113,6 @@ components:
           type: integer
           minimum: 0
           description: 같은 요청의 stop/start PR branch를 구분하는 단조 증가 세대
-        runtimePullRequest:
-          $ref: '#/components/schemas/PullRequestRef'
-        runtimeSupersededPullRequest:
-          $ref: '#/components/schemas/PullRequestRef'
         runtimeDesiredRevision:
           type: string
           description: stop/start에서 Argo CD가 관찰해야 하는 target branch revision
@@ -1821,6 +2123,51 @@ components:
           type: boolean
           description: 요청은 durable하지만 OpenBao Secret 쓰기가 아직 확인되지 않아 GitOps 처리를 시작하지
             않은 상태
+        approval:
+          $ref: '#/components/schemas/ApprovalDecision'
+        securityReview:
+          $ref: '#/components/schemas/SecurityReview'
+    DeploymentRequest:
+      description: '일반 사용자 응답. 승인·보안 상태는 포함하지만 private GitOps 저장소의
+
+        Pull Request URL과 branch, 보안 감사 findings와 summary는 포함하지 않는다.
+
+        '
+      allOf:
+      - $ref: '#/components/schemas/DeploymentRequestBase'
+      unevaluatedProperties: false
+    AdminDeploymentRequest:
+      description: platform-admin 전용 요청. private GitOps 감사 PR 좌표를 포함한다.
+      allOf:
+      - $ref: '#/components/schemas/DeploymentRequestBase'
+      - type: object
+        properties:
+          pullRequest:
+            $ref: '#/components/schemas/PullRequestRef'
+          runtimePullRequest:
+            $ref: '#/components/schemas/PullRequestRef'
+          runtimeSupersededPullRequest:
+            $ref: '#/components/schemas/PullRequestRef'
+      unevaluatedProperties: false
+    AdminApprovalDashboard:
+      type: object
+      additionalProperties: false
+      required:
+      - requests
+      - policies
+      - count
+      properties:
+        requests:
+          type: array
+          items:
+            $ref: '#/components/schemas/AdminDeploymentRequest'
+        policies:
+          type: array
+          items:
+            $ref: '#/components/schemas/ApprovalPolicy'
+        count:
+          type: integer
+          minimum: 0
     DeploymentRequestList:
       type: object
       additionalProperties: false
