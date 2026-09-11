@@ -5,6 +5,8 @@ cd "$(dirname "$0")/../.."
 # helm template 회귀는 클러스터를 읽지 않는다. root 셸의 RKE2 KUBECONFIG를 상속하면
 # 불필요한 파일 권한 경고가 반복되어 실제 렌더 실패가 묻힌다.
 unset KUBECONFIG
+# 실행 파일 부재를 금지 profile의 정상 거부로 세지 않도록 먼저 확인한다.
+command -v helm >/dev/null 2>&1 || { echo "[FAIL] helm이 필요합니다"; exit 1; }
 CONTRACT=contracts/values-platform-production.yaml
 PASS=0; FAILED=0
 readarray -t SITE_VALUES < <(python3 - <<'PY'
@@ -991,6 +993,26 @@ if grep -q "clientID: \"${GROUP_OIDC_CLIENT}\"" $TMP/group-sso.yaml \
 else
   echo "[FAIL] AppGroup OIDC client/ESO 식별자 불일치"; FAILED=$((FAILED+1))
 fi
+# 볼륨 제약을 제거해도 Portal의 프로세스 로컬 정합성 경계는 남아야 한다.
+for storage_override in persistence.enabled=false persistence.accessMode=ReadWriteOncePod; do
+  if helm template portal-lite charts/app-profile -n "$PORTAL_NAMESPACE" -f $CONTRACT \
+    -f apps/portal-lite/values-beta.yaml --set replicaCount=2 --set "$storage_override" \
+    >"$TMP/portal-concurrency.yaml" 2>"$TMP/portal-concurrency.err"; then
+    echo "[FAIL] Portal 다중 프로세스를 허용함 ($storage_override)"; FAILED=$((FAILED+1))
+  elif grep -q 'portal-lite 정합성은 단일 프로세스' "$TMP/portal-concurrency.err"; then
+    echo "[OK]   Portal 저장소와 무관한 replica 가드 ($storage_override)"; PASS=$((PASS+1))
+  else
+    echo "[FAIL] Portal 정합성 가드 이외의 오류 ($storage_override)"; FAILED=$((FAILED+1))
+  fi
+  if helm template portal-lite charts/app-profile -n "$PORTAL_NAMESPACE" -f $CONTRACT \
+    -f apps/portal-lite/values-beta.yaml --set replicaCount=1 --set "$storage_override" \
+    >"$TMP/portal-single.yaml" && grep -q 'type: Recreate' "$TMP/portal-single.yaml"; then
+    echo "[OK]   Portal 단일 프로세스 롤아웃 ($storage_override)"; PASS=$((PASS+1))
+  else
+    echo "[FAIL] Portal 단일 프로세스 롤아웃 ($storage_override)"; FAILED=$((FAILED+1))
+  fi
+done
+
 helm template portal-lite charts/app-profile -n "$PORTAL_NAMESPACE" -f $CONTRACT \
   -f apps/portal-lite/values-beta.yaml --set replicaCount=0 --set exposure.enabled=false \
   >$TMP/portal-off.yaml

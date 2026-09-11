@@ -562,7 +562,7 @@ func (f *forgejoClient) finishQueued(requestID string) bool {
 	return false
 }
 
-// run은 큐를 순차 처리한다. 순차 처리는 Forgejo에 부하를 주지 않으려는 의도적 선택이다.
+// run은 서로 다른 앱의 마지막 그룹 정리 판정이 겹치지 않도록 큐를 순차 처리한다.
 func (f *forgejoClient) run(ctx context.Context) {
 	for {
 		select {

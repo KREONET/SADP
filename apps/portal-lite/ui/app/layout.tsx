@@ -1,6 +1,8 @@
 import type { Metadata } from "next";
 import type { ReactNode } from "react";
 
+import { SessionCookieSync } from "@/components/session-cookie-sync";
+
 import { getI18n, getLocale } from "@/lib/i18n/server";
 
 /*
@@ -41,7 +43,7 @@ export default async function RootLayout({
 
   return (
     <html lang={locale}>
-      <body>{children}</body>
+      <body>{children}<SessionCookieSync /></body>
     </html>
   );
 }

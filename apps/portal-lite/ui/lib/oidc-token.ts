@@ -13,7 +13,7 @@ export type OIDCTokenState = Partial<OIDCIdentityClaims> & {
   idToken?: string;
 };
 
-type RefreshOptions = {
+export type RefreshOptions = {
   tokenEndpoint: string;
   clientId: string;
   clientSecret: string;

@@ -58,6 +58,14 @@
   Pending이 되거나(다른 노드) 같은 파일에 두 프로세스가 append하게 된다.
   append-only store는 후자를 견디지 못하므로 렌더 단계에서 막는다.
 */ -}}
+{{- /*
+  Portal의 이름 선점·쿼터·삭제 차단은 프로세스 로컬 잠금과 메모리 색인에 의존한다.
+  볼륨을 바꾸거나 없애도 여러 프로세스가 이 검사를 공유하지 않으므로 확장할 수 없다.
+*/ -}}
+{{- $portal := eq .Values.app.name "portal-lite" -}}
+{{- if and $portal (gt (int .Values.replicaCount) 1) -}}
+{{- fail "portal-lite 정합성은 단일 프로세스에 의존하므로 replicaCount는 0(중지) 또는 1이어야 한다" -}}
+{{- end -}}
 {{- if and .Values.persistence.enabled (eq .Values.persistence.accessMode "ReadWriteOnce") (gt (int .Values.replicaCount) 1) -}}
 {{- fail (printf "persistence.accessMode=ReadWriteOnce 에서는 replicaCount가 1이어야 한다(현재 %v)" .Values.replicaCount) -}}
 {{- end -}}
@@ -80,8 +88,8 @@ metadata:
 spec:
   replicas: {{ .Values.replicaCount }}
   revisionHistoryLimit: 5
-  {{- if .Values.persistence.enabled }}
-  {{- /* RollingUpdate면 신구 Pod가 겹치는 순간 같은 RWO PVC를 두 번 붙이려다 멈춘다 */}}
+  {{- if or $portal .Values.persistence.enabled }}
+  {{- /* Portal은 롤아웃 중에도 두 프로세스가 겹치면 안 된다. RollingUpdate면 신구 Pod가 겹치는 순간 같은 RWO PVC를 두 번 붙이려다 멈춘다 */}}
   strategy:
     type: Recreate
   {{- end }}

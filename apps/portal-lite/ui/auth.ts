@@ -1,9 +1,7 @@
 import NextAuth from "next-auth";
 
-import {
-  extractOIDCIdentity,
-  refreshOIDCAccessToken,
-} from "./lib/oidc-token";
+import { extractOIDCIdentity } from "./lib/oidc-token";
+import { refreshOIDCAccessTokenOnce } from "./lib/oidc-refresh-coordinator";
 
 function requiredRuntimeEnvironment(name: string): string {
   const value = process.env[name];
@@ -74,7 +72,9 @@ export const { handlers, auth, signIn, signOut } = NextAuth({
       if (!token.refreshToken) return { ...token, error: "RefreshTokenError" };
 
       try {
-        const refreshed = await refreshOIDCAccessToken(token, {
+        // 서버 요청의 쿠키 사본이 같은 구 토큰을 들고 와도 갱신은 한 번만 한다.
+        // Proxy는 인증을 수행하지 않으며 별도 런타임과 메모리 공유를 가정하지 않는다.
+        const refreshed = await refreshOIDCAccessTokenOnce(token, {
           tokenEndpoint: requiredRuntimeEnvironment("AUTH_OIDC_TOKEN_ENDPOINT"),
           clientId: requiredRuntimeEnvironment("AUTH_OIDC_ID"),
           clientSecret: requiredRuntimeEnvironment("AUTH_OIDC_SECRET"),

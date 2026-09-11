@@ -271,3 +271,26 @@ npm run lint
 npm run test
 npm run build
 ```
+
+## Portal 배포의 정합성 제약
+
+Portal은 전체 배포에서 활성 프로세스 하나만 허용합니다. 생성·삭제의 그룹 소유권,
+누적 쿼터, 삭제 중 신규 유입 차단은 프로세스 로컬 `appMu`에 의존하며, 저장소 색인과
+멱등 키는 `store.mu`, 요청 실행은 단일 Forgejo 큐 소비자에 의존합니다.
+`replicaCount`는 0(중지) 또는 1, 롤아웃 전략은 `Recreate`여야 합니다.
+이는 PVC accessMode와 독립된 정합성 제약입니다. 볼륨 교체나 DB 도입만으로 확장할 수 없으며,
+검사와 커밋의 원자성 및 워커 실행 소유권을 프로세스 사이에서 보장한 뒤 다시 감사해야 합니다.
+별도 Deployment, 수동 프로세스 실행, 기존 프로세스 종료를 확인하지 않은 강제 Pod 삭제는
+Chart 가드가 막지 못합니다. 상세 검사 범위와 알려진 결함은
+[동시성 감사](portal-concurrency-audit.md)를 확인합니다.
+
+### OIDC refresh token 회전
+
+Proxy는 보안 헤더만 생성하며 세션 갱신을 수행하지 않습니다. 인증은 서버의 화면·API·액션
+게이트가 확인합니다. 동일 refresh token의 동시 갱신과 회전 직후 구 cookie 요청은
+프로세스 로컬 coordinator가 병합합니다. 성공 결과는 최대 60초, 맵은 각각 512개로 제한되며
+실패는 캐시하지 않습니다. replica 간에는 병합되지 않습니다.
+브라우저는 기존 Auth.js session endpoint를 통해 회전된 cookie를 받습니다. 이 호출은
+토큰 만료 시각에 맞춰 예약하며 access/refresh token 자체를 session JSON으로 전달하지 않습니다.
+실제 IdP 회전 설정은 별도 확인이 필요합니다. 진입점 목록과 시험 근거는
+[OIDC 갱신 경합 수정](portal-oidc-refresh.md)을 따릅니다.

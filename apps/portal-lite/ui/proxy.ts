@@ -1,9 +1,7 @@
 import { NextResponse } from "next/server";
 import type { NextRequest } from "next/server";
 
-import { auth } from "./auth";
-
-function securedProxy(request: NextRequest & { auth?: unknown }) {
+export function proxy(request: NextRequest) {
   // `/api/v1/**`의 인증·역할 검사는 catch-all Route Handler가 데이터 소스 바로 앞에서
   // 다시 수행한다. Proxy에서 먼저 막으면 개발 전용 세션 우회와 Problem Details 응답이
   // 화면 경계와 달라지므로, 여기서는 CSP와 공통 보안 헤더만 적용한다.
@@ -47,8 +45,6 @@ function securedProxy(request: NextRequest & { auth?: unknown }) {
   response.headers.set("Cross-Origin-Resource-Policy", "same-origin");
   return response;
 }
-
-export const proxy = auth(securedProxy);
 
 export const config = {
   matcher: [

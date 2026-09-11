@@ -281,3 +281,14 @@ appGroups:          "/api/v1/app-groups",
 - [ ] 실제 클러스터에서 Compose/AppGroup 생성·삭제 E2E 검수
 - [ ] 다크 팔레트 확정 시안 반영 (`paas.css` 의 `.dark` 블록)
 - [ ] 프로덕션 기동 스크립트(standalone 복사 단계) 정리
+
+## OIDC 갱신 정합성
+
+- `proxy.ts`는 세션을 사용하지 않는다. `auth()` wrapper를 다시 붙이지 마라. Proxy와
+  서버 렌더 코드의 전역 메모리 공유는 런타임 이름이 같아도 보장되지 않는다.
+- `auth.ts`의 갱신은 `lib/oidc-refresh-coordinator.ts`를 거친다. refresh token 원문 키,
+  await 전 진행 중 등록, 성공 결과 TTL, 맵 상한과 실패 비캐시 규칙을 유지한다.
+- RSC의 `auth()`는 회전 cookie를 브라우저에 쓰지 못한다. `SessionCookieSync`의 Auth.js
+  session 호출을 제거하면 긴 조회 세션에서 구 token 재사용이 재발한다.
+- 병합은 단일 Node 실행 컨텍스트 안에서만 유효하다. replica/worker/isolate를 늘리기 전에
+  [OIDC 갱신 감사](../../../docs/portal-oidc-refresh.md)를 다시 확인한다.
