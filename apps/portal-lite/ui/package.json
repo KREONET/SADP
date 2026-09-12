@@ -4,6 +4,7 @@
   "private": true,
   "scripts": {
     "dev": "node scripts/with-root-build-env.mjs next dev",
+    "dev:mock": "node scripts/frontend-dev.mjs",
     "build": "node scripts/with-root-build-env.mjs next build",
     "lint": "eslint .",
     "test": "vitest run",

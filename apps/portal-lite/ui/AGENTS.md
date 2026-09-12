@@ -31,6 +31,7 @@ This block is written and re-added by `next dev` — verify at `node_modules/nex
 
 ```bash
 npm run dev        # 개발 서버
+npm run dev:mock   # 개발용 목 API + 로그인 우회 + Next 개발 서버
 npm run build      # 프로덕션 빌드 (output: "standalone")
 npm run lint       # eslint (0 error 유지 필수)
 npm run typecheck  # tsc --noEmit (0 error 유지 필수)
@@ -118,6 +119,7 @@ types/domain.ts  →  lib/paas-api.ts  →  서버 컴포넌트(page.tsx)  →  
 
 - **`lib/paas-api.ts` 가 화면 ↔ 백엔드의 유일한 접점**이다. `import "server-only"` 가 걸려 있어 클라이언트에서 부르면 빌드가 깨진다.
 - 동작: 같은 Pod의 Go API를 고정 loopback `127.0.0.1:8081`로 호출한다. 사용자 신원 헤더와 OpenBao 입력이 외부 origin으로 나가지 않도록 공개 build 변수로 바꿀 수 없다. 호출이 실패하면 `fetchJson` 이 **`null`** 을 돌려주고 `warnOnce` 로 한 번만 경고하며, 화면은 이를 **"지금은 알 수 없음"** 으로 다룬다.
+- **개발 목 API는 `npm run dev:mock`으로 명시적으로 실행한다.** `scripts/frontend-dev.mjs`가 샘플 데이터를 메모리에서 제공하며 재시작하면 초기화된다. 운영 API 계약 검증을 대신하지 않는다.
 - **목데이터 폴백은 없다.** `mocks/` 디렉터리는 제거되었으니 "백엔드가 죽으면 목으로 그려진다"고 가정하지 마라.
 - 페이지는 `async` 서버 컴포넌트에서 `await getX()` 로 데이터를 받아 **뷰 컴포넌트에 props로 내려준다.** 클라이언트 컴포넌트에서 fetch 하지 마라.
 - `"use client"` 는 **상태·이벤트·브라우저 API가 필요한 최소 단위**에만 붙인다 (필터/뷰 토글/검색, DnD, Copy 버튼, 위저드 폼, 토스트).

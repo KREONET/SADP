@@ -111,3 +111,27 @@ bash ./sadp --test
 Portal UI까지 수정했다면 UI 디렉터리의 `AGENTS.md`와 package script를 따릅니다. 실제 cluster
 적용은 관리자 승인과 [설치 가이드](installation.md)의 render → test → commit/push 경계를
 통과해야 합니다.
+
+## Portal 프론트엔드 로컬 개발
+
+저장소 루트에서 다음 명령으로 샘플 API와 Next 개발 서버를 함께 실행합니다.
+UI `package.json`의 Node 버전을 사용하고, 처음에는 의존성을 설치합니다.
+
+```bash
+npm --prefix apps/portal-lite/ui ci
+npm --prefix apps/portal-lite/ui run dev:mock
+```
+
+브라우저 주소는 Next가 출력하는 `Local` 주소를 사용합니다. UI 포트를 지정하려면
+`npm --prefix apps/portal-lite/ui run dev:mock -- --port 3001`로 실행합니다.
+기본 바인딩은 loopback이며 로그인은 개발용 샘플 세션으로 우회합니다.
+API 포트 8081이 이미 사용 중이면 기존 서버에 연결하지 않고 실행을 중단합니다.
+
+목 API는 카탈로그·쿼터·샘플 앱 목록과 상세 조회, 단일 앱 생성·삭제·시작·정지,
+Compose/AppGroup 미리보기와 생성 응답을 제공합니다. Compose는 간단한 서비스 이름
+추출만 흉내 내며 저장소 조회, 실제 빌드·배포, OpenBao, 관리자 승인 API는 구현하지 않습니다.
+AppGroup 생성 응답은 성공 화면 확인용이며 서비스별 요청을 저장하지 않습니다.
+실제 API의 정책·인증·멱등성 검증은 별도로 수행해야 합니다.
+
+데이터는 메모리에만 남고 재시작하면 초기화됩니다. `Ctrl+C`로 API와 Next를 함께 종료합니다.
+기존 `npm run dev`는 실제 백엔드를 사용하는 개발 명령으로 유지됩니다.
