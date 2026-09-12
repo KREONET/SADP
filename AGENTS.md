@@ -226,6 +226,11 @@ evidence/       검수 산출물
 - **guard unit은 fail-open이다.** `sadp-rke2-interface-guard.service`는 `Before=rke2-server.service`로 순서만 잡고 의존은 만들지 않는다. 이 unit이 실패해도 rke2는 뜨고, 그때 관리 포트는 열려 있다. `verify-testbed.sh`가 unit active와 체인 규칙을 확인하지만 그건 사후 탐지일 뿐이다. **차단(의존성 추가)으로 바꾸면 guard 실패가 곧 클러스터 정지**이므로, 바꾸기 전에 가용성 트레이드오프를 사람에게 확인해라.
 - **호스트 수준 검사는 control-plane 노드 한 대만 본다** (§3).
 - **`egressMode: web`은 포트 정책이지 도메인 정책이 아니다.** 기본 Kubernetes NetworkPolicy는 FQDN을 볼 수 없다. `web`은 0.0.0.0/0에서 계약 `network.internalCIDRs`를 `ipBlock.except`로 뺀 뒤 TCP 80/443만 여는 것이다. "example.com만 허용" 같은 요구가 오면 Cilium 등 별도 CNI 기능이 필요하다고 답해라. 도메인 필터를 구현했다고 쓰지 마라.
+- **egress 차단은 DLP나 앱 인가를 대신하지 않는다.** 허용된 요청의 응답 트래픽은 통과하므로
+  침해된 앱이 자신이 읽은 자료를 정상 응답에 담을 수 있고, 외부 통신 없이 변조·삭제할 수도 있다.
+  OIDC 그룹은 진입 경계일 뿐 사용자별 객체 권한이 아니다. 일반 외부 앱의 Gateway 응답 헤더와
+  `scripts/ops/quarantine-app.sh`를 유지하되, 서버 응답·redirect 유출과 앱 PVC 복구까지 보장한다고
+  쓰지 마라. 정확한 약속은 `docs/security-boundaries.md`를 따른다.
 - **`exposure.type`(public|oidc)은 폐기했지만 계속 읽는다.** 새 values는 `exposure.mode`(external|internal) + `authentication.mode`(none|oidc)를 쓴다. 하위호환 유도는 `charts/app-profile/templates/_helpers.tpl`과 `apps/portal-lite/backend/app_profile.go`의 `resolveAccess` 두 곳에 있고 **규칙이 같아야 한다.** 한쪽만 고치면 포털은 통과시키고 Helm이 거부하거나, 더 나쁘게는 인증이 조용히 꺼진다.
 - **AppGroup Namespace 접두사의 SSOT는 `platform.appGroups.namespacePrefix` 계약값이다.** 현재 `app-`이며, `charts/app-group`/`charts/app-profile`, 포털의 `PORTAL_APP_GROUP_NAMESPACE_PREFIX`, Argo `AppProject app-groups` destination(`app-*`)이 모두 이 값과 일치해야 한다. Chart는 AppGroup 앱의 릴리스 Namespace가 계약의 `<prefix><group>`과 다르면 렌더에서 멈춘다.
 - **AppGroup 이름은 플랫폼 전역에서 유일하다.** Namespace가 환경과 무관하게 `app-<group>`이므로 같은 이름을 다른 project/environment에서 재사용하면 안 된다. 포털 store의 `groupClaim`이 이를 거부한다.

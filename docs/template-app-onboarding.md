@@ -51,6 +51,11 @@ Portal은 Git 기록을 만들기 전에 이 준비 상태를 확인합니다. �
 수정 버전을 반영하는 PR을 만들거나 이슈를 등록해 패치한 뒤 다시 신청합니다. private GitOps
 감사 저장소 링크는 관리자 대시보드에서만 제공합니다.
 
+이 검사는 앱의 비즈니스 데이터 인가를 자동 증명하지 않습니다. OIDC 그룹은 진입 권한이고,
+앱은 요청자별 객체 조회·변경·삭제·내보내기 권한을 서버에서 검사해야 합니다. 앱이 읽은 데이터를
+허용된 HTTP 응답으로 내보내는 행위는 egress 차단으로 방지되지 않으므로 민감 데이터 앱은 인가
+시험과 코드 검토 증거가 있어야 승인합니다. 기준은 [보안 보장과 한계](security-boundaries.md)입니다.
+
 Secret이 없는 `authentication.mode=none` 앱은 OIDC client나 앱별 ExternalSecret을 만들지
 않습니다. runtime Secret이 있는 앱에만 다음 canonical 경계를 사용합니다.
 

@@ -47,6 +47,7 @@ sudo bash ./sadp --install-wizard
 | 안전 기동·종료, SADP/RKE2 업데이트 | [운영 수명주기](operations-lifecycle.md) |
 | Portal API | [Portal API](portal-api.md) · [OpenAPI](../apps/portal-lite/backend/openapi.yaml) |
 | 백업과 복원 | [복구](recovery.md) |
+| 보안 보장·비보장과 앱 사고 격리 | [보안 경계](security-boundaries.md) |
 | Forgejo token 회전 | [token 회전](runbooks/forgejo-token-rotation.md) |
 | 개별 명령 진단 | [스크립트 안내](../scripts/README.md) |
 

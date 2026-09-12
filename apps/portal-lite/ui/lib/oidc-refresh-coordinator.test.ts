@@ -228,24 +228,42 @@ it("cleans expired results when a different token arrives", async () => {
   expect(fetcher).toHaveBeenCalledTimes(2);
 });
 
-it("bounds pending work without letting an evicted completion remove its replacement", async () => {
+it("waits at capacity without evicting an active one-time refresh token", async () => {
   const releases: Array<(response: Response) => void> = [];
   const fetcher = vi.fn(() => new Promise<Response>((resolve) => { releases.push(resolve); }));
   const options = { ...BASE_OPTIONS, fetcher, now: 1_000 };
   const first = refreshOIDCAccessTokenOnce({ refreshToken: "old" }, options);
-  const others = Array.from({ length: OIDC_REFRESH_IN_FLIGHT_MAX }, (_, i) =>
+  const others = Array.from({ length: OIDC_REFRESH_IN_FLIGHT_MAX - 1 }, (_, i) =>
     refreshOIDCAccessTokenOnce({ refreshToken: `other-${i}` }, options));
+  const waiting = refreshOIDCAccessTokenOnce({ refreshToken: "new" }, options);
+  const waitingAgain = refreshOIDCAccessTokenOnce({ refreshToken: "new" }, options);
+  const joined = refreshOIDCAccessTokenOnce({ refreshToken: "old" }, options);
   expect(oidcRefreshInFlightSize()).toBe(OIDC_REFRESH_IN_FLIGHT_MAX);
-  const replacement = refreshOIDCAccessTokenOnce({ refreshToken: "old" }, options);
+  expect(fetcher).toHaveBeenCalledTimes(OIDC_REFRESH_IN_FLIGHT_MAX);
   releases[0](tokenResponse("first", "first-rotated"));
   expect((await first).accessToken).toBe("first");
-  const joined = refreshOIDCAccessTokenOnce({ refreshToken: "old" }, options);
-  expect(fetcher).toHaveBeenCalledTimes(OIDC_REFRESH_IN_FLIGHT_MAX + 2);
-  releases.slice(1).forEach((release) => release(tokenResponse("replacement", "rotated")));
-  const [a, b] = await Promise.all([replacement, joined]);
-  await Promise.all(others);
-  expect(a.accessToken).toBe("replacement");
-  expect(b.accessToken).toBe("replacement");
+  expect((await joined).accessToken).toBe("first");
+  await vi.waitFor(() => expect(fetcher).toHaveBeenCalledTimes(OIDC_REFRESH_IN_FLIGHT_MAX + 1));
+  expect(oidcRefreshInFlightSize()).toBe(OIDC_REFRESH_IN_FLIGHT_MAX);
+  releases.slice(1).forEach((release) => release(tokenResponse("next", "rotated")));
+  await Promise.all([...others, waiting, waitingAgain]);
+  expect(oidcRefreshInFlightSize()).toBe(0);
+});
+
+it("releases capacity after a failed refresh without failing an unrelated waiter", async () => {
+  const releases: Array<(response: Response) => void> = [];
+  const fetcher = vi.fn(() => new Promise<Response>((resolve) => { releases.push(resolve); }));
+  const options = { ...BASE_OPTIONS, fetcher, now: 1_000 };
+  const active = Array.from({ length: OIDC_REFRESH_IN_FLIGHT_MAX }, (_, i) =>
+    refreshOIDCAccessTokenOnce({ refreshToken: `active-${i}` }, options));
+  const failure = expect(active[0]).rejects.toThrow("OIDC token refresh failed (401)");
+  const waiting = refreshOIDCAccessTokenOnce({ refreshToken: "waiting" }, options);
+  releases[0](new Response("denied", { status: 401 }));
+  await failure;
+  await vi.waitFor(() => expect(fetcher).toHaveBeenCalledTimes(OIDC_REFRESH_IN_FLIGHT_MAX + 1));
+  releases.slice(1).forEach((release) => release(tokenResponse("access", "rotated")));
+  expect((await waiting).accessToken).toBe("access");
+  await Promise.all(active.slice(1));
   expect(oidcRefreshInFlightSize()).toBe(0);
 });
 

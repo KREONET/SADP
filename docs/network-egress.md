@@ -22,6 +22,12 @@ cert-manager controller
 기본 Kubernetes NetworkPolicy는 FQDN allowlist를 제공하지 않으므로 앱의 `web` mode는 내부
 대역을 제외한 TCP 80/443 포트 정책입니다.
 
+NetworkPolicy는 허용된 연결의 응답 트래픽도 허용합니다. 앱이 정상 요청의 응답에 자신이 읽은
+자료를 담는 유출, 사용자별 인가 오류, 외부 통신 없는 변조·삭제는 egress 정책의 보장 범위가
+아닙니다. 일반 외부 앱에는 브라우저의 외부 fetch/subresource/form을 줄이는 응답 보안 헤더도
+강제하지만 응답 본문과 redirect 자체를 검사하지는 않습니다. 전체 경계와 사고 격리는
+[보안 보장과 한계](security-boundaries.md)를 따릅니다.
+
 ## 2. 설정과 생성
 
 사이트별 값은 `/etc/sadp/site.env`에서 고칩니다. 생성된 `platform/network/*`,

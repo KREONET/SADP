@@ -98,7 +98,8 @@ SSO 앱은 Gateway의 `SecurityPolicy`에서 인증을 강제합니다.
 | Secret | OpenBao KV v2 → ESO → Kubernetes Secret, 변경 시 Reloader rollout |
 | 이미지 배포 | Portal 신청 → kaniko build/push → GitOps tag 반영 → Argo 배포 |
 | GitOps | Forgejo 보안 검사 + 관리자 승인 뒤 PR merge, OCI Registry push/pull, Argo CD 동기화 |
-| 제한 egress | cert-manager·패키지는 Squid, 앱은 선언한 NetworkPolicy로 제한 |
+| 제한 egress | cert-manager·패키지는 Squid, 앱의 새 연결은 선언한 NetworkPolicy로 제한 |
+| 앱 보안 경계 | 외부 앱 응답 보안 헤더, 앱별 Secret/권한, 침해 의심 앱 즉시 격리 |
 | 외부 공개 | 경계 NAT 또는 노드 공인 NIC 직접 연결, 외부 TCP 80/443만 허용 |
 | 백업 | RKE2 etcd, OpenBao Raft |
 | 운영 수명주기 | 백업·drain 기반 안전 기동/종료, VERSION 기반 SADP/RKE2 업데이트 |
@@ -111,7 +112,7 @@ SSO 앱은 Gateway의 `SecurityPolicy`에서 인증을 강제합니다.
 | 역할별 가이드 | [사용자](docs/usage.md) · [개발자](docs/developer-guide.md) · [관리자](docs/administrator-guide.md) |
 | 설치와 이식 | [설치](docs/installation.md) · [사이트 설정](docs/site-configuration.md) |
 | 개발 참조 | [Portal API](docs/portal-api.md) · [OpenAPI](apps/portal-lite/backend/openapi.yaml) |
-| 운영 Runbook | [기동·종료·업데이트](docs/operations-lifecycle.md) · [네트워크](docs/network-egress.md) · [DNS-01](docs/letsencrypt-dns01.md) · [외부 인증](docs/identity-provider.md) · [기계 인증](docs/external-observability.md) · [복구](docs/recovery.md) |
+| 운영 Runbook | [보안 경계·앱 격리](docs/security-boundaries.md) · [기동·종료·업데이트](docs/operations-lifecycle.md) · [네트워크](docs/network-egress.md) · [DNS-01](docs/letsencrypt-dns01.md) · [외부 인증](docs/identity-provider.md) · [기계 인증](docs/external-observability.md) · [복구](docs/recovery.md) |
 | AI 에이전트 | [AGENTS.md](AGENTS.md) |
 
 ## 저장소 구조

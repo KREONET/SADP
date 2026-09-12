@@ -1265,6 +1265,7 @@ sys.exit(fail)
 PY
 
 # --- 계약 <-> 생성 values 동기화 -------------------------------------------
+python3 scripts/site/check-portal-package-lock.py || FAIL=1
 python3 scripts/tests/portal-ui-build-env-test.py || FAIL=1
 python3 scripts/lib/contract-values.py --check || FAIL=1
 python3 scripts/site/render-exposure.py --check || FAIL=1

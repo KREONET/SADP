@@ -93,6 +93,12 @@ exposure:
 authentication:
   mode: ""       # none | oidc (비우면 exposure.type 에서 유도)
 
+# 외부 앱 응답에 브라우저가 실행할 수 있는 코드와 통신 목적지를 제한하는 헤더를 붙인다.
+# 비우면 일반 앱은 restricted, 자체 nonce CSP를 만드는 portal-lite만 application이다.
+# application은 portal-lite 외에는 Chart가 거부하므로 사용자 앱이 이 경계를 끌 수 없다.
+responseSecurity:
+  mode: ""       # restricted | application
+
 configuration:
   config: {}
   externalSecrets: []

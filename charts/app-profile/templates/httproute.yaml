@@ -1,3 +1,10 @@
+{{- $responseSecurityMode := default "restricted" .Values.responseSecurity.mode -}}
+{{- if and (eq .Values.app.name "portal-lite") .Values.portalPipeline.enabled (not .Values.responseSecurity.mode) -}}
+{{- $responseSecurityMode = "application" -}}
+{{- end -}}
+{{- if and (eq $responseSecurityMode "application") (not (and (eq .Values.app.name "portal-lite") .Values.portalPipeline.enabled)) -}}
+{{- fail "responseSecurity.mode=application은 자체 nonce CSP와 플랫폼 권한 경계를 검증하는 portal-lite에만 허용된다" -}}
+{{- end -}}
 {{- /* 내부 전용 앱(exposure.mode=internal)은 Service 만 갖고 외부 경로를 만들지 않는다. */}}
 {{- if and .Values.service.enabled (eq (include "app-profile.routeEnabled" .) "true") }}
 apiVersion: gateway.networking.k8s.io/v1
@@ -21,6 +28,29 @@ spec:
         - path:
             type: PathPrefix
             value: /
+      {{- if eq $responseSecurityMode "restricted" }}
+      # Pod egress와 직원 브라우저의 egress는 다른 경계다. 앱 응답이 악성 HTML/JS를
+      # 내려도 브라우저가 임의 외부 origin으로 subresource/fetch/form을 보내지 못하게 한다.
+      # 서버 응답 본문·redirect·다운로드 자체의 유출은 이 헤더가 막지 못한다.
+      filters:
+        - type: ResponseHeaderModifier
+          responseHeaderModifier:
+            set:
+              - name: Cache-Control
+                value: "no-store"
+              - name: Content-Security-Policy
+                value: "default-src 'self'; base-uri 'self'; object-src 'none'; frame-ancestors 'none'; form-action 'self'; connect-src 'self'; img-src 'self' data:; font-src 'self'; style-src 'self' 'unsafe-inline'; script-src 'self'"
+              - name: Cross-Origin-Resource-Policy
+                value: "same-origin"
+              - name: Permissions-Policy
+                value: "camera=(), microphone=(), geolocation=()"
+              - name: Referrer-Policy
+                value: "no-referrer"
+              - name: X-Content-Type-Options
+                value: "nosniff"
+              - name: X-Frame-Options
+                value: "DENY"
+      {{- end }}
       backendRefs:
         - group: ""
           kind: Service

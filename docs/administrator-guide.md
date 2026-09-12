@@ -161,6 +161,19 @@ sudo bash ./sadp --verify-testbed
 
 ## 9. 백업과 복구
 
+침해가 의심되는 개별 앱은 삭제부터 하지 않습니다. 정확한 대상과 계획을 확인한 뒤 Argo
+reconcile, 외부 Route, 실행 Pod를 함께 격리해 PVC·Secret·감사 기록을 보존합니다.
+
+```bash
+sudo bash ./sadp --quarantine-app \
+  --app <APP_NAME> --namespace <APP_NAMESPACE>
+sudo bash ./sadp --quarantine-app \
+  --app <APP_NAME> --namespace <APP_NAMESPACE> --apply
+```
+
+복구 전제와 자격증명 회전·중지 revision·검증된 재개 순서는
+[보안 경계의 침해 대응 절차](security-boundaries.md#침해-의심-앱-격리와-복구)를 따릅니다.
+
 백업 대상은 RKE2 etcd와 OpenBao Raft입니다. 외부 IdP 백업은 해당 운영팀의 범위입니다.
 
 ```bash

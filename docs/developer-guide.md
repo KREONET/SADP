@@ -32,6 +32,10 @@
 internal 앱에 OIDC를 요청할 수 없습니다. 앱이 직접 NodePort, Ingress, LoadBalancer를 만들지 않고
 플랫폼의 Envoy Gateway 경로를 사용합니다.
 
+OIDC 통과는 앱 진입 허용일 뿐입니다. 앱의 조회·수정·삭제 API는 요청자와 대상 객체의 관계를
+서버에서 매번 검사해야 합니다. 목록, 검색, 다운로드, WebSocket, 캐시 key도 같은 사용자 범위를
+적용합니다. NetworkPolicy는 앱이 읽은 자료를 정상 응답에 담는 권한 오류를 막지 않습니다.
+
 ### 외부 통신
 
 | 모드 | 의미 |
@@ -83,6 +87,8 @@ default-deny가 기본입니다. 호출 앱의 egress와 수신 앱의 ingress �
 - [ ] immutable image tag 또는 digest를 사용한다.
 - [ ] 일반 설정과 Secret을 분리했다.
 - [ ] 필요한 ingress/egress만 요청했다.
+- [ ] 모든 조회·변경·다운로드에 사용자별 객체 인가 시험이 있다.
+- [ ] 로그·오류 응답·캐시에 다른 사용자의 데이터가 섞이지 않는다.
 - [ ] 재시작과 종료 신호를 로컬에서 시험했다.
 
 ## 9. 배포 결과 확인

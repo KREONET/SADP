@@ -1,7 +1,9 @@
 ui/node_modules
 ui/.next
-ui/.env
-ui/.env.*
+# 하위 앱과 backend의 로컬 자격증명도 원격 빌더로 보내지 않는다.
+**/.env
+**/.env.*
+**/.git
 ui/*.tsbuildinfo
 ui/npm-debug.log*
 .git

@@ -324,6 +324,20 @@ for fqdn in ${https_hosts[@]+"${https_hosts[@]}"}; do
     || { echo "[FAIL] HTTPS ${fqdn} -> ${code}" >&2; fail=1; }
 done
 
+# NetworkPolicy는 Pod 연결만 다룬다. 직원 브라우저가 앱 응답의 악성 script를 실행해
+# 별도 origin으로 통신하는 경계는 Gateway가 실제 응답에 붙인 헤더로 검증한다.
+hello_headers=$(curl -ksS --resolve "${hello_host}:443:${vip}" -D - -o /dev/null \
+  --connect-timeout 5 --max-time 20 "https://${hello_host}/" || true)
+if grep -Eiq '^cache-control:[[:space:]]*no-store[[:space:]]*$' <<<"${hello_headers}" \
+  && grep -Eiq "^content-security-policy:.*connect-src 'self'" <<<"${hello_headers}" \
+  && grep -Eiq '^cross-origin-resource-policy:[[:space:]]*same-origin[[:space:]]*$' <<<"${hello_headers}" \
+  && grep -Eiq '^x-content-type-options:[[:space:]]*nosniff[[:space:]]*$' <<<"${hello_headers}"; then
+  ok "일반 외부 앱 브라우저 응답 보안 헤더"
+else
+  echo '[FAIL] 일반 외부 앱 브라우저 응답 보안 헤더 누락' >&2
+  fail=1
+fi
+
 portal_url=https://${portal_host}
 portal_resolve="${portal_host}:443:${vip}"
 # 홈(/)은 로그인하면 PaaS 대시보드, 미인증이면 메인 페이지(/portal)로 보낸다.

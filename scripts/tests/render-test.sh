@@ -83,6 +83,30 @@ t_ok  sample-sso    apps/_template/values-sso.yaml        "SSO 필수 배포 템
 t_group_ok sample-stack apps/_template/values-internal.yaml "내부 전용 배포 템플릿"
 t_ok  portal-lite   apps/portal-lite/values-beta.yaml     "Portal egress 정책"
 
+# 일반 앱은 서버가 내려준 코드의 브라우저 통신도 제한한다. Portal은 요청별 nonce를
+# 만드는 자체 CSP가 있으므로 Gateway의 정적 CSP로 덮어쓰지 않는다.
+hello_render=$(helm template hello charts/app-profile -n "$PORTAL_NAMESPACE" \
+  -f "$CONTRACT" -f apps/hello/values-beta.yaml)
+if grep -q 'type: ResponseHeaderModifier' <<<"$hello_render" \
+  && grep -q "connect-src 'self'" <<<"$hello_render" \
+  && grep -q 'name: Cache-Control' <<<"$hello_render" \
+  && grep -q 'name: X-Content-Type-Options' <<<"$hello_render"; then
+  echo "[OK]   일반 외부 앱 브라우저 응답 보안 헤더"
+  PASS=$((PASS+1))
+else
+  echo "[FAIL] 일반 외부 앱 브라우저 응답 보안 헤더 누락"
+  FAILED=$((FAILED+1))
+fi
+portal_render=$(helm template portal-lite charts/app-profile -n "$PORTAL_NAMESPACE" \
+  -f "$CONTRACT" -f apps/portal-lite/values-beta.yaml)
+if ! grep -q 'type: ResponseHeaderModifier' <<<"$portal_render"; then
+  echo "[OK]   Portal 자체 nonce CSP 보존"
+  PASS=$((PASS+1))
+else
+  echo "[FAIL] Gateway 정적 CSP가 Portal 자체 nonce CSP를 덮음"
+  FAILED=$((FAILED+1))
+fi
+
 TMP=$(mktemp -d)
 sed -E 's/^  tag: .*/  tag: latest/'                      apps/hello/values-beta.yaml > $TMP/latest.yaml
 sed 's/^service:/service:\n  type: NodePort/'             apps/hello/values-beta.yaml > $TMP/nodeport.yaml
@@ -92,6 +116,11 @@ sed "s/^  host: .*/  host: ${BASE_DOMAIN}/"              apps/hello/values-beta.
 # exposure.type 은 폐기했지만 예전 values 를 읽을 수 있어야 한다. 그때도 허용 목록 밖 값은 막는다.
 sed 's/^  mode: external/  type: office-oidc/'            apps/hello/values-beta.yaml > $TMP/officeoidc.yaml
 sed "s|apps/${APP_PROJECT}/${APP_ENV}/secure-demo|apps/${APP_PROJECT}/invalid/secure-demo|" apps/secure-demo/values-beta.yaml > $TMP/crosspath.yaml
+cp apps/hello/values-beta.yaml $TMP/app-owned-csp.yaml
+cat >>$TMP/app-owned-csp.yaml <<'EOF'
+responseSecurity:
+  mode: application
+EOF
 
 t_bad hello       $TMP/latest.yaml      "latest 태그 거부"
 t_bad hello       $TMP/nodeport.yaml    "NodePort 거부"
@@ -100,6 +129,7 @@ t_bad hello       $TMP/badhost.yaml     "허용 외 host 거부"
 t_bad hello       $TMP/app-apex.yaml    "일반 앱의 baseDomain apex 점유 거부"
 t_bad hello       $TMP/officeoidc.yaml  "office-oidc 거부"
 t_bad secure-demo $TMP/crosspath.yaml   "환경 교차 경로 거부"
+t_bad hello       $TMP/app-owned-csp.yaml "일반 앱의 응답 보안 헤더 비활성화 거부"
 
 # workload identity 도입 전에 Portal이 만든 단일 앱은 exact 앱 경로와 exact 앱별 role을
 # 함께 썼다. 기존 릴리스를 재렌더할 수 있어야 하지만 두 계약을 섞거나 AppGroup에 재사용하면

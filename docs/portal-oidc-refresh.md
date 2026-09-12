@@ -83,8 +83,10 @@ CSP/nonce/pathname/공통 보안 헤더는 그대로 생성한다(`proxy.ts:4–
 - 성공 결과만 구 token key로 저장(71–81). TTL은 완료 시점부터 최대 60초이며
   새 access token의 다음 갱신 경계보다 오래 캐시하지 않는다(78–79).
 - 실패는 결과 캐시에 들어가지 않고 대기자 모두에게 전파된다. finally에서 정리(84–85).
-- 결과/진행 중 맵 각각 512개 상한(4–6, 25–30, 81, 90), 요청 때 만료 결과 청소(59).
-  퇴출된 옛 작업의 완료가 새 작업을 지우거나 덮지 않도록 Promise identity 확인(73, 85).
+- 결과/진행 중 맵 각각 512개 상한, 요청 때 만료 결과를 청소한다.
+  진행 중 항목은 퇴출하지 않고 한 건의 성공 또는 실패까지 새 키의 호출을 기다린다.
+  깨어난 요청은 키와 용량을 다시 검사한다. 시험 reset 전 작업이 새 작업을 지우거나
+  덮지 않도록 Promise identity 확인도 유지한다.
 - 같은 Node 실행 컨텍스트의 별도 번들 평가에도 globalThis 저장소를 공유(15–23).
   Proxy·다른 isolate·다른 replica에는 적용되지 않는다.
 - 첫 호출자의 JWT 부가 필드를 캐시하지 않고, 호출자별 필드와 배열을 분리(39–47, 68).
@@ -123,7 +125,7 @@ JSON session 본문에는 토큰이 없음을 확인한다.
 | 실패 후 다음 호출 | 실패 1 + 재시도 1 | 134행 `does not cache failures` |
 | 동시 실패 | 총 1, 양쪽 reject | 160행 `propagates one failure` |
 | refresh token 없음 | 0, 기존 오류 유지 | 181행 `keeps the existing error` |
-| 늦은 완료·청소·용량 상한 | 상한 유지 및 새 작업 보존 | 209/223/231행 completion clock/clean/bounds pending 시험 |
+| 늦은 완료·청소·용량 상한 | 상한에서 대기, 진행 중 토큰 중복 소비 없음 | completion clock/clean/waits at capacity 시험 |
 | 모듈 재평가 | 총 1 | 266행 `shares pending refreshes ... again` |
 
 실제 Auth.js session handler 시험과 browser cookie sync scheduler 시험도 추가했다.
@@ -133,7 +135,7 @@ Mock fetcher와 deferred/clock으로 타이밍을 제어하며 실제 IdP에 요
 
 - **프로세스/실행 컨텍스트 로컬 병합이다. replica 간에는 병합되지 않는다.** 단일 프로세스,
   단일 활성 Portal 배포 제약을 유지한다. Next를 별도 worker/isolate/serverless로 나누면 재감사 필요.
-- TTL 이후 구 cookie, 캐시 퇴출, 프로세스 재시작 시에는 이전 회전 결과를 복구하지 못한다.
+- TTL 이후 구 cookie, 완료 결과 캐시 퇴출, 프로세스 재시작 시에는 이전 회전 결과를 복구하지 못한다.
   퇴출은 다른 사용자 토큰 반환을 일으키지는 않지만 병합 기회를 잃어 invalid_grant가 다시 날 수 있다.
 - IdP가 회전을 수행한 뒤 성공 응답이 네트워크에서 유실되면 새 token을 알 수 없다.
   서버 single-flight만으로 이 실패까지 복구할 수 없다.

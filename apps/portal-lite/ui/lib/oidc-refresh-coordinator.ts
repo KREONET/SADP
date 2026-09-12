@@ -48,20 +48,27 @@ function withResult<T extends OIDCTokenState>(token: T, value: OIDCTokenState): 
 }
 
 /** 구 토큰의 정확 일치로 진행 중 갱신과 짧은 회전 결과를 공유한다. 실패는 저장하지 않는다. */
-export function refreshOIDCAccessTokenOnce<T extends OIDCTokenState>(
+export async function refreshOIDCAccessTokenOnce<T extends OIDCTokenState>(
   token: T,
   options: CoordinatedOptions,
 ): Promise<T & OIDCTokenState> {
   const key = token.refreshToken;
   if (!key) return refreshOIDCAccessToken(token, options);
   const clock = options.clock ?? (() => options.now ?? Date.now());
-  const now = clock();
-  cleanResults(now);
+  for (;;) {
+    cleanResults(clock());
+    const pending = state.inFlight.get(key);
+    if (pending) return pending.then((value) => withResult(token, value));
+    const cached = state.results.get(key);
+    if (cached) return withResult(token, cached.value);
+    if (state.inFlight.size < OIDC_REFRESH_IN_FLIGHT_MAX) break;
 
-  const pending = state.inFlight.get(key);
-  if (pending) return pending.then((value) => withResult(token, value));
-  const cached = state.results.get(key);
-  if (cached) return Promise.resolve(withResult(token, cached.value));
+    // 진행 중인 항목을 버리면 회전 토큰을 두 번 소비한다. 완료 뒤 키와 용량을
+    // 다시 검사해 동시에 깨어난 요청들도 같은 토큰의 갱신에 합류하게 한다.
+    await Promise.race([...state.inFlight.values()].map((work) =>
+      work.then(() => undefined, () => undefined)));
+  }
+  const now = clock();
 
   // 원문 키의 정확 일치로 비교해 축약한 해시의 충돌로 세션이 섞이지 않게 한다.
   // 호출자 JWT 전체를 저장하지 않고 갱신에 필요한 토큰 필드만 순수 함수에 전달한다.
@@ -87,7 +94,6 @@ export function refreshOIDCAccessTokenOnce<T extends OIDCTokenState>(
 
   // await 전에 등록해야 같은 tick의 다음 호출도 이 Promise를 기다린다.
   state.inFlight.set(key, promise);
-  bound(state.inFlight, OIDC_REFRESH_IN_FLIGHT_MAX);
   return promise.then((value) => withResult(token, value));
 }
 

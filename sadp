@@ -68,6 +68,7 @@ verify-backups|bash|scripts/verify/verify-backups.sh|백업 checksum/포맷과 �
 GROUP:ops — 운영
 backup|bash|scripts/ops/backup-testbed.sh|etcd, OpenBao Raft
 toggle-portal|bash|scripts/ops/toggle-portal.sh|Portal 테스트 페이지 on/off/status
+quarantine-app|bash|scripts/ops/quarantine-app.sh|침해 의심 앱의 Argo reconcile/외부 Route/Pod 즉시 격리
 power|bash|scripts/ops/manage-power.sh|백업·drain·Ready 순서를 지키는 테스트베드 기동/종료
 update-sadp|bash|scripts/ops/update-sadp.sh|GitHub main의 VERSION 확인 후 fast-forward 업데이트
 rotate-forgejo-token|bash|scripts/ops/rotate-forgejo-token.sh|Forgejo 봇 토큰 회전

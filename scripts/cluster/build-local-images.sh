@@ -195,8 +195,9 @@ YAML
   tar -C "${TESTBED_ROOT}" -cf - \
     --exclude='apps/portal-lite/ui/node_modules' \
     --exclude='apps/portal-lite/ui/.next' \
-    --exclude='apps/portal-lite/ui/.env' \
-    --exclude='apps/portal-lite/ui/.env.*' \
+    --exclude='.env' \
+    --exclude='.env.*' \
+    --exclude='.git' \
     --exclude='*.tsbuildinfo' \
     apps/test-app apps/portal-lite \
     | kctl exec -i -n kube-system "${builder_pod}" -- tar -C /workspace -xf - \

@@ -141,6 +141,7 @@ cluster apply는 외부 OIDC client secret이 root-only 파일로 준비됐는�
 | 운영 백업 | `--backup` |
 | Portal on/off | `--toggle-portal` |
 | 테스트베드 안전 기동/종료 | `--power` |
+| 침해 의심 앱 즉시 격리 | `--quarantine-app` |
 | GitHub main/VERSION 기반 SADP 업데이트 | `--update-sadp` |
 | 기존 RKE2 고정 버전 업데이트 | `--upgrade-rke2` |
 | Forgejo token 회전 | `--rotate-forgejo-token` |
