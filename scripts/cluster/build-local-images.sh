@@ -7,7 +7,7 @@ source "$(dirname "$0")/../lib/testbed-common.sh"
 # Next.js 빌드는 코어 수만큼 워커 프로세스를 띄우고 수 GB를 잡는다. control-plane 노드는
 # RAM 12GB에 swap이 0이라 여기에 빌드를 얹으면 page cache를 축출했다가 즉시 major fault로
 # 다시 읽는 스래싱에 빠지고, etcd/apiserver까지 같이 느려진다(2026-08-10 사고).
-# 그래서 기본 경로는 메모리가 넉넉한 워커 노드이고 control-plane 빌드는 명시해야만 한다.
+# multi는 워커에서 빌드한다. single은 서버의 제한된 Pod를 쓰므로 앱과 빌드 자원을 함께 확보해야 한다.
 BUILD_NODE=
 BUILD_ON_CONTROL_PLANE=false
 BUILDER_IMAGE=${SADP_BUILDER_IMAGE:-docker.io/library/docker:28.3.3-dind}
@@ -23,14 +23,15 @@ while (($#)); do
     -h|--help)
       cat <<'EOF'
 usage: sudo bash scripts/cluster/build-local-images.sh \
-  [--build-node <worker>] [--builder-memory-limit 10Gi] [--builder-cpu-limit 6] \
+  [--build-node <node>] [--builder-memory-limit 10Gi] [--builder-cpu-limit 6] \
   [--build-on-control-plane]
 
-기본 동작은 워커 노드에 임시 빌더 Pod를 띄워 거기서 Docker 이미지 2개를 빌드하고,
-결과 tar만 이 호스트로 받아 세 노드 containerd에 import 하는 것이다.
+기본 동작은 multi의 워커 또는 single의 서버에 임시 빌더 Pod를 띄워 거기서 Docker 이미지 2개를 빌드하고,
+결과 tar만 이 호스트로 받아 전체 노드 containerd에 import 하는 것이다.
 
 --build-node 를 생략하면 Ready 상태이고 cordon 되지 않은 워커 중 allocatable 메모리가
-가장 큰 노드를 고른다. control-plane 노드는 지정할 수 없다.
+가장 큰 노드를 고른다. single 계약에서는 유일한 서버를 선택한다.
+서버를 선택해도 자원 제한이 있는 Pod를 사용하며 host Docker 설치는 하지 않는다.
 
 --builder-memory-limit 은 빌더 Pod의 메모리 상한이다. 빌드가 폭주해도 노드 전체가
 스래싱에 빠지는 대신 그 Pod만 OOMKill 되도록 남겨 두는 안전장치이므로 끄지 마라.
@@ -116,15 +117,10 @@ secure_demo_image=$(image_reference apps/secure-demo/values-beta.yaml) || exit 1
   || die "hello 와 secure-demo 의 image 가 다름: ${TEST_APP_IMAGE} vs ${secure_demo_image}"
 ok "빌드 대상 이미지: ${TEST_APP_IMAGE}, ${PORTAL_IMAGE}"
 
-# Ready 상태이고 cordon 되지 않은 워커 중 allocatable 메모리가 가장 큰 노드를 고른다.
+# single만 서버를 허용하고 multi는 워커를 고른다. 역할 label의 빈 값도 서버로 판정한다.
 select_build_node() {
-  local chosen
-  chosen=$(kctl get nodes -l '!node-role.kubernetes.io/control-plane' --no-headers \
-    -o custom-columns='NAME:.metadata.name,READY:.status.conditions[?(@.type=="Ready")].status,MEM:.status.allocatable.memory,SCHED:.spec.unschedulable' \
-    | awk '$2 == "True" && $4 != "true" { sub(/Ki$/, "", $3); print $3, $1 }' \
-    | sort -rn | awk 'NR == 1 { print $2 }')
-  [[ -n ${chosen} ]] || die "빌드를 돌릴 Ready 상태 워커 노드가 없음"
-  printf '%s' "${chosen}"
+  kctl get nodes -o json | python3 scripts/lib/cluster-topology.py \
+    --select-builder --build-node "${BUILD_NODE}"
 }
 
 builder_pod=sadp-local-image-builder
@@ -264,23 +260,15 @@ if [[ ${BUILD_ON_CONTROL_PLANE} == true ]]; then
   [[ -z ${BUILD_NODE} ]] || die "--build-node와 --build-on-control-plane은 같이 쓸 수 없다"
   build_on_this_host
 else
-  if [[ -n ${BUILD_NODE} ]]; then
-    kctl get node "${BUILD_NODE}" >/dev/null 2>&1 || die "노드를 찾을 수 없음: ${BUILD_NODE}"
-    # control-plane을 지정하면 이 스크립트를 갈라 놓은 이유가 그대로 사라진다.
-    [[ -z $(kctl get node "${BUILD_NODE}" \
-      -o jsonpath='{.metadata.labels.node-role\.kubernetes\.io/control-plane}') ]] \
-      || die "${BUILD_NODE}은 control-plane이다. 빌드는 워커에서 한다(--build-on-control-plane로만 우회)"
-  else
-    BUILD_NODE=$(select_build_node)
-    note "빌드 노드 자동 선택: ${BUILD_NODE}"
-  fi
+  BUILD_NODE=$(select_build_node) || exit 1
+  note "빌드 노드 선택: ${BUILD_NODE}"
   build_on_worker "${BUILD_NODE}"
 fi
 
 # 노드에서 대조할 기준값은 archive 자신에서 뽑는다. `ctr images ls`의 DIGEST는 manifest
 # digest인데 `docker image inspect`의 .Id는 config blob digest라서 둘은 정의상 절대 같아지지
 # 않는다. archive의 index.json에 적힌 manifest digest가 containerd가 import 후 기록할 바로
-# 그 값이므로, 이걸 쓰면 세 노드가 전송된 바로 그 바이트를 받았는지까지 확인된다.
+# 그 값이므로, 이걸 쓰면 전체 노드가 전송된 바로 그 바이트를 받았는지까지 확인된다.
 archive_index_json=$(tar -xOf "${archive}" index.json 2>/dev/null) \
   || die "archive에서 index.json을 읽을 수 없음: ${archive}"
 archive_manifest_digest() {

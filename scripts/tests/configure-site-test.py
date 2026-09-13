@@ -1155,5 +1155,50 @@ case(
 )
 
 
+worker_assignment = "WORKER_NODES=prod-worker-1=10.20.30.21,prod-worker-2=10.20.30.22"
+single = mutate(VALID, worker_assignment, "WORKER_NODES=") + "CLUSTER_MODE=single\n"
+
+
+def check_single_render(workspace, result):
+    contract = yaml.safe_load((workspace / "contracts/platform-production.yaml").read_text())
+    assert contract["spec"]["network"]["nodeAddresses"] == ["10.20.30.11"]
+    server = yaml.safe_load((workspace / "rke/control-node/config.yaml").read_text())
+    assert server["node-taint"] == []
+    assert server["token"] == ""
+    assert "prod-worker" not in (workspace / "rke/etc/hosts").read_text()
+    result = subprocess.run(
+        [sys.executable, "scripts/site/configure-site.py", "--env-file", "site.env", "--check-rendered"],
+        cwd=workspace, capture_output=True, text=True,
+    )
+    assert result.returncode == 0, result.stdout + result.stderr
+
+
+case("SC-46 single 렌더와 재렌더 동기화, 서버 배치 가능", single, True,
+     check_single_render, write=True)
+case("SC-47 single 서버 빌드 노드 허용", single + "SADP_BUILD_NODE=prod-control-plane-1\n", True)
+case("SC-48 single에 worker 입력 거부", VALID + "CLUSTER_MODE=single\n", False)
+case("SC-49 multi 빈 worker 거부", mutate(VALID, worker_assignment, "WORKER_NODES="), False)
+case("SC-50 잘못된 mode 거부", VALID + "CLUSTER_MODE=ha\n", False)
+case("SC-51 multi 서버 빌드 지정 거부", VALID + "SADP_BUILD_NODE=prod-control-plane-1\n", False)
+
+
+def check_multi_render(expected):
+    def verify(workspace, result):
+        contract = yaml.safe_load((workspace / "contracts/platform-production.yaml").read_text())
+        server = yaml.safe_load((workspace / "rke/control-node/config.yaml").read_text())
+        if len(contract["spec"]["network"]["nodeAddresses"]) != expected:
+            return "nodeAddresses count mismatch"
+        if "node-role.kubernetes.io/control-plane=true:NoSchedule" not in server["node-taint"]:
+            return "multi server taint missing"
+        return ""
+    return verify
+
+
+for count in (1, 4):
+    entries = ",".join(f"prod-worker-{i}=10.20.30.{20+i}" for i in range(1, count+1))
+    case(f"SC-multi-1+{count} 워커 수 가변 렌더", mutate(VALID, worker_assignment, "WORKER_NODES=" + entries),
+         True, check_multi_render(count+1), write=True)
+
+
 print(f"통과 {PASSED} / 실패 {FAILED}")
 raise SystemExit(FAILED != 0)

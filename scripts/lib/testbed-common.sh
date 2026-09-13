@@ -104,3 +104,8 @@ apply_generic_secret_from_files() {
   kctl create secret generic "${name}" -n "${namespace}" "$@" \
     --dry-run=client -o yaml | kctl apply -f - >/dev/null
 }
+
+# 설치·운영·검수가 노드 수와 역할을 각각 다르게 해석하지 않도록 한 검사기를 공유한다.
+check_cluster_topology() {
+  kctl get nodes -o json | python3 "${TESTBED_ROOT}/scripts/lib/cluster-topology.py" "$@"
+}

@@ -98,7 +98,7 @@ kubectl get applications -n devtroncd \
 
 `scripts/cluster/install-testbed-platform.sh`는 controller를 직접 Helm 설치하지 않습니다.
 
-- 3노드 Ready와 TLS 입력/Secret 검증
+- 계약의 1+N 노드 Ready와 TLS 입력/Secret 검증
 - CoreDNS split DNS 적용
 - cert-manager controller 전용 proxy 적용 확인
 - 제공 인증서 또는 cert-manager Secret 경계 처리

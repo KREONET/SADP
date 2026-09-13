@@ -65,8 +65,7 @@ app_group_namespace_prefix=${contract_values[13]:?AppGroup Namespace prefix가 �
 app_group_max_services=${contract_values[14]:?AppGroup 서비스 상한이 없다}
 public_ip_node=${contract_values[15]}
 
-[[ $(kctl get nodes --no-headers | awk '$2=="Ready"' | wc -l) -eq 3 ]] \
-  && ok "RKE2 노드 3/3 Ready" || { echo '[FAIL] RKE2 Ready 노드 수' >&2; fail=1; }
+check_cluster_topology || fail=1
 
 # 계약의 Pod CIDR은 RKE2 설치 뒤 자동으로 고쳐지지 않는다. 실제 Node 할당 대역과
 # Squid client ACL을 함께 보지 않으면 노드 curl만 성공하고 Pod CONNECT는 403이 된다.

@@ -92,7 +92,7 @@ SSO 앱은 Gateway의 `SecurityPolicy`에서 인증을 강제합니다.
 
 | 영역 | 내용 |
 | --- | --- |
-| 클러스터 | RKE2 server 1대 + worker 2대(3노드) Ready 기준 |
+| 클러스터 | RKE2 single(server 1대) 또는 multi(server 1대 + worker N대, N >= 1) Ready 기준 |
 | 외부 진입점 | MetalLB VIP + Envoy Gateway, HTTP → HTTPS 전환 |
 | 인증 | 외부 OIDC 연결, Portal Auth.js 세션, public/OIDC 앱 구분 |
 | Secret | OpenBao KV v2 → ESO → Kubernetes Secret, 변경 시 Reloader rollout |

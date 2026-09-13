@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# 백업과 Kubernetes 상태 경계를 지켜 3노드 RKE2 서비스를 순서대로 켜고 끈다.
+# 백업과 Kubernetes 상태 경계를 지켜 1+N 노드 RKE2 서비스를 순서대로 켜고 끈다.
 set -euo pipefail
 source "$(dirname "$0")/../lib/testbed-common.sh"
 
@@ -24,8 +24,8 @@ SADP 테스트베드 안전 기동/종료
   sudo bash ./sadp --power resume --role server [--apply]
   bash ./sadp --power status --role server|agent
 
-종료 순서: prepare-off(control-plane) -> worker agent 두 대 off -> server off.
-기동 순서: server on -> worker agent 두 대 on -> resume(control-plane).
+종료 순서: prepare-off(control-plane) -> 모든 worker agent(단일 노드는 생략) off -> server off.
+기동 순서: server on -> 모든 worker agent(단일 노드는 생략) on -> resume(control-plane).
 이 명령은 RKE2 서비스만 제어하며 OS poweroff와 원격 전원 켜기는 수행하지 않는다.
 EOF
 }
@@ -66,7 +66,7 @@ print_plan() {
       note "rke2-agent 시작; control-plane에서 전체 Ready 후 resume 필요"
       ;;
     resume:server)
-      note "세 Node Ready 확인 -> worker uncordon -> 종료 marker 제거"
+      note "전체 Node Ready 확인 -> worker uncordon -> 종료 marker 제거"
       ;;
     status:*) ;;
     *) die "${ACTION}은 role=${ROLE}에서 지원하지 않음" ;;
@@ -100,12 +100,12 @@ case ${ACTION}:${ROLE} in
     systemctl is-active --quiet rke2-server.service || die "rke2-server가 active가 아님"
     kctl wait node --all --for=condition=Ready --timeout=3m >/dev/null \
       || die "종료 준비 전 모든 Node가 Ready가 아님"
+    check_cluster_topology --allow-unschedulable
     note "종료 전 전체 백업"
     bash scripts/ops/backup-testbed.sh
     latest_backup=$(readlink -f "${BACKUP_DIR}/latest")
     [[ -d ${latest_backup} ]] || die "최신 백업 경로를 확인할 수 없음"
     mapfile -t workers < <(worker_nodes)
-    ((${#workers[@]} == 2)) || die "계약 topology와 다른 worker 수: ${#workers[@]}"
     for worker in "${workers[@]}"; do
       note "worker cordon/drain: ${worker}"
       kctl cordon "${worker}" >/dev/null
@@ -120,7 +120,11 @@ case ${ACTION}:${ROLE} in
       printf 'sadp_version=%s\n' "$(<VERSION)"
     } >"${PREPARED_FILE}"
     chmod 0600 "${PREPARED_FILE}"
-    ok "종료 준비 완료; 각 worker에서 --power off --role agent 실행"
+    if ((${#workers[@]})); then
+      ok "종료 준비 완료; 각 worker에서 --power off --role agent 실행"
+    else
+      ok "종료 준비 완료; 단일 서버에서 --power off --role server 실행"
+    fi
     ;;
   off:agent)
     [[ ${DRAINED_NODE} == "${NODE_NAME}" ]] \
@@ -131,13 +135,12 @@ case ${ACTION}:${ROLE} in
     ;;
   off:server)
     [[ -r ${PREPARED_FILE} ]] || die "prepare-off marker가 없음: ${PREPARED_FILE}"
+    check_cluster_topology --allow-not-ready --allow-unschedulable
     # 단일 server를 먼저 끄면 drain 확인도 최종 snapshot도 불가능하므로 worker 상태를 강제한다.
     kctl get nodes -l '!node-role.kubernetes.io/control-plane,!node-role.kubernetes.io/master' -o json | \
       python3 -c '
 import json, sys
 nodes = json.load(sys.stdin).get("items", [])
-if len(nodes) != 2:
-    raise SystemExit(f"[FAIL] 계약 topology와 다른 worker 수: {len(nodes)}")
 bad = []
 for node in nodes:
     ready = next((c.get("status") for c in node.get("status", {}).get("conditions", []) if c.get("type") == "Ready"), "Unknown")
@@ -167,7 +170,7 @@ if bad:
       ((SECONDS < deadline)) || die "control-plane Ready 대기 timeout"
       sleep 5
     done
-    ok "control-plane RKE2 Ready; 각 worker에서 agent를 시작"
+    ok "control-plane RKE2 Ready; worker가 있으면 agent 시작 후 resume, 단일 노드는 바로 resume"
     ;;
   on:agent)
     systemctl start rke2-agent.service
@@ -178,8 +181,8 @@ if bad:
     [[ -r ${PREPARED_FILE} ]] || die "prepare-off marker가 없음: ${PREPARED_FILE}"
     kctl wait node --all --for=condition=Ready --timeout=10m >/dev/null \
       || die "모든 Node가 Ready가 아니므로 uncordon하지 않음"
+    check_cluster_topology --allow-unschedulable
     mapfile -t workers < <(worker_nodes)
-    ((${#workers[@]} == 2)) || die "계약 topology와 다른 worker 수: ${#workers[@]}"
     for worker in "${workers[@]}"; do kctl uncordon "${worker}" >/dev/null; done
     rm -f -- "${PREPARED_FILE}"
     ok "모든 Node Ready, worker uncordon, 정상 운영 재개"

@@ -119,5 +119,12 @@ check(
     and "SADP_RUN_VERIFY" in result.stdout,
 )
 
+single = dict(values, CLUSTER_MODE="single")
+worker_question = next(q for _, questions in wizard.SECTIONS for q in questions if q.key == "WORKER_NODES")
+check("SW-06 single은 worker 질문 생략", not wizard.should_ask(worker_question, single))
+wizard.clear_inactive(single)
+check("SW-07 single 선택 시 예제 worker 목록 제거", single["WORKER_NODES"] == "")
+check("SW-08 multi는 worker 질문 유지", wizard.should_ask(worker_question, dict(values, CLUSTER_MODE="multi")))
+
 print(f"통과 {passed} / 실패 {failed}")
 raise SystemExit(1 if failed else 0)

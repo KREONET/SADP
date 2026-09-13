@@ -7,7 +7,7 @@ RKE2 자체 설치는 이 저장소의 범위가 아닙니다.
 
 | 영역 | 관리자가 책임지는 것 |
 | --- | --- |
-| 클러스터 | 1 server + 2 worker Ready, StorageClass, CNI, 유지보수 |
+| 클러스터 | 1 server + N worker(N >= 0) Ready, StorageClass, CNI, 유지보수 |
 | 네트워크 | NIC 역할, 80/443 공개 경로, Squid, DNS, interface guard |
 | 인증 | 외부 OIDC endpoint/client 연결, IdP 그룹 claim 검증 |
 | Secret | root 전용 입력, OpenBao, ESO, Reloader |
@@ -186,7 +186,7 @@ checksum과 실제 복원 시험 일시를 기록합니다.
 
 ## 10. 안전 기동·종료와 업데이트
 
-전체 테스트베드를 끌 때는 전체 백업과 worker drain을 먼저 완료하고 worker 두 대, server 순서로
+전체 테스트베드를 끌 때는 전체 백업과 worker drain을 먼저 완료하고 모든 worker, server 순서(single은 server만)로
 RKE2를 중지합니다. 켤 때는 server를 먼저 Ready로 만든 뒤 worker를 시작하고 마지막에 uncordon합니다.
 
 ```bash

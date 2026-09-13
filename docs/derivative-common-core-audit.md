@@ -63,7 +63,7 @@ test-app의 로컬 `.env`와 `.git`은 빌더로 전송될 수 있었다. 실제
 
 IAPP는 같은 태그의 containerd 참조를 import 전에 제거한다. SADP는 archive 검사와
 각 노드의 import 후 manifest digest 비교를 이미 수행한다. 참조 제거를 일괄 도입하기보다
-새 immutable tag/digest로 승격하고 세 노드에 준비한 뒤 rollout하는 흐름을 공통 기준으로
+새 immutable tag/digest로 승격하고 전체 노드에 준비한 뒤 rollout하는 흐름을 공통 기준으로
 삼아야 한다. NAPP의 `prepare-portal-image.py`/`release-portal-image.sh`가 이 방향의
 참고 구현이지만 backend 디렉터리 구조와 계약 생성 입력이 SADP와 다르다.
 

@@ -42,16 +42,16 @@ install-squid|bash|scripts/node/install-squid-egress.sh|allowlist Squid proxy �
 upgrade-rke2|bash|scripts/node/upgrade-rke2.sh|versions.lock의 고정 버전으로 기존 RKE2 노드 업데이트
 GROUP:cluster — control-plane에서 root. 클러스터 전체
 bootstrap|bash|scripts/cluster/bootstrap-testbed.sh|전체 설치 진입점(아래 단계를 순서대로)
-preflight|bash|scripts/cluster/preflight.sh|3노드 RKE2와 기본 StorageClass 실검증
+preflight|bash|scripts/cluster/preflight.sh|계약의 1+N RKE2와 기본 StorageClass 실검증
 preflight-dns01|bash|scripts/cluster/preflight-cert-manager-dns01.sh|cert-manager controller node의 authoritative DNS TCP/UDP 경로 검사
 manage-containerd-proxy|bash|scripts/cluster/manage-rke2-containerd-proxy.sh|모든 Linux 노드 proxy 중앙 plan/apply/check(재시작 없음)
 prepare-exposure|python3|scripts/cluster/prepare-exposure-namespaces.py|노출 YAML이 참조하는 Namespace를 먼저 plan/apply
 install-local-path-storage|bash|scripts/cluster/install-local-path-storage.sh|StorageClass 부재 시 local-path provisioner 설치
 install-devtron|bash|scripts/cluster/install-devtron.sh|Devtron/번들 Argo CD 계획, 부재 시 설치, 동일 버전 failed 복구
-install-platform|bash|scripts/cluster/install-testbed-platform.sh|인증서/3노드/OpenBao/ESO/Reloader
+install-platform|bash|scripts/cluster/install-testbed-platform.sh|인증서/1+N 노드/OpenBao/ESO/Reloader
 configure-openbao-app-access|bash|scripts/ops/configure-openbao-app-access.sh|앱별 OpenBao OIDC 권한 구성(관리자 전용)
 configure-openbao-oidc|bash|scripts/ops/configure-openbao-oidc.sh|Gateway/TLS/discovery preflight 뒤 OpenBao OIDC 설정 멱등 수렴
-build-images|bash|scripts/cluster/build-local-images.sh|이미지 빌드(워커 Pod) + 세 노드 import
+build-images|bash|scripts/cluster/build-local-images.sh|이미지 빌드(워커 Pod) + 전체 노드 import
 bootstrap-services|bash|scripts/cluster/bootstrap-testbed-services.sh|외부 OIDC client 사전검사, OpenBao auth/KV
 deploy-apps|bash|scripts/cluster/deploy-testbed-apps.sh|hello/secure-demo/portal-lite 배포와 rollout
 install-portal-backend|bash|scripts/cluster/install-portal-backend.sh|Portal Lite 백엔드

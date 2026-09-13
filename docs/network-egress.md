@@ -36,7 +36,7 @@ NetworkPolicy는 허용된 연결의 응답 트래픽도 허용합니다. 앱이
 필수 확인:
 
 - 기존 RKE2 Pod/Service CIDR과 cluster DNS
-- 세 노드의 내부 IPv4와 공통 internal/external NIC 이름
+- 전체 노드의 내부 IPv4와 공통 internal/external NIC 이름
 - Kubernetes API 주소와 RKE2 server endpoint
 - Squid 내부 IPv4/port와 node/Pod client CIDR
 - CoreDNS upstream 내부 `<IPv4>:<port>`
@@ -200,7 +200,7 @@ sudo bash ./sadp --install-containerd-proxy --check
 ```
 
 신규 노드는 [설치 가이드의 node bundle SCP/checksum 절차](installation.md#4-secret-없는-node-bundle을-모든-노드에-배포)를
-사용합니다. 이미 실행 중인 3-node cluster의 drift는 control-plane에서 모든 노드에 Ready인 기존
+사용합니다. 이미 실행 중인 RKE2 cluster의 drift는 control-plane에서 모든 노드에 Ready인 기존
 Canal/Calico image를 재사용해 중앙 수렴할 수 있습니다. plan은 Kubernetes 리소스를 만들지 않습니다.
 
 ```bash

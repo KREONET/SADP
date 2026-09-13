@@ -9,10 +9,10 @@
 
 ## 1. 이 저장소가 하는 일과 하지 않는 일
 
-3노드 RKE2 클러스터(server 1 + worker 2) 위에 공개 웹 서비스와 SSO 보호 서비스를 올리는 베타 테스트베드다.
+단일 서버 또는 1+N 노드 RKE2 클러스터(server 1 + worker N) 위에 공개 웹 서비스와 SSO 보호 서비스를 올리는 베타 테스트베드다.
 Envoy Gateway + MetalLB가 외부 진입점이고, 외부 OIDC IdP / OpenBao / ESO / Reloader / Rancher / Argo CD가 인증·Secret·GitOps를 담당한다. SAML은 외부 broker가 OIDC로 변환하며 SADP는 IdP를 설치하거나 구성하지 않는다.
 
-**하지 않는 일:** OS 설치, RKE2 신규 설치. 이미 구성된 3노드 클러스터를 전제로 그 위의 서비스를
+**하지 않는 일:** OS 설치, RKE2 신규 설치. 이미 구성된 단일 서버 또는 1+N 노드 클러스터를 전제로 그 위의 서비스를
 설치한다. 기존 RKE2의 고정 버전 업데이트만 `scripts/node/upgrade-rke2.sh`의 별도 유지보수 경계로
 지원한다.
 
@@ -219,6 +219,12 @@ evidence/       검수 산출물
 ---
 
 ## 8. 알려진 구조적 약점 (건드릴 때 인지할 것)
+
+- **노드 구성은 single(server 1대) 또는 multi(server 1대 + worker N대, N >= 1)다.**
+  `CLUSTER_MODE` 미지정은 multi이며 single은 `WORKER_NODES`를 비운다. 기대 노드 수는
+  계약 `network.nodeAddresses`에서 계산하고 `scripts/lib/cluster-topology.py`를 공유한다.
+  single은 서버에 앱과 제한된 빌더 Pod를 배치하므로 cordon/차단 taint를 사전검사한다.
+  기존 노드의 taint·RKE2 서비스·PVC 이전을 모드 선택만으로 자동 변경하지 않는다.
 
 - **Portal은 활성 프로세스가 전체 배포에서 하나여야 한다.** `apiServer.appMu`의 그룹 소유권·누적 쿼터·삭제 중 유입 검사와 `store.mu`의 메모리 색인, 단일 Forgejo 큐 소비자가 정합성 경계다. PVC/RWO를 바꾸거나 상태 파일을 DB로 옮기는 것만으로 확장할 수 없다. `replicaCount`는 0(중지) 또는 1이고 롤아웃은 `Recreate`다. 별도 Deployment/수동 실행/강제 Pod 삭제로 프로세스를 겹치게 하지 마라. Chart 가드와 `scripts/tests/render-test.sh`를 유지해라. 상세 근거와 남아 있는 경쟁은 [동시성 감사](docs/portal-concurrency-audit.md)를 따른다.
 

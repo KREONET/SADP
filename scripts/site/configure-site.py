@@ -184,7 +184,7 @@ KNOWN_KEYS = {
     "STORAGE_CLASS", "APP_GROUP_VOLUME_SIZE", "APP_GROUP_MAX_SERVICES", "FORGEJO_REPO_URL",
     "FORGEJO_REVISION", "OCI_REGISTRY", "OCI_PROJECT", "REGISTRY_PULL_SECRET",
     "TEST_APP_IMAGE_TAG", "PORTAL_IMAGE_TAG", "IMAGE_PULL_POLICY",
-    "CONTROL_PLANE_HOSTNAME", "CONTROL_PLANE_IP", "WORKER_NODES",
+    "CONTROL_PLANE_HOSTNAME", "CONTROL_PLANE_IP", "WORKER_NODES", "CLUSTER_MODE",
     "INTERNAL_INTERFACE", "EXTERNAL_INTERFACE", "GUARDED_INTERFACES",
     "NODE_INTERNAL_CIDRS",
     "POD_CIDRS", "SERVICE_CIDRS", "CLUSTER_DNS_IP",
@@ -705,8 +705,6 @@ def parse_workers(raw: str, networks: list[ipaddress.IPv4Network]) -> list[tuple
         if not any(address in network for network in networks):
             raise ConfigError(f"worker {address} is outside NODE_INTERNAL_CIDRS")
         result.append((name, str(address)))
-    if not result:
-        raise ConfigError("WORKER_NODES must contain at least one worker")
     if len({name for name, _ in result}) != len(result):
         raise ConfigError("WORKER_NODES contains duplicate hostnames")
     if len({address for _, address in result}) != len(result):
@@ -788,7 +786,14 @@ def validate(values: dict[str, str]) -> dict:
     control_hostname = kube_name(
         required(values, "CONTROL_PLANE_HOSTNAME"), "CONTROL_PLANE_HOSTNAME"
     )
-    workers = parse_workers(required(values, "WORKER_NODES"), node_networks)
+    cluster_mode = optional(values, "CLUSTER_MODE") or "multi"
+    if cluster_mode not in {"single", "multi"}:
+        raise ConfigError("CLUSTER_MODE must be single or multi")
+    workers = parse_workers(optional(values, "WORKER_NODES"), node_networks)
+    if cluster_mode == "single" and workers:
+        raise ConfigError("CLUSTER_MODE=single requires empty WORKER_NODES")
+    if cluster_mode == "multi" and not workers:
+        raise ConfigError("CLUSTER_MODE=multi requires at least one worker in WORKER_NODES")
     if control_hostname in {name for name, _ in workers}:
         raise ConfigError("control-plane and worker hostnames must be unique")
     if str(control_ip) in {address for _, address in workers}:
@@ -1086,9 +1091,9 @@ def validate(values: dict[str, str]) -> dict:
     build_node = optional(values, "SADP_BUILD_NODE")
     if build_node:
         build_node = kube_name(build_node, "SADP_BUILD_NODE")
-        worker_names = {name for name, _ in workers}
-        if build_node not in worker_names:
-            raise ConfigError("SADP_BUILD_NODE must name one entry in WORKER_NODES")
+        build_names = {control_hostname} if cluster_mode == "single" else {name for name, _ in workers}
+        if build_node not in build_names:
+            raise ConfigError("SADP_BUILD_NODE must name the single server or a multi worker")
     deploy_apps = boolean(values, "SADP_DEPLOY_APPS", default=False)
     pull_dockerconfig = optional(values, "SADP_REGISTRY_PULL_DOCKERCONFIG")
     push_dockerconfig = optional(values, "SADP_REGISTRY_PUSH_DOCKERCONFIG")
@@ -1184,6 +1189,7 @@ def validate(values: dict[str, str]) -> dict:
             "pullPolicy": pull_policy,
         },
         "nodes": {
+            "mode": cluster_mode,
             "controlHostname": control_hostname,
             "controlIP": str(control_ip),
             "workers": workers,
@@ -1939,6 +1945,13 @@ def rke_updates(cfg: dict) -> dict[pathlib.Path, str]:
     server_path = ROOT / "rke/control-node/config.yaml"
     server = yaml.safe_load(server_path.read_text(encoding="utf-8")) or {}
     server["token"] = ""
+    # 단일 노드는 일반 앱도 수용해야 한다. 기존 노드의 taint 변경은 설치기가 자동 적용하지 않는다.
+    managed_taints = {"CriticalAddonsOnly=true:NoExecute",
+                      "node-role.kubernetes.io/control-plane=true:NoSchedule"}
+    taints = [item for item in server.get("node-taint", []) if item not in managed_taints]
+    if cfg["nodes"]["mode"] == "multi":
+        taints.extend(sorted(managed_taints))
+    server["node-taint"] = taints
     server["node-ip"] = cfg["nodes"]["controlIP"]
     server["advertise-address"] = cfg["nodes"]["controlIP"]
     server["bind-address"] = cfg["nodes"]["controlIP"]
@@ -2032,6 +2045,7 @@ def install_env(cfg: dict) -> str:
         "INTERNAL_INTERFACE": cfg["interfaces"]["internal"],
         "EXTERNAL_INTERFACE": cfg["interfaces"]["external"],
         "GUARDED_INTERFACES": ",".join(cfg["interfaces"].get("guarded") or []),
+        "CLUSTER_MODE": cfg["nodes"]["mode"],
         "CONTROL_PLANE_HOSTNAME": cfg["nodes"]["controlHostname"],
         "CONTROL_PLANE_IP": cfg["nodes"]["controlIP"],
         "WORKER_NODES": ",".join(
@@ -2256,6 +2270,7 @@ def check_rendered(updates: dict[pathlib.Path, str]) -> None:
 
 
 def summary(cfg: dict) -> None:
+    print(f"[OK] topology={cfg['nodes']['mode']} server=1 workers={len(cfg['nodes']['workers'])}")
     print(f"[OK] site={cfg['siteName']} environment={cfg['environment']} domain={cfg['baseDomain']}")
     print(
         "[OK] network="

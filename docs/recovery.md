@@ -66,7 +66,7 @@ Secret 값과 token은 작업 기록, shell trace, 화면 공유에 남기지 �
 
 ## 4. RKE2 etcd 복원
 
-현재 topology는 server 1대, worker 2대이므로 server 한 대에서 복원합니다. 선택한 snapshot과 같은
+지원 topology는 server 1대와 worker N대(N >= 0)이므로 server 한 대에서 복원합니다. 선택한 snapshot과 같은
 backup run의 `rke2-server-token`을 사용합니다.
 
 ```bash
@@ -336,7 +336,7 @@ sudo bash ./sadp --verify-testbed
 
 사용자 트래픽과 Argo 자동 sync는 다음이 모두 확인된 뒤 재개합니다.
 
-- 세 Node Ready와 핵심 Application 수렴
+- 전체 Node Ready와 핵심 Application 수렴
 - Gateway/TLS와 public/OIDC/internal 접근 경계
 - OpenBao/ESO Secret 동기화
 - 외부 OIDC login과 group/role mapping

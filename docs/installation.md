@@ -1,6 +1,6 @@
 # SADP 설치 가이드
 
-대상은 기존 3노드 RKE2 위에 SADP를 설치하는 플랫폼 관리자입니다. SADP는 운영체제와 RKE2 자체를
+대상은 기존 단일 서버 또는 1+N 노드 RKE2 위에 SADP를 설치하는 플랫폼 관리자입니다. SADP는 운영체제와 RKE2 자체를
 설치하지 않습니다.
 
 ## 전체 흐름
@@ -73,8 +73,8 @@ helm version --short
 
 ### RKE2 클러스터
 
-- server 1대 + worker 2대가 모두 `Ready`
-- 세 노드의 내부 NIC 이름이 같음
+- single은 server 1대, multi는 server 1대 + worker N대(N >= 1)가 모두 `Ready`
+- 전체 노드의 내부 NIC 이름이 같음
 - Pod CIDR, Service CIDR, Cluster DNS IP가 확정됨
 - control-plane에서 RKE2 kubeconfig와 kubectl 사용 가능
 - 기본 StorageClass가 정확히 하나 있음
@@ -93,6 +93,43 @@ StorageClass가 전혀 없는 테스트베드는 다음 계획을 확인한 뒤 
 sudo bash ./sadp --install-local-path-storage
 sudo bash ./sadp --install-local-path-storage --apply
 ```
+
+### single 서버의 앱 배치 준비
+
+노드 구성은 [사이트 설정](site-configuration.md#단일-노드와-멀티-노드-선택)의
+`CLUSTER_MODE`와 `WORKER_NODES`로 선택합니다. single은 서버가 cordon 상태이거나
+`NoSchedule`/`NoExecute` taint가 있으면 preflight가 중단됩니다.
+
+`configure-site.py`는 single 서버 템플릿에서 SADP 기본 격리 taint를 제거합니다.
+기존 RKE2 노드 설정의 `node-taint`는 일반 node phase가 자동으로 덮어쓰지 않습니다.
+기존 multi 서버를 single로 전환할 때는 워커의 앱과 local-path PVC 데이터를 먼저 이전하고,
+유지보수 창에서 노드 설정과 Kubernetes Node의 taint를 함께 검토해야 합니다.
+
+렌더된 `rke/control-node/config.yaml`의 `node-taint`를 검토한 뒤 해당 키만 반영합니다.
+다른 운영자 taint까지 덮어쓰지 않도록 기존 `/etc/rancher/rke2/config.yaml`과 비교합니다.
+
+```bash
+sudo bash scripts/node/install-rke2-node-config.sh --role server --include node-taint
+sudo bash scripts/node/install-rke2-node-config.sh --role server --include node-taint --apply
+```
+
+위 명령이 출력한 재시작은 유지보수 창에 직접 수행합니다. RKE2 설정 변경만으로 이미 등록된
+Node taint가 지워지지는 않으므로, 존재하는 SADP 격리 taint만 다음과 같이 해제합니다.
+등록 후 taint 변경은 kubectl을 사용한다는 [RKE2 공식 설명](https://docs.rke2.io/advanced)을 따릅니다.
+`<SERVER_NODE>`는 실제 서버 이름으로 바꿉니다. 다른 taint의 원인은 별도로 해결합니다.
+
+```bash
+sudo /var/lib/rancher/rke2/bin/kubectl --kubeconfig /etc/rancher/rke2/rke2.yaml \
+  taint node <SERVER_NODE> CriticalAddonsOnly:NoExecute-
+sudo /var/lib/rancher/rke2/bin/kubectl --kubeconfig /etc/rancher/rke2/rke2.yaml \
+  taint node <SERVER_NODE> node-role.kubernetes.io/control-plane:NoSchedule-
+sudo /var/lib/rancher/rke2/bin/kubectl --kubeconfig /etc/rancher/rke2/rke2.yaml \
+  uncordon <SERVER_NODE>
+```
+
+single에서는 node phase를 서버 한 대에만 실행한 뒤 cluster phase를 진행합니다.
+전체 종료·기동도 worker 단계를 생략하고 server의 prepare-off → off → on → resume 순서로
+진행합니다. 모드 변경은 노드와 PVC를 자동으로 옮겨 주는 마이그레이션 기능이 아닙니다.
 
 ## 2. site.env와 root 전용 Secret 파일 준비
 
@@ -231,7 +268,7 @@ render → 전체 test/guard → diff 검토가 끝난 같은 control-plane chec
 생성 `proxy.env`, join token이 빈 server/agent template만 포함하며 `site.env`, 루트 `.env`, PEM,
 private key, token, credential/state/backup은 포함하지 않습니다.
 
-control-plane에서 생성하고 두 worker에 archive와 checksum 두 파일만 전송합니다.
+control-plane에서 생성하고 모든 worker에 archive와 checksum 두 파일만 전송합니다.
 
 ```bash
 install -d -m 0700 /var/tmp/sadp-node-transfer
@@ -288,7 +325,7 @@ sudo bash /opt/sadp-node/sadp-node-bundle/sadp --install-containerd-proxy --appl
 
 ## 5. Squid 담당 노드부터 node phase 적용
 
-세 노드는 같은 Git revision과 같은 `/etc/sadp/site.env`를 사용합니다. `SQUID_INTERNAL_IP`를 가진
+전체 노드는 같은 Git revision과 같은 `/etc/sadp/site.env`를 사용합니다. `SQUID_INTERNAL_IP`를 가진
 노드에서 먼저 계획과 적용을 실행합니다.
 
 ```bash
@@ -357,7 +394,7 @@ sudo bash ./sadp --install \
 cluster phase는 다음 순서를 강제합니다.
 
 1. Squid의 허용·차단 egress 재검증
-2. StorageClass 준비, 3노드 topology와 모든 Linux node의 digest 고정 CRI pull preflight
+2. StorageClass 준비, 계약의 1+N 노드 topology와 모든 Linux node의 digest 고정 CRI pull preflight
 3. Docker daemon proxy 계약 확인
 4. Prometheus/Loki/Alloy 이미지를 모든 노드에 선배포
 5. Devtron과 번들 Argo CD 확인, 완전 부재 시 고정 버전 설치
@@ -426,7 +463,7 @@ EXISTING_GATEWAY_TLS_READY=true
 
 `EXISTING_GATEWAY_TLS_READY=true`인 cluster phase는 다음 작업을 이어서 실행합니다.
 
-- SADP 이미지 build와 세 노드 import
+- SADP 이미지 build와 전체 노드 import
 - 외부 OIDC client secret을 OpenBao→ESO 경로에 연결
 - OpenBao 초기화, auth, KV 정책 수렴
 - ESO와 Reloader 확인

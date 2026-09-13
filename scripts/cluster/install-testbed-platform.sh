@@ -115,10 +115,7 @@ if [[ ${TLS_SOURCE} == provided ]]; then
   validate_wildcard_files
 fi
 
-nodes_not_ready=$(kctl get nodes --no-headers | awk '$2 != "Ready" {print $1}')
-[[ -z ${nodes_not_ready} ]] || die "Ready가 아닌 노드: ${nodes_not_ready}"
-[[ $(kctl get nodes --no-headers | wc -l) -eq 3 ]] || die "RKE2 노드가 정확히 3대가 아님"
-ok "RKE2 3개 노드 Ready"
+check_cluster_topology
 
 kctl apply -f platform/dns/rke2-coredns-config.yaml >/dev/null
 kctl rollout status -n kube-system deployment/rke2-coredns-rke2-coredns --timeout=5m >/dev/null

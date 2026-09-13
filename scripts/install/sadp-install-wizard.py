@@ -53,6 +53,7 @@ SECTIONS: tuple[tuple[str, tuple[Question, ...]], ...] = (
     (
         "RKE2 노드와 내부망",
         (
+            Question("CLUSTER_MODE", "노드 구성", ("single", "multi")),
             Question("CONTROL_PLANE_HOSTNAME", "control-plane hostname"),
             Question("CONTROL_PLANE_IP", "control-plane 내부 IPv4"),
             Question("WORKER_NODES", "worker 목록(host=IPv4,host=IPv4)"),
@@ -169,6 +170,8 @@ def answer(question: Question, current: str) -> str:
 
 
 def should_ask(question: Question, values: dict[str, str]) -> bool:
+    if question.key == "WORKER_NODES":
+        return values.get("CLUSTER_MODE", "multi") != "single"
     if question.key == "PUBLIC_IP_NODE":
         return values.get("PUBLIC_EXPOSURE_MODE") == "direct"
     if question.key.startswith("RFC2136_") or question.key in {
@@ -195,6 +198,8 @@ def should_ask(question: Question, values: dict[str, str]) -> bool:
 
 
 def clear_inactive(values: dict[str, str]) -> None:
+    if values.get("CLUSTER_MODE") == "single":
+        values["WORKER_NODES"] = ""
     if values.get("PUBLIC_EXPOSURE_MODE") != "direct":
         values["PUBLIC_IP_NODE"] = ""
     if values.get("TLS_SOURCE") == "acme":
@@ -300,6 +305,7 @@ def main() -> int:
         return 1
     content = source.read_text(encoding="utf-8")
     values = parse_values(content)
+    values.setdefault("CLUSTER_MODE", "multi")
 
     print("SADP 대화형 설치 준비")
     print("- Enter: 현재값 유지, - 입력: 선택값 비우기")

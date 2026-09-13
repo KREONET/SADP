@@ -12,7 +12,7 @@ while (($#)); do
       cat <<'EOF'
 usage: sudo bash ./sadp --preflight [--image-pull-only]
 
-기본은 3-node topology, 기본 StorageClass provisioning, 실제 CRI image pull을 검사한다.
+기본은 계약의 single/multi(1+N) topology, 기본 StorageClass provisioning, 실제 CRI image pull을 검사한다.
 --image-pull-only는 topology/StorageClass를 생략하고 모든 Linux node의 proxy/containerd
 재시작 반영 여부를 digest 고정 image의 Always pull로 빠르게 재검사한다.
 EOF
@@ -36,18 +36,7 @@ if [[ ${IMAGE_PULL_ONLY} != true ]]; then
 
   echo "== 노드 =="
   kctl get nodes -o wide
-  node_count=$(kctl get nodes -o json | jq '.items | length')
-  not_ready=$(kctl get nodes -o json | jq -r '.items[] | select(any(.status.conditions[]?; .type == "Ready" and .status == "True") | not) | .metadata.name')
-  [[ ${node_count} -eq 3 ]] || die "RKE2 노드는 정확히 3대여야 함: ${node_count}"
-  [[ -z ${not_ready} ]] || die "Ready가 아닌 RKE2 노드: ${not_ready//$'\n'/,}"
-  server_count=$(kctl get nodes -o json | jq '[.items[] | select(
-    .metadata.labels["node-role.kubernetes.io/control-plane"] != null
-    or .metadata.labels["node-role.kubernetes.io/master"] != null
-  )] | length')
-  worker_count=$((node_count - server_count))
-  [[ ${server_count} -eq 1 && ${worker_count} -eq 2 ]] \
-    || die "RKE2 역할은 server 1대 + worker 2대여야 함: server=${server_count}, worker=${worker_count}"
-  ok "RKE2 노드 3/3 Ready(server 1 + worker 2)"
+  check_cluster_topology
 
   echo "== StorageClass(기본값 1개 필수) =="
   kctl get storageclass
@@ -107,7 +96,7 @@ PVC
   kctl -n "${preflight_namespace}" wait --for=jsonpath='{.status.phase}'=Bound pvc/preflight-pvc --timeout=90s
   ok "기본 StorageClass dynamic provisioning 정상"
 
-  echo "== 여유 자원(Devtron CI는 worker) =="
+  echo "== 여유 자원(single은 server, multi는 worker에서 빌드) =="
   kctl top nodes 2>/dev/null || echo "metrics-server 미설치(선택)"
 
   if kctl get crd applications.argoproj.io >/dev/null 2>&1 \

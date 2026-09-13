@@ -1,6 +1,6 @@
 # SADP 기동·종료·업데이트 Runbook
 
-> 대상: 1 server + 2 worker RKE2 테스트베드의 전원 작업과 버전 업데이트를 수행하는 관리자
+> 대상: 1 server + N worker(N >= 0) RKE2 테스트베드의 전원 작업과 버전 업데이트를 수행하는 관리자
 > 제품 버전: 저장소 루트 `VERSION`
 > 구성요소 버전: `versions.lock.yaml`
 
@@ -9,13 +9,15 @@
 
 | 작업 | 순서 | 이유 |
 | --- | --- | --- |
-| 전체 종료 | worker 2대 → server | Kubernetes API와 마지막 etcd snapshot을 끝까지 유지 |
-| 전체 기동 | server → worker 2대 | API/etcd가 준비된 뒤 agent가 재가입 |
+| 전체 종료 | worker N대 → server(single은 server만) | Kubernetes API와 마지막 etcd snapshot을 끝까지 유지 |
+| 전체 기동 | server → worker N대(single은 server만) | API/etcd가 준비된 뒤 agent가 재가입 |
 | RKE2 업그레이드 | server → worker 1대씩 | kubelet이 API server보다 앞선 minor가 되지 않게 유지 |
 
 모든 변경 명령은 `--apply`가 없으면 계획만 출력합니다. 스크립트는 OS의 물리 전원을 직접 끄거나
 원격으로 켜지 않습니다. RKE2 서비스가 안전하게 멈춘 뒤 OS 종료는 관리자가 수행하고, 기동은
 BMC/가상화 플랫폼/현장 전원으로 먼저 호스트를 켠 뒤 이어갑니다.
+
+single은 아래 worker 종료·기동·drain 단계를 생략합니다. server의 prepare-off, off, on, resume은 그대로 수행합니다.
 
 ## 1. 전체 테스트베드 안전 종료
 
@@ -30,9 +32,9 @@ sudo bash ./sadp --power prepare-off --role server --apply
 
 적용은 다음을 순서대로 수행합니다.
 
-1. 세 Node가 모두 Ready인지 확인
+1. 전체 Node가 모두 Ready인지 확인
 2. RKE2 etcd와 OpenBao Raft 전체 백업
-3. worker 두 대 cordon과 drain
+3. 모든 worker cordon과 drain(single은 생략)
 4. `/var/lib/sadp/power/prepared-off`에 백업 경로와 worker 목록 기록
 
 drain은 DaemonSet을 무시하고 `emptyDir` 데이터 삭제를 승인하지만, PDB나 unmanaged Pod를 강제로
@@ -48,7 +50,7 @@ sudo bash ./sadp --power off --role agent --drained-node <WORKER_NODE_NAME>
 sudo bash ./sadp --power off --role agent --drained-node <WORKER_NODE_NAME> --apply
 ```
 
-두 worker의 `rke2-agent`가 모두 멈춘 뒤 control-plane에서 Node가 cordon 상태이고 NotReady로 바뀐
+모든 worker의 `rke2-agent`가 모두 멈춘 뒤 control-plane에서 Node가 cordon 상태이고 NotReady로 바뀐
 것을 확인합니다. 서비스가 멈춘 worker는 이때 OS를 종료할 수 있습니다.
 
 ### 1.3 마지막으로 server 중지
@@ -80,7 +82,7 @@ sudo bash ./sadp --power on --role server --apply
 
 ### 2.2 worker 시작
 
-두 worker의 OS를 켠 뒤 각각 실행합니다.
+모든 worker의 OS를 켠 뒤 각각 실행합니다.
 
 ```bash
 sudo bash ./sadp --power on --role agent
@@ -89,7 +91,7 @@ sudo bash ./sadp --power on --role agent --apply
 
 ### 2.3 scheduling 재개
 
-control-plane에서 세 Node Ready를 확인하고 worker를 uncordon합니다.
+control-plane에서 전체 Node Ready를 확인하고 worker를 uncordon합니다.
 
 ```bash
 sudo bash ./sadp --power resume --role server
@@ -227,7 +229,7 @@ kubectl get node <WORKER_NODE_NAME> \
 kubectl uncordon <WORKER_NODE_NAME>
 ```
 
-첫 worker가 정상화된 뒤 두 번째 worker를 같은 순서로 업데이트합니다. 두 worker를 동시에 drain하거나
+첫 worker가 정상화된 뒤 나머지 worker를 한 대씩 같은 순서로 업데이트합니다. 여러 worker를 동시에 drain하거나
 재시작하지 않습니다.
 
 ### 4.3 완료 검수와 롤백 경계

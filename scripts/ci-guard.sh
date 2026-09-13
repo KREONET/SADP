@@ -3,6 +3,7 @@
 set -uo pipefail
 cd "$(dirname "$0")/.."
 FAIL=0
+python3 scripts/lib/cluster-topology.py --contract-only || FAIL=1
 
 # --- 텍스트 수준 검사 -------------------------------------------------------
 echo "==============================="
@@ -864,6 +865,14 @@ for component in ("prometheus", "loki", "alloy"):
     if str(source.get("helm", {}).get("valuesObject", {}) and "ok") != "ok":
         bad(f"{component} Application 에 valuesObject 가 비어 있다")
         monitoring_ok = False
+    # 로컬 설치와 Argo 재동기화가 다른 배치 정책을 적용하면 single에서 다시 Pending이 된다.
+    placement_section = {"prometheus": "server", "loki": "singleBinary"}.get(component)
+    if placement_section:
+        local_values = yaml.safe_load(pathlib.Path(f"platform/monitoring/{component}-values.yaml").read_text(encoding="utf-8"))
+        remote_values = source.get("helm", {}).get("valuesObject", {})
+        if local_values[placement_section].get("affinity") != remote_values.get(placement_section, {}).get("affinity"):
+            bad(f"{component} 로컬 values와 Argo 배치 정책 불일치")
+            monitoring_ok = False
 if monitoring_ok:
     ok("모니터링 스택(Prometheus/Loki/Alloy) Application 버전 계약 일치")
 

@@ -3,7 +3,7 @@
 # Grafana 는 클러스터 밖에 있으므로 여기서는 대시보드를 띄우지 않는다.
 # Alertmanager 와 pushgateway 도 쓰지 않는다. 알림은 외부 통합 운영 쪽이 담당한다.
 #
-# 서버 노드는 메모리 여유가 없으므로(설치 시점 73% 사용) 워커에만 배치한다.
+# multi에서는 워커를 우선하고 single에서는 유일한 서버의 자원을 함께 쓴다.
 # 모든 이미지는 scripts/cluster/sync-external-images.sh 로 미리 배포하고 IfNotPresent 로 쓴다.
 
 alertmanager:
@@ -14,12 +14,13 @@ prometheus-pushgateway:
 server:
   image:
     pullPolicy: IfNotPresent
-  # control-plane 은 taint 가 있고 메모리도 빠듯하다(설치 시점 73%). 워커에만 둔다.
+  # 워커가 없는 single에서도 Pending에 갇히지 않게 선호 조건으로 둔다.
   affinity:
     nodeAffinity:
-      requiredDuringSchedulingIgnoredDuringExecution:
-        nodeSelectorTerms:
-          - matchExpressions:
+      preferredDuringSchedulingIgnoredDuringExecution:
+        - weight: 100
+          preference:
+            matchExpressions:
               - key: node-role.kubernetes.io/control-plane
                 operator: DoesNotExist
   persistentVolume:

@@ -323,7 +323,7 @@ exit 0
         text=True,
         check=False,
     )
-    report("PF-two nodes rejected", result, 1, ("RKE2 노드는 정확히 3대여야 함: 2",))
+    report("PF-two nodes rejected", result, 1, ("RKE2 노드 수가 계약과 다름: expected=3, actual=2",))
 
     log.write_text("", encoding="utf-8")
     result = subprocess.run(

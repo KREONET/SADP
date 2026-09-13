@@ -90,7 +90,7 @@ daemon의 proxy 환경도 계약과 같은지 확인하며, 셸 환경변수만 
 
 | 명령 | 역할 |
 | --- | --- |
-| `--preflight` | 3노드/StorageClass와 모든 Linux node CRI pull 검사(`--image-pull-only` 지원) |
+| `--preflight` | 계약의 1+N 노드/StorageClass와 모든 Linux node CRI pull 검사(`--image-pull-only` 지원) |
 | `--preflight-dns01` | cert-manager controller가 배치된 node에서 authoritative DNS TCP/UDP 경로 검사(기본 계획, `--apply` 시 일시 probe) |
 | `--manage-containerd-proxy` | Ready Canal/Calico image로 전체 node proxy plan/apply/check, 재시작 없음 |
 | `--prepare-exposure` | 노출 YAML의 Namespace/backendRef parser plan, `--apply` 시 Namespace만 생성 |
@@ -100,7 +100,7 @@ daemon의 proxy 환경도 계약과 같은지 확인하며, 셸 환경변수만 
 | `--install-platform` | Argo 소유 플랫폼을 설치·대기하고 외부 이미지를 동기화 |
 | `--configure-openbao-app-access` | 앱별 OpenBao OIDC 접근 정책 구성 |
 | `--configure-openbao-oidc` | Certificate/Gateway/Service/discovery preflight 뒤 `auth/oidc/config` 멱등 수렴(기본 preflight, `--apply` 시 설정) |
-| `--build-images` | Docker dind worker Pod로 로컬 이미지 빌드 후 세 노드 import |
+| `--build-images` | Docker dind worker Pod로 로컬 이미지 빌드 후 전체 노드 import |
 | `--bootstrap-services` | 외부 OIDC client secret을 받아 OpenBao auth/KV 소비 설정 초기화 |
 | `--deploy-apps` | hello, secure-demo, portal-lite 배포와 rollout |
 | `--install-portal-backend` | Portal backend 개별 설치 |

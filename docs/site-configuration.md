@@ -59,7 +59,7 @@ pull/push Docker config 경로와 권한은 분리합니다.
 | 이름 | site/environment/cluster, Namespace, Gateway, TLS resource 이름 |
 | 도메인 | base domain과 Portal/Rancher/OpenBao host, 외부 OIDC issuer |
 | Git/Registry | Forgejo GitOps URL/revision, OCI host/project, immutable 초기 tag |
-| 노드 | control-plane 1대, worker 2대의 hostname과 내부 IPv4 |
+| 노드 | control-plane 1대, worker N대(single은 0대)의 hostname과 내부 IPv4 |
 | 클러스터 | 기존 RKE2 Pod/Service CIDR, cluster DNS, API 주소 |
 | NIC | 모든 노드에서 통일된 internal/external interface 이름 |
 | 공개 경로 | public IP 소유, `nat`/`direct`, Gateway VIP/pool |
@@ -67,6 +67,42 @@ pull/push Docker config 경로와 권한은 분리합니다.
 | TLS | ACME mode, RFC2136 endpoint/key metadata, 진행 상태 |
 | 인증 | 외부 OIDC endpoint/client/claim과 upstream protocol 표식 |
 | 스토리지 | StorageClass와 AppGroup 고정 volume 크기 |
+
+### 단일 노드와 멀티 노드 선택
+
+`CLUSTER_MODE`는 `single` 또는 `multi`입니다. 생략하면 기존 설정과 호환되도록 `multi`로
+취급하며, `multi`에는 워커가 최소 1대 필요합니다. 서버는 두 모드 모두 정확히 1대입니다.
+
+```dotenv
+# single: CONTROL_PLANE_HOSTNAME/CONTROL_PLANE_IP에 유일한 서버를 적는다.
+CLUSTER_MODE=single
+WORKER_NODES=
+SADP_BUILD_NODE=
+```
+
+```dotenv
+# multi: 워커 수 N은 아래 목록의 항목 수다. 별도 숫자 입력은 없다.
+CLUSTER_MODE=multi
+WORKER_NODES=<WORKER_1_HOSTNAME>=<WORKER_1_INTERNAL_IPV4>,<WORKER_2_HOSTNAME>=<WORKER_2_INTERNAL_IPV4>
+SADP_BUILD_NODE=
+```
+
+1+1은 워커 항목 하나만, 1+N은 필요한 만큼 추가합니다. hostname과 IP 중복은 거부합니다.
+`--install-wizard`도 노드 구성을 묻고, single을 선택하면 기존 워커 목록을 비웁니다.
+기존 multi 설정에서 `SADP_BUILD_NODE`를 지정했다면 single 전환 시 비우거나 서버 이름으로
+바꿉니다. 비워 두면 single은 서버, multi는 배치 가능한 워커 중 allocatable 메모리가 가장 큰
+노드를 고릅니다. 빌더는 두 모드 모두 자원 제한이 있는 임시 Pod입니다.
+
+렌더된 계약의 `spec.network.nodeAddresses`가 기대 노드 수의 SSOT입니다. 주소 1개면 single,
+2개 이상이면 server 1대 + 나머지 worker입니다. preflight·설치·검수·전원 관리가 이 수와
+실제 역할을 함께 검사하므로 워커가 누락되거나 계약에 없는 추가 노드가 있으면 중단합니다.
+설정 변경만으로 VM을 생성하거나 RKE2에 노드를 가입·탈퇴시키지는 않습니다.
+
+single도 Gateway VIP·DNS·외부 IdP·StorageClass 등 기존 서비스 선행 조건은 같습니다.
+서버가 control-plane과 앱·빌더·모니터링을 함께 수용할 자원을 확보해야 합니다. 필요하면
+기존 선택값 `SADP_INSTALL_MONITORING=false`, `SADP_BUILD_IMAGES=false`로 해당 단계를 생략하되,
+모니터링 비활성 시 해당 backend 노출을 제거하고, 빌드 생략 시 배포 이미지를 별도로 준비합니다.
+단일 서버 장애 시 서비스 전체가 중단되며, multi도 server가 하나이므로 control-plane HA는 아닙니다.
 
 ### NIC와 CIDR
 
@@ -247,7 +283,7 @@ SADP는 SAML SP가 아닙니다. `IDENTITY_SOURCE_PROTOCOL=saml`은 외부 broke
 | --- | --- |
 | `SADP_INSTALL_GITOPS` | Argo repository와 app-of-apps 구성 |
 | `SADP_INSTALL_MONITORING` | Prometheus/Loki/Alloy image/Application 준비; false이면 monitoring backend 노출도 금지 |
-| `SADP_BUILD_IMAGES` | 기본 로컬 이미지 빌드·세 노드 import |
+| `SADP_BUILD_IMAGES` | 기본 로컬 이미지 빌드·전체 노드 import |
 | `SADP_BUILD_NODE` | 빌드 worker 지정, 비우면 자동 선택 |
 | `SADP_DEPLOY_APPS` | 기본 앱과 Portal 배포 |
 | `SADP_RUN_VERIFY` | Portal 인증과 핵심 검수 실행 |
