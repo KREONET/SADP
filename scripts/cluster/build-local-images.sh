@@ -9,6 +9,7 @@ source "$(dirname "$0")/../lib/testbed-common.sh"
 # 다시 읽는 스래싱에 빠지고, etcd/apiserver까지 같이 느려진다(2026-08-10 사고).
 # multi는 워커에서 빌드한다. single은 서버의 제한된 Pod를 쓰므로 앱과 빌드 자원을 함께 확보해야 한다.
 BUILD_NODE=
+EXPORT_ONLY=false
 BUILD_ON_CONTROL_PLANE=false
 BUILDER_IMAGE=${SADP_BUILDER_IMAGE:-docker.io/library/docker:28.3.3-dind}
 BUILDER_MEMORY_LIMIT=${SADP_BUILDER_MEMORY_LIMIT:-10Gi}
@@ -16,6 +17,7 @@ BUILDER_CPU_LIMIT=${SADP_BUILDER_CPU_LIMIT:-6}
 
 while (($#)); do
   case "$1" in
+    --export-only) EXPORT_ONLY=true ;;
     --build-node) BUILD_NODE=${2:-}; shift ;;
     --build-on-control-plane) BUILD_ON_CONTROL_PLANE=true ;;
     --builder-memory-limit) BUILDER_MEMORY_LIMIT=${2:-}; shift ;;
@@ -24,7 +26,9 @@ while (($#)); do
       cat <<'EOF'
 usage: sudo bash scripts/cluster/build-local-images.sh \
   [--build-node <node>] [--builder-memory-limit 10Gi] [--builder-cpu-limit 6] \
-  [--build-on-control-plane]
+  [--build-on-control-plane] [--export-only]
+
+--export-only는 빌드 archive만 만들고 실행 중인 노드 이미지에는 import하지 않는다.
 
 기본 동작은 multi의 워커 또는 single의 서버에 임시 빌더 Pod를 띄워 거기서 Docker 이미지 2개를 빌드하고,
 결과 tar만 이 호스트로 받아 전체 노드 containerd에 import 하는 것이다.
@@ -125,8 +129,11 @@ select_build_node() {
 
 builder_pod=sadp-local-image-builder
 cleanup_builder() {
-  kctl delete pod -n kube-system "${builder_pod}" \
-    --ignore-not-found --wait=false >/dev/null 2>&1 || true
+  # 종료 중인 Docker 포트가 잠깐 열리지 않게 Pod가 사라진 뒤 정책을 정리한다.
+  if kctl delete pod -n kube-system "${builder_pod}" \
+    --ignore-not-found --wait=true --timeout=30s >/dev/null 2>&1; then
+    kctl delete networkpolicy -n kube-system "${builder_pod}" --ignore-not-found >/dev/null 2>&1 || true
+  fi
 }
 
 # 워커 노드에 dind Pod를 띄워 거기서 빌드하고, 결과 tar만 이 호스트로 받는다.
@@ -135,6 +142,19 @@ build_on_worker() {
   cleanup_builder
   kctl wait --for=delete pod -n kube-system "${builder_pod}" --timeout=2m >/dev/null 2>&1 || true
 
+  # Docker 제어 포트는 kubectl exec로만 사용하므로 다른 Pod의 진입을 차단한다.
+  kctl apply -f - >/dev/null <<YAML
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: ${builder_pod}
+  namespace: kube-system
+spec:
+  podSelector:
+    matchLabels: {app: sadp-local-image-builder}
+  policyTypes: [Ingress]
+  ingress: []
+YAML
   # nodeName 대신 nodeSelector를 쓴다. 스케줄러를 거쳐야 메모리 상한이 노드 capacity와
   # 대조되고, 자리가 없으면 Pending으로 드러난다.
   kctl apply -f - >/dev/null <<YAML
@@ -265,6 +285,14 @@ else
   build_on_worker "${BUILD_NODE}"
 fi
 
+if [[ ${EXPORT_ONLY} == true ]]; then
+  python3 scripts/cluster/verify-image-archive.py --archive "${archive}" \
+    --expected-ref "${TEST_APP_IMAGE}" --expected-ref "${PORTAL_IMAGE}"
+  sha256sum "${archive}" >"${archive}.sha256"
+  ok "배포하지 않고 이미지 archive 생성 완료: ${archive}"
+  exit 0
+fi
+
 # 노드에서 대조할 기준값은 archive 자신에서 뽑는다. `ctr images ls`의 DIGEST는 manifest
 # digest인데 `docker image inspect`의 .Id는 config blob digest라서 둘은 정의상 절대 같아지지
 # 않는다. archive의 index.json에 적힌 manifest digest가 containerd가 import 후 기록할 바로
@@ -291,7 +319,8 @@ expected_portal_digest=$(archive_manifest_digest "${PORTAL_IMAGE}") \
   || die "portal-lite manifest digest를 archive에서 얻지 못함"
 
 # 모든 노드에 이미 캐시된 Argo CD 이미지를 임시 운반 컨테이너로 사용한다.
-kctl apply -f - >/dev/null <<'YAML'
+loader_image=$(python3 -c 'import yaml; print("quay.io/argoproj/argocd:v" + str(yaml.safe_load(open("versions.lock.yaml"))["delivery"]["argoCd"]))')
+kctl apply -f - >/dev/null <<YAML
 apiVersion: apps/v1
 kind: DaemonSet
 metadata:
@@ -309,7 +338,7 @@ spec:
         - {operator: Exists}
       containers:
         - name: loader
-          image: quay.io/argoproj/argocd:v2.13.3
+          image: ${loader_image}
           imagePullPolicy: IfNotPresent
           command: [/bin/sh, -c, 'trap : TERM INT; sleep infinity & wait']
           securityContext:
@@ -332,7 +361,16 @@ trap cleanup_loader EXIT
 kctl rollout status -n kube-system daemonset/sadp-local-image-loader --timeout=5m >/dev/null
 
 mapfile -t loader_pods < <(kctl get pods -n kube-system -l app=sadp-local-image-loader -o name)
-[[ ${#loader_pods[@]} -eq 3 ]] || die "image-loader Pod가 3개가 아님"
+# 배포 대상 수는 단일/다중 모드 공통 계약에서 계산해야 이미지 전달도 같은 경계를 따른다.
+expected_loader_count=$(python3 - <<'PYCOUNT'
+import runpy
+import yaml
+helper = runpy.run_path("scripts/lib/cluster-topology.py")
+with open("contracts/platform-production.yaml", encoding="utf-8") as source:
+    print(helper["expected_nodes"](yaml.safe_load(source)))
+PYCOUNT
+)
+[[ ${#loader_pods[@]} -eq ${expected_loader_count} ]] || die "image-loader Pod 수가 계약과 다름: expected=${expected_loader_count}, actual=${#loader_pods[@]}"
 for pod in "${loader_pods[@]}"; do
   node=$(kctl get -n kube-system "${pod}" -o jsonpath='{.spec.nodeName}')
   kctl exec -i -n kube-system "${pod}" -- /bin/sh -c 'cat > /staging/sadp-state-v1.tar' <"${archive}"

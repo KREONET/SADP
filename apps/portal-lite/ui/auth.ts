@@ -9,7 +9,8 @@ function requiredRuntimeEnvironment(name: string): string {
   return value;
 }
 
-export const { handlers, auth, signIn, signOut } = NextAuth({
+// 빌드가 모듈을 읽을 때는 Secret이 없으므로 실제 인증 요청에서만 런타임 설정을 검증한다.
+export const { handlers, auth, signIn, signOut } = NextAuth(() => ({
   providers: [
     {
       id: "oidc",
@@ -98,4 +99,4 @@ export const { handlers, auth, signIn, signOut } = NextAuth({
       return session;
     },
   },
-});
+}));

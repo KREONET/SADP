@@ -78,14 +78,15 @@ mapfile -t contract_values <<<"${contract_output}"
 TLS_SOURCE=${contract_values[0]}
 CERT_MANAGER_NAMESPACE=${contract_values[1]}
 CERT_MANAGER_PLACEMENT=${contract_values[2]}
-DNS_SERVER=${contract_values[3]}
-DNS_PORT=${contract_values[4]}
-DNS_ZONE=${contract_values[5]}
 
 if [[ ${TLS_SOURCE} != acme ]]; then
   note "TLS_SOURCE=provided: cert-manager DNS-01 노드 경로 검사는 적용되지 않음"
   exit 0
 fi
+
+DNS_SERVER=${contract_values[3]}
+DNS_PORT=${contract_values[4]}
+DNS_ZONE=${contract_values[5]}
 
 note "DNS-01 경로 계획: placement=${CERT_MANAGER_PLACEMENT}, destination=authoritative-dns, protocols=TCP/UDP"
 if [[ ${APPLY} != true ]]; then

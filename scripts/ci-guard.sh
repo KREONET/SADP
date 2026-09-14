@@ -155,7 +155,7 @@ if lock_pending:
 
 envoy_gateway_version = str(version_lock["platform"]["envoyGateway"])
 gateway_api_version = str(version_lock["delivery"]["gatewayApi"])
-compatible_gateway_api = {"1.8.3": "v1.5.1"}
+compatible_gateway_api = {"1.8.3": "v1.5.1", "1.9.1": "v1.6.1"}
 expected_gateway_api = compatible_gateway_api.get(envoy_gateway_version)
 if expected_gateway_api and gateway_api_version != expected_gateway_api:
     bad(

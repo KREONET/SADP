@@ -207,7 +207,7 @@ KNOWN_KEYS = {
     "CERT_MANAGER_NODE_PLACEMENT",
     "PROVIDED_CERTIFICATE_PATH", "PROVIDED_PRIVATE_KEY_PATH",
     "SADP_INSTALL_GITOPS", "SADP_ARGO_REPO_USERNAME", "SADP_ARGO_REPO_TOKEN_FILE",
-    "SADP_DNS_TSIG_SECRET_FILE", "SADP_INSTALL_MONITORING", "SADP_BUILD_IMAGES", "SADP_BUILD_NODE",
+    "SADP_DNS_TSIG_SECRET_FILE", "SADP_INSTALL_MONITORING", "SADP_BUILD_IMAGES", "SADP_BUILD_NODE", "SADP_PREBUILT_BUNDLE",
     "SADP_DEPLOY_APPS", "SADP_REGISTRY_PULL_DOCKERCONFIG",
     "SADP_REGISTRY_PUSH_DOCKERCONFIG", "SADP_RUN_VERIFY",
 }
@@ -1088,6 +1088,11 @@ def validate(values: dict[str, str]) -> dict:
         )
     install_monitoring = boolean(values, "SADP_INSTALL_MONITORING", default=True)
     build_images = boolean(values, "SADP_BUILD_IMAGES", default=True)
+    prebuilt_bundle = optional(values, "SADP_PREBUILT_BUNDLE")
+    if prebuilt_bundle:
+        prebuilt_bundle = safe_absolute_path(prebuilt_bundle, "SADP_PREBUILT_BUNDLE")
+        if build_images:
+            raise ConfigError("SADP_PREBUILT_BUNDLE requires SADP_BUILD_IMAGES=false")
     build_node = optional(values, "SADP_BUILD_NODE")
     if build_node:
         build_node = kube_name(build_node, "SADP_BUILD_NODE")
@@ -1255,6 +1260,7 @@ def validate(values: dict[str, str]) -> dict:
             "dnsTsigSecretFile": dns_tsig_secret_file,
             "installMonitoring": install_monitoring,
             "buildImages": build_images,
+            "prebuiltBundle": prebuilt_bundle,
             "buildNode": build_node,
             "deployApps": deploy_apps,
             "registryPullDockerconfig": pull_dockerconfig,
@@ -1723,7 +1729,7 @@ def app_values(
         config["PORTAL_APP_GROUP_ARGO_PROJECT"] = "app-groups"
         config["PORTAL_ARGO_NAMESPACE"] = "devtroncd"
         # Rancher workloadProject와 Argo CD AppProject는 별도 객체다.
-        config["PORTAL_ARGO_PROJECT"] = "platform-prod"
+        config["PORTAL_ARGO_PROJECT"] = cfg["layout"]["platformNamespace"]
         config["PORTAL_ARGO_BOOTSTRAP_APPLICATION"] = "platform-bootstrap"
         config.update(PORTAL_PLATFORM_NAMESPACES)
         config["PORTAL_OPENBAO_ADDR"] = "https://openbao.openbao.svc.cluster.local:8200"
@@ -1932,6 +1938,20 @@ def argocd_updates(cfg: dict, old_contract: dict) -> dict[pathlib.Path, str]:
             return value
 
         transformed = [transform(item) for item in documents]
+        # 외부 서비스의 Route뿐 아니라 참조되는 Namespace도 Argo 허용 범위에 넣는다.
+        for document in transformed:
+            if document.get("kind") == "AppProject" and document.get("metadata", {}).get("name") == "platform-system":
+                destinations = document["spec"].setdefault("destinations", [])
+                for entry in cfg["externalServices"]:
+                    destination = {"namespace": entry["namespace"], "server": "https://kubernetes.default.svc"}
+                    if destination not in destinations:
+                        destinations.append(destination)
+        if path.name == "bootstrap-application.yaml":
+            directory = transformed[0]["spec"]["source"].setdefault("directory", {})
+            if not cfg["installer"]["installMonitoring"]:
+                directory["exclude"] = "{alloy.yaml,loki.yaml,prometheus.yaml}"
+            elif directory.get("exclude") == "{alloy.yaml,loki.yaml,prometheus.yaml}":
+                directory.pop("exclude")
         if len(transformed) == 1:
             updates[path] = yaml_text(transformed[0])
         else:
@@ -2077,6 +2097,7 @@ def install_env(cfg: dict) -> str:
         "SADP_INSTALL_MONITORING": str(cfg["installer"]["installMonitoring"]).lower(),
         "SADP_BUILD_IMAGES": str(cfg["installer"]["buildImages"]).lower(),
         "SADP_BUILD_NODE": cfg["installer"]["buildNode"],
+        "SADP_PREBUILT_BUNDLE": cfg["installer"]["prebuiltBundle"],
         "SADP_DEPLOY_APPS": str(cfg["installer"]["deployApps"]).lower(),
         "SADP_REGISTRY_PULL_DOCKERCONFIG": cfg["installer"]["registryPullDockerconfig"],
         "SADP_REGISTRY_PUSH_DOCKERCONFIG": cfg["installer"]["registryPushDockerconfig"],

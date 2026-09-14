@@ -338,7 +338,10 @@ if [[ ${EXISTING_GATEWAY_TLS_READY} != true ]]; then
   exit 0
 fi
 
-if [[ ${SADP_BUILD_IMAGES} == true ]]; then
+if [[ -n ${SADP_PREBUILT_BUNDLE:-} ]]; then
+  step "사전 빌드 bundle 검증과 전체 노드 import" \
+    bash scripts/cluster/import-prebuilt-images.sh --bundle "${SADP_PREBUILT_BUNDLE}" --apply
+elif [[ ${SADP_BUILD_IMAGES} == true ]]; then
   build=(bash scripts/cluster/build-local-images.sh)
   [[ -z ${SADP_BUILD_NODE} ]] || build+=(--build-node "${SADP_BUILD_NODE}")
   step "SADP 로컬 이미지 빌드와 전체 노드 import" "${build[@]}"

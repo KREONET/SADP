@@ -43,7 +43,7 @@ configuration:
     PORTAL_APP_GROUP_NAMESPACE_PREFIX: app-
     PORTAL_APP_GROUP_ARGO_PROJECT: app-groups
     PORTAL_ARGO_NAMESPACE: devtroncd
-    PORTAL_ARGO_PROJECT: platform-prod
+    PORTAL_ARGO_PROJECT: sadp-platform
     PORTAL_ARGO_BOOTSTRAP_APPLICATION: platform-bootstrap
     PORTAL_RANCHER_NAMESPACE: cattle-system
     PORTAL_OPENBAO_NAMESPACE: openbao

@@ -24,7 +24,8 @@ for field in (
     print(str(api_key.get(field) or ""))
 clients = [str(item) for item in config.get("clients") or []]
 print(len(clients))
-print(*clients, sep="\n")
+for client in clients:
+    print(client)
 services = [
     (str(item.get("name") or ""), str(item.get("host") or ""))
     for item in spec.get("platformServices") or []

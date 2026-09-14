@@ -164,3 +164,6 @@ sudo bash ./sadp --verify-testbed
 ```
 
 두 스크립트는 Secret, token, 세션 cookie 값을 출력하지 않습니다.
+
+사전 빌드 앱 bundle로 설치 시 빌드를 생략하려면 [이미지 배포 절차](docs/prebuilt-images.md)를
+따른다. 단일 서버에서 확인한 설치 오류와 반영 범위는 [설치 검증 기록](docs/installation-findings.md)에 정리했다.

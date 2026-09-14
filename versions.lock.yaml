@@ -1,7 +1,7 @@
 platform:
   rke2: v1.35.7+rke2r1
   metallb: 0.16.1
-  envoyGateway: 1.8.3
+  envoyGateway: 1.9.1
   certManager: 1.21.1
   rancher: v2.14.3
   openbao: 2.6.2
@@ -14,11 +14,11 @@ platform:
 delivery:
   devtronOperator: 1.5.0
   devtronOperatorChart: 0.22.92
-  argoCd: bundled
+  argoCd: 3.4.8
   externalSecrets: 2.9.0
   reloader: 2.2.16
   helm: 3.21.3
-  gatewayApi: v1.5.1
+  gatewayApi: v1.6.1
 
 api:
   externalSecrets: external-secrets.io/v1

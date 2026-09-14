@@ -100,7 +100,7 @@ proxy = {
 }
 print(json.dumps({
     "installer": {"modules": ["cicd"]},
-    "argo-cd": {"enabled": True},
+    "argo-cd": {"enabled": True, "global": {"image": {"tag": "v" + os.environ["EXPECTED_ARGO_CD_VERSION"]}}, "crds": {"install": False}},
     "components": {"devtron": {"service": {"type": "ClusterIP"}}},
     "configs": proxy,
     "global": {"configs": proxy},
@@ -126,6 +126,7 @@ exit 0
 set -euo pipefail
 printf '%s\\n' "$*" >>"${MOCK_LOG}"
 args=" $* "
+[[ ${args} == *" apply --server-side "* ]] && exit 0
 scenario=${MOCK_SCENARIO:-missing}
 if [[ ${scenario} == ready || ${scenario} == wrong-config || ${scenario} == wrong-version \
   || ${scenario} == failed ]]; then
@@ -145,6 +146,7 @@ fi
 exit 1
 """,
     )
+    write_executable(tmp / "curl", "#!/usr/bin/env bash\nexit 0\n")
     base_env = os.environ | {
         "KUBECTL_BIN": str(kubectl),
         "HELM_BIN": str(helm),
@@ -152,6 +154,7 @@ exit 1
         "MOCK_LOG": str(log),
         "MOCK_HELM_LOG": str(helm_log),
         "MOCK_APPLY_LOG": str(apply_log),
+        "EXPECTED_ARGO_CD_VERSION": str(VERSIONS["argoCd"]),
         "EXPECTED_APP_VERSION": DEVTRON_APP_VERSION,
         "EXPECTED_CHART_VERSION": DEVTRON_CHART_VERSION,
         "PATH": f"{tmp}:{os.environ['PATH']}",

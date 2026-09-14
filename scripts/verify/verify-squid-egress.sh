@@ -11,10 +11,12 @@ python3 scripts/site/render-network.py --check
 source platform/network/proxy.env
 command -v curl >/dev/null || { echo "[FAIL] curl이 필요함" >&2; exit 1; }
 
+# 전체 버전 이력은 수십 MB까지 커져 대역폭 시험이 된다. 고정 버전 메타데이터로 경로만 검증한다.
+next_version=$(python3 -c 'import yaml; print(yaml.safe_load(open("versions.lock.yaml"))["applications"]["portalLite"]["next"])')
 allowed=(
   https://acme-staging-v02.api.letsencrypt.org/directory
   https://acme-v02.api.letsencrypt.org/directory
-  https://registry.npmjs.org/next
+  "https://registry.npmjs.org/next/${next_version}"
   https://pypi.org/simple/pip/
   https://ftp.kaist.ac.kr/ubuntu/
 )

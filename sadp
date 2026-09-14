@@ -30,6 +30,8 @@ render-rancher|python3|scripts/site/render-rancher.py|계약 -> Rancher Project�
 render-quota|python3|scripts/site/render-quota.py|계약 -> ResourceQuota/LimitRange
 render-all|special|render-all|위 render-* 4개를 순서대로
 promote-image|python3|scripts/site/promote-image.py|GitOps values의 image 필드만 교체
+release-images|bash|scripts/release/build-images.sh|사이트 Secret 없는 사전 빌드 앱 bundle 생성
+import-images|bash|scripts/cluster/import-prebuilt-images.sh|checksum 검증 후 사전 빌드 bundle 전체 노드 import
 portal-ui-env|python3|scripts/site/portal-ui-build-env.py|루트 .env에서 허용된 NEXT_PUBLIC_* 만 추출
 GROUP:node — 각 노드에서 root. --apply 없이 먼저 계획을 읽어라
 install-node-config|bash|scripts/node/install-rke2-node-config.sh|생성된 RKE2 config를 /etc/rancher/rke2에 반영

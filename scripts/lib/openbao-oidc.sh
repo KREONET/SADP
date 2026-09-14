@@ -16,8 +16,8 @@ EOF
 oidc_print_discovery_checks() {
   cat >&2 <<EOF
 [ACTION] 값 비노출 확인 명령:
-  kubectl -n ${OIDC_OPENBAO_NAMESPACE} exec ${OIDC_OPENBAO_POD} -- sh -c 'nslookup "$1" >/dev/null' sh ${OIDC_ISSUER_HOST}
-  kubectl -n ${OIDC_OPENBAO_NAMESPACE} exec ${OIDC_OPENBAO_POD} -- sh -c 'wget -T 15 -S -O /dev/null "$1"' sh '${OIDC_DISCOVERY_URL}'
+  kubectl -n ${OIDC_OPENBAO_NAMESPACE} exec ${OIDC_OPENBAO_POD} -- sh -c 'nslookup "\$1" >/dev/null' sh ${OIDC_ISSUER_HOST}
+  kubectl -n ${OIDC_OPENBAO_NAMESPACE} exec ${OIDC_OPENBAO_POD} -- sh -c 'wget -T 15 -S -O /dev/null "\$1"' sh '${OIDC_DISCOVERY_URL}'
   kubectl -n ${OIDC_GATEWAY_NAMESPACE} get gateway ${OIDC_GATEWAY_NAME} -o jsonpath='{.status.listeners}{"\n"}'
 EOF
 }

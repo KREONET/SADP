@@ -42,7 +42,7 @@ import yaml
 
 document = yaml.safe_load(open(sys.argv[1], encoding="utf-8")) or {}
 delivery = document.get("delivery") or {}
-for key in ("devtronOperator", "devtronOperatorChart"):
+for key in ("devtronOperator", "devtronOperatorChart", "argoCd"):
     value = str(delivery.get(key) or "").strip()
     if not value:
         raise SystemExit(f"[FAIL] versions.lock.yaml delivery.{key} 누락")
@@ -51,6 +51,8 @@ PY
 )
 DEVTRON_APP_VERSION=${devtron_versions[0]}
 DEVTRON_CHART_VERSION=${devtron_versions[1]}
+ARGO_CD_VERSION=${devtron_versions[2]}
+[[ ${ARGO_CD_VERSION} =~ ^[0-9]+\.[0-9]+\.[0-9]+$ ]] || die "Argo CD는 고정 semver가 필요함"
 
 HTTP_PROXY=
 HTTPS_PROXY=
@@ -113,7 +115,8 @@ fi
 
 verify_release_values() {
   hctl get values "${DEVTRON_RELEASE}" -n "${DEVTRON_NAMESPACE}" -o json \
-    | EXPECTED_HTTP_PROXY=${HTTP_PROXY:-} \
+    | EXPECTED_ARGO_CD_VERSION=${ARGO_CD_VERSION} \
+      EXPECTED_HTTP_PROXY=${HTTP_PROXY:-} \
       EXPECTED_HTTPS_PROXY=${HTTPS_PROXY:-} \
       EXPECTED_NO_PROXY=${NO_PROXY:-} \
       python3 -c '
@@ -125,6 +128,8 @@ values = json.load(sys.stdin)
 required = [
     (("installer", "modules"), ["cicd"]),
     (("argo-cd", "enabled"), True),
+    (("argo-cd", "global", "image", "tag"), "v" + os.environ["EXPECTED_ARGO_CD_VERSION"]),
+    (("argo-cd", "crds", "install"), False),
     (("components", "devtron", "service", "type"), "ClusterIP"),
 ]
 for root in (("configs",), ("global", "configs")):
@@ -187,11 +192,14 @@ note "Devtron ${DEVTRON_APP_VERSION} / chart ${DEVTRON_CHART_VERSION}와 번들 
 helm_contract_args=(
   --set 'installer.modules={cicd}'
   --set argo-cd.enabled=true
+  --set-string "argo-cd.global.image.tag=v${ARGO_CD_VERSION}"
+  # 구형 번들 CRD가 sources/valuesObject를 제거하지 않도록 같은 버전의 API를 별도로 관리한다.
+  --set argo-cd.crds.install=false
   # Devtron UI가 별도 LoadBalancer를 만들면 Envoy Gateway 단일 진입점 계약을 우회한다.
   --set components.devtron.service.type=ClusterIP
 )
 helm_no_proxy=${NO_PROXY:-}
-helm_no_proxy=${helm_no_proxy//,/\,}
+helm_no_proxy=${helm_no_proxy//,/\\,}
 # proxy를 비운 계약도 관리 값이다. failed release에 --reuse-values를 쓸 때 이 인자를
 # 생략하면 이전 proxy가 조용히 남으므로 여섯 값을 항상 명시한다.
 helm_contract_args+=(
@@ -234,7 +242,17 @@ helm_args=(upgrade --install "${DEVTRON_RELEASE}" devtron/devtron-operator
   --timeout "${WAIT_SECONDS}s"
   "${helm_recovery_args[@]}"
   "${helm_contract_args[@]}")
+# Helm과 같은 고정 버전의 CRD를 먼저 내려받아 네트워크 오류를 변경 전에 확인한다.
+crd_dir=$(mktemp -d)
+trap 'rm -rf -- "${crd_dir}"' EXIT
+for name in application appproject applicationset; do
+  curl --fail --silent --show-error --location --proto '=https' --tlsv1.2 \
+    "https://raw.githubusercontent.com/argoproj/argo-cd/v${ARGO_CD_VERSION}/manifests/crds/${name}-crd.yaml" \
+    --output "${crd_dir}/${name}.yaml"
+done
 hctl "${helm_args[@]}"
+# 충돌은 강제로 빼앗지 않고 보고한다. 기존 설치의 API 소유권 변경은 별도 유지보수 대상이다.
+kctl apply --server-side --field-manager=sadp-argocd-crds -f "${crd_dir}"
 
 until installer_applied; do
   installer_status=$(kctl get installer -n "${DEVTRON_NAMESPACE}" installer-devtron \

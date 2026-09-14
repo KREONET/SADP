@@ -46,6 +46,7 @@ app_groups = spec.get("appGroups") or {}
 print(app_groups.get("namespacePrefix") or "")
 print(app_groups.get("maxServices") or 0)
 print(public.get("nodeName") or "")
+print(hello_host)
 PY
 )
 base_domain=${contract_values[0]}
@@ -64,6 +65,7 @@ public_https_hosts=${contract_values[12]}
 app_group_namespace_prefix=${contract_values[13]:?AppGroup Namespace prefix가 없다}
 app_group_max_services=${contract_values[14]:?AppGroup 서비스 상한이 없다}
 public_ip_node=${contract_values[15]}
+hello_host=${contract_values[16]:?Hello values에 exposure.host가 없다}
 
 check_cluster_topology || fail=1
 
@@ -442,15 +444,22 @@ jq -e --arg prefix "${app_group_namespace_prefix}" --argjson max "${app_group_ma
 ' <<<"${portal_catalog}" >/dev/null \
   && ok "Portal AppGroup Compose 제출 준비" \
   || { echo '[FAIL] Portal AppGroup 비활성: OpenBao registry pull seed/role과 catalog 계약 확인' >&2; fail=1; }
-portal_profile_payload='{"appName":"acceptance-app","project":"research","environment":"prod","gitRepository":"https://forgejo.example.invalid/research/acceptance-app.git","branch":"main","dockerfile":"Dockerfile","containerPort":8080,"exposure":"oidc","resourceSize":"small"}'
+# 사이트가 beta 등 다른 환경을 선택해도 같은 API 계약을 검증한다.
+portal_environment=$(jq -er '.environment' <<<"${portal_catalog}")
+portal_project=$(jq -er '.projects[0]' <<<"${portal_catalog}")
+portal_profile_payload=$(jq -nc --arg environment "${portal_environment}" --arg project "${portal_project}" '
+  {appName:"acceptance-app",project:$project,environment:$environment,
+   gitRepository:"https://forgejo.example.invalid/research/acceptance-app.git",branch:"main",
+   dockerfile:"Dockerfile",containerPort:8080,exposure:"oidc",resourceSize:"small"}
+')
 portal_profile_result=$(portal_api_request POST /api/v1/app-profiles/validate \
   "${portal_profile_payload}" || true)
 portal_profile=$(jq -r '.body // empty' <<<"${portal_profile_result}" 2>/dev/null || true)
-# Portal API 는 prod 환경만 받는다. beta 를 보내면 422 라서 검증이 아니라 payload 가 틀린 것이다.
-jq -e '
+# OIDC client ID도 현재 카탈로그의 환경 이름으로 확인한다.
+jq -e --arg client "acceptance-app-${portal_environment}" '
   .valid == true and
   .generated.valuesTemplate == "apps/_template/values-sso.yaml" and
-  .generated.oidcClientId == "acceptance-app-prod" and
+  .generated.oidcClientId == $client and
   .generated.expectedAnonymousStatus == 302
 ' <<<"${portal_profile}" >/dev/null \
   && ok "Portal AppProfile OIDC 사전검증 API" \
@@ -462,9 +471,10 @@ portal_deploy_code=$(jq -r '.status // 0' <<<"${portal_deploy_result}" 2>/dev/nu
 
 printf -v portal_group_name 'verify-compose-%05d-%05d' "${RANDOM}" "${RANDOM}"
 portal_compose=$'services:\n  frontend:\n    image: docker.io/library/nginx:1.27.4-alpine\n    expose:\n      - 80\n    depends_on:\n      - redis\n  redis:\n    image: docker.io/library/redis:7.4.2-alpine\n    expose:\n      - 6379\n'
-portal_group_payload=$(jq -nc --arg group "${portal_group_name}" --arg compose "${portal_compose}" '
+portal_group_payload=$(jq -nc --arg group "${portal_group_name}" --arg compose "${portal_compose}" \
+  --arg environment "${portal_environment}" --arg project "${portal_project}" '
   {
-    group: $group, project: "research", environment: "prod", resourceSize: "small",
+    group: $group, project: $project, environment: $environment, resourceSize: "small",
     compose: $compose,
     services: [
       {
@@ -528,7 +538,12 @@ def resolve(schema):
         schema = node
     return schema
 assert resolve(spec["components"]["schemas"]["DeploymentRequestInput"])["additionalProperties"] is False
-states = spec["components"]["schemas"]["DeploymentRequest"]["properties"]["state"]["enum"]
+request_schema = resolve(spec["components"]["schemas"]["DeploymentRequest"])
+# 사용자 응답은 공통 스키마를 allOf로 합성하므로 기반 속성까지 확인한다.
+properties = dict(request_schema.get("properties") or {})
+for part in request_schema.get("allOf") or []:
+    properties.update(resolve(part).get("properties") or {})
+states = properties["state"]["enum"]
 assert "deleting" in states and "deleted" in states
 assert "application/problem+json" in spec["components"]["responses"]["ValidationError"]["content"]
 ' <<<"${portal_openapi}"; then

@@ -318,6 +318,9 @@ def verify_generated(workspace: pathlib.Path) -> str:
     )
     if portal_application["spec"]["destination"]["namespace"] != "research-prod":
         return "Argo workload Namespace mismatch"
+    portal = yaml.safe_load((workspace / "apps/portal-lite/values-beta.yaml").read_text())
+    if portal["configuration"]["config"]["PORTAL_ARGO_PROJECT"] != spec["gateway"]["redirectRouteNamespace"]:
+        return "Portal Argo project must follow the site platform Namespace"
     squid = (workspace / "platform/network/squid/squid.conf").read_text(encoding="utf-8")
     provider_domains = (workspace / "platform/network/squid/dns-provider-domains.txt").read_text(encoding="utf-8")
     if any(line.strip() and not line.lstrip().startswith("#") for line in provider_domains.splitlines()):
