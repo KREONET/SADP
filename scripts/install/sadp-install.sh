@@ -249,7 +249,7 @@ PY
   while ((SECONDS < deadline)); do
     missing=()
     for application in "${expected[@]}"; do
-      kctl get application -n devtroncd "${application}" >/dev/null 2>&1 \
+      kctl get applications.argoproj.io -n devtroncd "${application}" >/dev/null 2>&1 \
         || missing+=("${application}")
     done
     ((${#missing[@]})) || { ok "Argo app-of-apps Application 생성 확인"; return 0; }

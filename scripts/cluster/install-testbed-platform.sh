@@ -67,7 +67,7 @@ trap cleanup EXIT
 # 리소스에 release 어노테이션이 없어 "cannot be imported into the current release" 로 깨진다.
 require_argo_application() {
   local application=$1
-  kctl get application -n devtroncd "${application}" >/dev/null 2>&1 \
+  kctl get applications.argoproj.io -n devtroncd "${application}" >/dev/null 2>&1 \
     || die "Argo Application ${application} 없음. docs/installation.md 단계 6(GitOps bootstrap)을 먼저 끝내라"
 }
 
@@ -123,10 +123,10 @@ ok "CoreDNS 계약 설정 적용"
 
 # Forgejo에 push할 자격증명이 없는 동안 원격 main의 예전 manifest가 수동 배포를 되돌리지 않게 한다.
 for application in platform-bootstrap platform-resources hello-beta; do
-  if kctl get application -n devtroncd "${application}" >/dev/null 2>&1; then
-    kctl get application -n devtroncd "${application}" -o yaml >"${TESTBED_STATE_DIR}/argo-${application}-before.yaml"
-    if [[ -n $(kctl get application -n devtroncd "${application}" -o jsonpath='{.spec.syncPolicy.automated}' 2>/dev/null) ]]; then
-      kctl patch application -n devtroncd "${application}" --type=merge \
+  if kctl get applications.argoproj.io -n devtroncd "${application}" >/dev/null 2>&1; then
+    kctl get applications.argoproj.io -n devtroncd "${application}" -o yaml >"${TESTBED_STATE_DIR}/argo-${application}-before.yaml"
+    if [[ -n $(kctl get applications.argoproj.io -n devtroncd "${application}" -o jsonpath='{.spec.syncPolicy.automated}' 2>/dev/null) ]]; then
+      kctl patch applications.argoproj.io -n devtroncd "${application}" --type=merge \
         -p '{"spec":{"syncPolicy":{"automated":null}}}' >/dev/null
       note "Argo 자동 동기화 일시 중지: ${application}"
     fi
