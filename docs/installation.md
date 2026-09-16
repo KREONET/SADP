@@ -555,6 +555,11 @@ sudo bash scripts/cluster/bootstrap-testbed-services.sh --init-only
 `TLS_SOURCE=provided` 사이트에서는 Squid 검사도 사용하지 않는 외부 ACME directory의
 접속을 요구하지 않습니다. Squid 설정 일치·서비스·listener 검사는 계속 수행합니다.
 
+내부 서비스용 CA에는 제공 인증서 사이트도 cert-manager가 필요합니다. 플랫폼 설치기는
+controller뿐 아니라 webhook·cainjector 롤아웃을 기다리고, 내부 CA manifest의 서버 dry-run으로
+실제 admission API가 응답하는지 확인한 뒤 진행합니다. webhook 연결 오류는 제한된 횟수로
+재시도하며 대기 상황을 출력합니다. manifest 자체의 검증 오류는 즉시 중단합니다.
+
 ```text
 OpenBao Pod Running
   → initialized/sealed 검사

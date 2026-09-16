@@ -156,6 +156,35 @@ for component in cert-manager-webhook cert-manager-cainjector; do
 done
 ok "cert-manager controller 전용 Squid proxy와 내부 recursive DNS 적용"
 
+wait_cert_manager_api() {
+  local component attempt result
+  # controller Ready만으로는 webhook endpoint와 cainjector의 CA 반영을 보장하지 못합니다.
+  for component in cert-manager-webhook cert-manager-cainjector; do
+    note "${component} 준비 대기"
+    kctl rollout status -n cert-manager "deployment/${component}" --timeout=5m >/dev/null \
+      || die "${component} 미기동. cert-manager Pod/이벤트를 확인하라"
+  done
+  for attempt in {1..30}; do
+    # 실제 admission 경로를 확인하되 인증서 리소스는 아직 저장하지 않습니다.
+    if result=$(kctl apply --dry-run=server --request-timeout=10s \
+        -f platform/exposure/internal-ca.yaml 2>&1); then
+      ok "cert-manager webhook/API 서버 검증 통과"
+      return 0
+    fi
+    case "${result}" in
+      *"failed calling webhook"*|*"failed to call webhook"*) ;;
+      *) printf '%s\n' "${result}" >&2; die "내부 CA manifest 서버 검증 실패" ;;
+    esac
+    if ((attempt == 1 || attempt % 5 == 0)); then
+      note "cert-manager admission 준비 대기(${attempt}/30)"
+    fi
+    ((attempt == 30)) || sleep 2
+  done
+  printf '%s\n' "${result}" >&2
+  die "cert-manager webhook/API 준비 timeout. endpoint와 CA 주입 상태를 확인하라"
+}
+wait_cert_manager_api
+
 # 일반 인터넷 DNS 성공은 RFC2136 authoritative endpoint의 TCP/UDP 경로 증거가 아니다.
 # 실제 controller가 Ready인 node마다 host network probe를 통과해야 Certificate 대기를 시작한다.
 bash scripts/cluster/preflight-cert-manager-dns01.sh --apply
