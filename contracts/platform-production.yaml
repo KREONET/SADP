@@ -148,6 +148,7 @@ spec:
       - cdn03.quay.io
       - raw.githubusercontent.com
       - public.ecr.aws
+      - d5l0dvt14r5h8.cloudfront.net
       - ghcr.io
       - pkg-containers.githubusercontent.com
       - registry.k8s.io

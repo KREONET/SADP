@@ -107,6 +107,8 @@ DEFAULT_PACKAGE_DOMAINS = (
     "cdn03.quay.io",
     "raw.githubusercontent.com",
     "public.ecr.aws",
+    # ECR Public의 Redis 레이어 redirect도 허용해야 manifest 조회 뒤 pull이 끊기지 않습니다.
+    "d5l0dvt14r5h8.cloudfront.net",
     "ghcr.io",
     "pkg-containers.githubusercontent.com",
     "registry.k8s.io",

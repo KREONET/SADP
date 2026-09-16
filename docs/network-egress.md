@@ -245,7 +245,9 @@ printf 'registry challenge HTTP=%s\n' "${code}"
 
 Devtron 1.5.0/operator chart 0.22.92의 실제 render image 목록은
 `platform/devtron/images.txt`에 고정합니다. 현재 `quay.io`, `public.ecr.aws`와 Quay blob redirect
-`cdn01/02/03.quay.io`가 생성 Squid 계약에 포함됩니다. 생성된 `squid.conf`를 직접 고치지 않습니다.
+`cdn01/02/03.quay.io`, ECR Public 레이어 redirect `d5l0dvt14r5h8.cloudfront.net`이 생성 Squid 계약에 포함됩니다.
+Registry manifest 조회에 성공해도 레이어 CDN이 차단되면 Redis 등의 pull은 실패합니다.
+CloudFront 전체 suffix를 허용하지 않고 확인된 다운로드 호스트만 기본 목록에 포함합니다. 생성된 `squid.conf`를 직접 고치지 않습니다.
 private 앱 image에는 별도 pull Secret이 필요하며 kaniko push credential과 재사용하지 않습니다.
 
 ## 7. CoreDNS upstream

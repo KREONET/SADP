@@ -87,6 +87,10 @@ def default_outputs(root: pathlib.Path) -> str:
     squid = (root / "platform/network/squid/squid.conf").read_text(encoding="utf-8")
     if "acme-v02.api.letsencrypt.org" not in squid:
         return "ACME allowlist 누락"
+    if "d5l0dvt14r5h8.cloudfront.net" not in squid:
+        return "ECR Public 레이어 CDN allowlist 누락"
+    if ".cloudfront.net" in squid.split():
+        return "CloudFront 전체 suffix가 허용됨"
     if "registry.npmjs.org" not in squid:
         return "package allowlist 누락"
     if "acl idp_domains dstdomain idp.example.invalid" not in squid:
