@@ -60,7 +60,18 @@ check_installed_config() {
 }
 
 check_acme_egress() {
-  local target
+  local target tls_source
+  tls_source=$(python3 - <<'PY'
+import yaml
+print(yaml.safe_load(open('contracts/platform-production.yaml', encoding='utf-8'))['spec']['tls']['source'])
+PY
+  ) || return 1
+  # 제공 인증서 설치가 사용하지 않는 외부 ACME 서버의 가용성에 의존하지 않게 합니다.
+  case "${tls_source}" in
+    provided) echo '[INFO] TLS_SOURCE=provided: ACME directory 접속 검사를 생략합니다.'; return 0 ;;
+    acme) ;;
+    *) echo '[FAIL] 알 수 없는 TLS source입니다.' >&2; return 1 ;;
+  esac
   for target in \
     https://acme-staging-v02.api.letsencrypt.org/directory \
     https://acme-v02.api.letsencrypt.org/directory; do

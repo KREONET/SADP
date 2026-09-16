@@ -337,5 +337,23 @@ case(
     False,
 )
 
+# 실제 검사 함수를 실행해 제공 인증서는 외부 요청 없이 통과하고 ACME 장애는 계속 차단합니다.
+squid_script = (ROOT / 'scripts/node/install-squid-egress.sh').read_text()
+acme_check = 'check_acme_egress() {' + squid_script.split('check_acme_egress() {', 1)[1].split('\n}\n', 1)[0] + '\n}\n'
+for source, curl_code, expected_calls, expected_code in [('provided', 28, 0, 0), ('acme', 0, 2, 0), ('acme', 28, 1, 28), ('invalid', 0, 0, 1)]:
+    with tempfile.TemporaryDirectory() as temp:
+        root = pathlib.Path(temp)
+        (root / 'contracts').mkdir()
+        (root / 'contracts/platform-production.yaml').write_text(yaml.safe_dump({'spec': {'tls': {'source': source}}}))
+        command = 'set -euo pipefail\nHTTPS_PROXY=http://proxy.example.invalid:3128\n' + acme_check + f'\ncurl() {{ echo call >>calls; return {curl_code}; }}\ncheck_acme_egress\n'
+        result = subprocess.run(['bash', '-c', command], cwd=root, capture_output=True, text=True)
+        count = len((root / 'calls').read_text().splitlines()) if (root / 'calls').exists() else 0
+        if result.returncode == expected_code and count == expected_calls:
+            PASSED += 1
+            print(f'[OK]   Squid ACME 검사 source={source}, curl={curl_code}: 요청 {count}회')
+        else:
+            FAILED += 1
+            print(f'[FAIL] Squid ACME 검사 source={source}: code={result.returncode}, 요청 {count}회')
+
 print(f"통과 {PASSED} / 실패 {FAILED}")
 raise SystemExit(FAILED != 0)

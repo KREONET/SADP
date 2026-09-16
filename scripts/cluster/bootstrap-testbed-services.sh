@@ -6,16 +6,20 @@ source "$(dirname "$0")/../lib/machine-auth.sh"
 source "$(dirname "$0")/../lib/openbao-eso.sh"
 
 SKIP_OPENBAO_OIDC=false
+INIT_ONLY=false
 while (($#)); do
   case "$1" in
     --skip-openbao-oidc) SKIP_OPENBAO_OIDC=true ;;
+    --init-only) INIT_ONLY=true ;;
     -h|--help)
       cat <<'EOF'
-usage: sudo scripts/cluster/bootstrap-testbed-services.sh [--skip-openbao-oidc]
+usage: sudo scripts/cluster/bootstrap-testbed-services.sh [--skip-openbao-oidc] [--init-only]
 
 SADP는 IdP, realm, client, 사용자 또는 그룹을 만들거나 변경하지 않는다.
 OIDC client secret 세 개는 docs/identity-provider.md에 따라 외부 IdP에서 발급한 뒤
 /var/lib/sadp/credentials 아래 root:root 0600 파일로 먼저 배치한다.
+--init-only는 OpenBao 초기화와 복구 재료 저장까지만 수행한다. 잠금 해제와
+정책/KV 설정은 수행하지 않으며, 이미 초기화된 경우 기존 복구 재료를 보존한다.
 EOF
       exit 0
       ;;
@@ -82,6 +86,12 @@ if [[ ${initialized} != true ]]; then
   ok "OpenBao 초기화(3 shares, threshold 2); 복구 재료는 root-only 상태 디렉터리에 저장"
 elif [[ ! -s ${init_file} ]]; then
   die "OpenBao는 이미 초기화됐지만 ${init_file}이 없어 unseal/bootstrap 불가"
+fi
+
+# 무인 설치도 초기화와 명시적 unseal을 별도 단계로 실행할 수 있어야 합니다.
+if [[ ${INIT_ONLY} == true ]]; then
+  ok "OpenBao 초기화 확인 완료; unseal 및 정책/KV 설정은 수행하지 않음"
+  exit 0
 fi
 
 # 초기화 직후나 재기동 뒤 sealed 상태를 bootstrap이 암묵적으로 풀면 운영자가 복구 재료 사용을

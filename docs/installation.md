@@ -543,6 +543,18 @@ sudo bash ./sadp --unseal-openbao --apply
 이미 unsealed이면 두 번째 명령은 생략합니다. unseal 성공 뒤 같은 Git revision에서 원래 cluster
 phase를 다시 실행합니다. bootstrap 순서는 다음과 같이 고정됩니다.
 
+최초 설치에서 초기화 단계를 별도로 실행하려면 다음 명령을 사용합니다. 이 명령은 OpenBao
+초기화와 복구 재료 저장까지만 수행하며, 기존 초기화 재료가 있으면 보존합니다. 사전 발급한
+OIDC client Secret 파일은 이 단계에서도 필요합니다. 이어서 위의 명시적 unseal을 수행하고
+`--init-only` 없이 bootstrap을 실행하면 정책과 KV 설정을 진행합니다.
+
+```bash
+sudo bash scripts/cluster/bootstrap-testbed-services.sh --init-only
+```
+
+`TLS_SOURCE=provided` 사이트에서는 Squid 검사도 사용하지 않는 외부 ACME directory의
+접속을 요구하지 않습니다. Squid 설정 일치·서비스·listener 검사는 계속 수행합니다.
+
 ```text
 OpenBao Pod Running
   → initialized/sealed 검사

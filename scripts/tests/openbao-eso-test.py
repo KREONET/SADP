@@ -74,12 +74,15 @@ case "$*" in
   *"bao status -format=json"*)
     sealed=${MOCK_SEALED:-}
     [[ -n ${sealed} ]] || sealed=$(tr -d '\r\n' <"${MOCK_STATE_FILE}")
-    printf '{"initialized":true,"sealed":%s,"standby":false}\n' "${sealed}"
+    printf '{"initialized":%s,"sealed":%s,"standby":false}\n' "${MOCK_INITIALIZED:-true}" "${sealed}"
     [[ ${sealed} != true ]] || exit 2
     ;;
   *"bao operator unseal"*)
     IFS= read -r _recovery_material
     printf 'false\n' >"${MOCK_STATE_FILE}"
+    ;;
+  *"bao operator init"*)
+    printf '%s\n' '{"root_token":"<PLACEHOLDER>","unseal_keys_b64":["<PLACEHOLDER>","<PLACEHOLDER>","<PLACEHOLDER>"],"unseal_threshold":2}'
     ;;
   "get endpointslice -n openbao -l kubernetes.io/service-name=openbao-active -o json")
     printf '%s\n' '{"items":[{"endpoints":[{"conditions":{"ready":true},"addresses":["192.0.2.1"]}]}]}'
@@ -122,6 +125,7 @@ esac
     (fake_bin / "stat").write_text(
         "#!/usr/bin/env bash\n"
         "[[ ${1:-} == -c && ${2:-} == %u ]] && { echo 0; exit 0; }\n"
+        "[[ ${1:-} == -c && ${2:-} == %u:%g ]] && { echo 0:0; exit 0; }\n"
         "[[ ${1:-} == -c && ${2:-} == %a ]] && { echo 600; exit 0; }\n"
         "exec /usr/bin/stat \"$@\"\n",
         encoding="utf-8",
@@ -272,6 +276,39 @@ esac
         and "<PLACEHOLDER>" not in output,
         "명시적 --apply만 root-only 재료를 stdin으로 전달하고 값 없이 active/Ready를 재확인",
     )
+
+    credentials = state_dir / "credentials"
+    credentials.mkdir()
+    for name in ["secure-demo", "portal", "openbao"]:
+        (credentials / f"oidc-{name}-client-secret").write_text("<PLACEHOLDER>")
+    init_file.unlink()
+    for initialized in ["false", "true"]:
+        log.write_text("")
+        previous = init_file.read_bytes() if init_file.exists() else None
+        result = run_helper(
+            fake_bin, log,
+            "bash scripts/cluster/bootstrap-testbed-services.sh --init-only --skip-openbao-oidc",
+            SADP_STATE_DIR=str(state_dir), MOCK_SEALED="true", MOCK_INITIALIZED=initialized,
+        )
+        calls = log.read_text()
+        check(
+            result.returncode == 0
+            and init_file.exists()
+            and (init_file.stat().st_mode & 0o777) == 0o600
+            and (previous is None or previous == init_file.read_bytes())
+            and ("bao operator init" in calls) == (initialized == "false")
+            and "bao operator unseal" not in calls
+            and "bao audit list" not in calls
+            and "<PLACEHOLDER>" not in result.stdout + result.stderr,
+            f"초기화 전용 실행(initialized={initialized})은 복구 재료를 보존하고 unseal/정책 설정 없이 성공",
+        )
+    log.write_text("")
+    result = run_helper(fake_bin, log,
+                        "bash scripts/cluster/bootstrap-testbed-services.sh --skip-openbao-oidc",
+                        SADP_STATE_DIR=str(state_dir), MOCK_SEALED="true")
+    check(result.returncode != 0 and "sealed 상태" in result.stdout + result.stderr
+          and "bao operator unseal" not in log.read_text(),
+          "기본 bootstrap은 초기화 전용 옵션 추가 후에도 sealed 상태에서 중단")
 
 deploy_text = (ROOT / "scripts/cluster/deploy-testbed-apps.sh").read_text(encoding="utf-8")
 portal_text = (ROOT / "scripts/cluster/install-portal-backend.sh").read_text(encoding="utf-8")
