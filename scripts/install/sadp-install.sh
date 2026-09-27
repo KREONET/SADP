@@ -10,6 +10,7 @@ PHASE=all
 APPLY=false
 ALLOW_DIRTY=false
 NODE_NAME=
+INTERACTIVE=false
 
 usage() {
   cat <<'EOF'
@@ -28,10 +29,12 @@ phase:
   --node-name <name>  hostname -s 대신 WORKER_NODES/CONTROL_PLANE_HOSTNAME의 이름 사용
   --allow-dirty       render --apply에서 기존 worktree 변경을 검토했음을 명시
   --apply             실제 적용. all은 유지보수 중단을 포함해 자동 재시작함
+  --interactive       질문으로 --env-file을 생성한 뒤 같은 phase 실행
 
 안전한 기본 동작:
   --apply가 없으면 site.env와 실행 계획만 검사한다. 개별 node/cluster --apply는
   checkout이 site.env와 정확히 일치해야 한다. all은 렌더한 생성물만 commit/push한다.
+  --interactive는 --apply 없이도 답변을 검증해 env 파일을 저장한 뒤 계획을 출력한다.
 EOF
 }
 
@@ -42,6 +45,7 @@ while (($#)); do
     --node-name) NODE_NAME=${2:?--node-name 값 필요}; shift ;;
     --allow-dirty) ALLOW_DIRTY=true ;;
     --apply) APPLY=true ;;
+    --interactive) INTERACTIVE=true ;;
     -h|--help) usage; exit 0 ;;
     *) printf '[FAIL] 알 수 없는 인자: %s\n' "$1" >&2; usage >&2; exit 2 ;;
   esac
@@ -52,6 +56,13 @@ case "${PHASE}" in
   render|node|cluster|all) ;;
   *) printf '[FAIL] --phase는 render|node|cluster|all 중 하나여야 함\n' >&2; exit 2 ;;
 esac
+if [[ ${INTERACTIVE} == true ]]; then
+  args=(--output "${ENV_FILE}" --phase "${PHASE}")
+  [[ ${APPLY} == false ]] || args+=(--apply)
+  [[ -z ${NODE_NAME} ]] || args+=(--node-name "${NODE_NAME}")
+  [[ ${ALLOW_DIRTY} == false ]] || args+=(--allow-dirty)
+  exec python3 scripts/install/sadp-install-wizard.py "${args[@]}"
+fi
 [[ -r ${ENV_FILE} ]] || { printf '[FAIL] site.env를 읽을 수 없음: %s\n' "${ENV_FILE}" >&2; exit 1; }
 if [[ ${PHASE} == all ]]; then
   args=(--env-file "${ENV_FILE}")

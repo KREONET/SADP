@@ -110,13 +110,17 @@ SECTIONS: tuple[tuple[str, tuple[Question, ...]], ...] = (
         "통합 설치 선택",
         (
             Question("SADP_INSTALL_GITOPS", "Argo GitOps를 구성할지", ("true", "false")),
-            Question("SADP_ARGO_REPO_USERNAME", "Argo 저장소 사용자명"),
+            Question("SADP_ARGO_REPO_USERNAME", "Argo 저장소·Git push 인증 사용자명"),
             Question("SADP_ARGO_REPO_TOKEN_FILE", "Argo read token 파일 경로"),
+            Question("SADP_GIT_PUSH_TOKEN_FILE", "Git push token 파일 경로(credential helper 사용은 -)", optional=True),
+            Question("SADP_SSH_USER", "worker SSH 사용자(비밀번호 없는 sudo 필요)"),
             Question("SADP_DNS_TSIG_SECRET_FILE", "RFC2136 TSIG 파일 경로"),
             Question("SADP_INSTALL_MONITORING", "Prometheus/Loki/Alloy를 설치할지", ("true", "false")),
             Question("SADP_BUILD_IMAGES", "SADP 이미지를 빌드할지", ("true", "false")),
+            Question("SADP_PREBUILT_BUNDLE", "사전 빌드 bundle 경로(기존 이미지 사용은 -)", optional=True),
             Question("SADP_BUILD_NODE", "빌드 worker 이름(자동 선택은 -)", optional=True),
             Question("SADP_DEPLOY_APPS", "기본 앱을 배포할지", ("true", "false")),
+            Question("SADP_PORTAL_FORGEJO_TOKEN_FILE", "Portal 봇 Forgejo token 파일 경로"),
             Question("SADP_REGISTRY_PULL_DOCKERCONFIG", "Registry pull dockerconfig 경로"),
             Question("SADP_REGISTRY_PUSH_DOCKERCONFIG", "Registry push dockerconfig 경로"),
             Question("SADP_RUN_VERIFY", "설치 뒤 acceptance를 실행할지", ("true", "false")),
@@ -146,8 +150,11 @@ def replace_values(content: str, updates: dict[str, str]) -> str:
         else:
             rendered.append(line)
     missing = sorted(set(updates) - found)
-    if missing:
+    # 이전 env에 없던 질문 항목도 저장해야 설치 필수 입력이 조용히 누락되지 않는다.
+    known = {question.key for _, questions in SECTIONS for question in questions}
+    if set(missing) - known:
         raise ValueError("template에 없는 key: " + ", ".join(missing))
+    rendered.extend(f"{key}={updates[key]}" for key in missing)
     return "\n".join(rendered) + "\n"
 
 
@@ -172,6 +179,8 @@ def answer(question: Question, current: str) -> str:
 def should_ask(question: Question, values: dict[str, str]) -> bool:
     if question.key == "WORKER_NODES":
         return values.get("CLUSTER_MODE", "multi") != "single"
+    if question.key == "SADP_SSH_USER":
+        return values.get("CLUSTER_MODE", "multi") != "single"
     if question.key == "PUBLIC_IP_NODE":
         return values.get("PUBLIC_EXPOSURE_MODE") == "direct"
     if question.key.startswith("RFC2136_") or question.key in {
@@ -185,13 +194,16 @@ def should_ask(question: Question, values: dict[str, str]) -> bool:
         return values.get("TLS_SOURCE") == "acme" and values.get("DNS01_MODE") == "delegated-rfc2136"
     if question.key in {"PROVIDED_CERTIFICATE_PATH", "PROVIDED_PRIVATE_KEY_PATH"}:
         return values.get("TLS_SOURCE") == "provided"
-    if question.key in {"SADP_ARGO_REPO_USERNAME", "SADP_ARGO_REPO_TOKEN_FILE"}:
+    if question.key == "SADP_ARGO_REPO_TOKEN_FILE":
         return values.get("SADP_INSTALL_GITOPS") == "true"
+    if question.key == "SADP_PREBUILT_BUNDLE":
+        return values.get("SADP_BUILD_IMAGES") != "true"
     if question.key == "SADP_BUILD_NODE":
         return values.get("SADP_BUILD_IMAGES") == "true"
     if question.key in {
         "SADP_REGISTRY_PULL_DOCKERCONFIG",
         "SADP_REGISTRY_PUSH_DOCKERCONFIG",
+        "SADP_PORTAL_FORGEJO_TOKEN_FILE",
     }:
         return values.get("SADP_DEPLOY_APPS") == "true"
     return True
@@ -203,8 +215,7 @@ def clear_inactive(values: dict[str, str]) -> None:
     if values.get("PUBLIC_EXPOSURE_MODE") != "direct":
         values["PUBLIC_IP_NODE"] = ""
     if values.get("TLS_SOURCE") == "acme":
-        values["PROVIDED_CERTIFICATE_PATH"] = ""
-        values["PROVIDED_PRIVATE_KEY_PATH"] = ""
+        # 공통 계약 검증은 ACME에서도 PEM 경로를 요구하므로 사용하지 않는 기본 경로는 보존한다.
         if values.get("DNS01_MODE") != "delegated-rfc2136":
             values["ACME_DELEGATION_TYPE"] = ""
             values["ACME_DELEGATED_ZONE"] = ""
@@ -213,11 +224,13 @@ def clear_inactive(values: dict[str, str]) -> None:
         # provided 모드는 운영 PEM을 이미 확보한 설치 방식이므로 HTTPS 준비 상태와 함께 기록한다.
         values["EXISTING_GATEWAY_TLS_READY"] = "true"
     if values.get("SADP_INSTALL_GITOPS") != "true":
-        values["SADP_ARGO_REPO_USERNAME"] = ""
         values["SADP_ARGO_REPO_TOKEN_FILE"] = ""
+    if values.get("SADP_BUILD_IMAGES") == "true":
+        values["SADP_PREBUILT_BUNDLE"] = ""
     if values.get("SADP_BUILD_IMAGES") != "true":
         values["SADP_BUILD_NODE"] = ""
     if values.get("SADP_DEPLOY_APPS") != "true":
+        values["SADP_PORTAL_FORGEJO_TOKEN_FILE"] = ""
         values["SADP_REGISTRY_PULL_DOCKERCONFIG"] = ""
         values["SADP_REGISTRY_PUSH_DOCKERCONFIG"] = ""
 
@@ -306,10 +319,15 @@ def main() -> int:
     content = source.read_text(encoding="utf-8")
     values = parse_values(content)
     values.setdefault("CLUSTER_MODE", "multi")
+    values.setdefault("SADP_SSH_USER", "root")
 
     print("SADP 대화형 설치 준비")
     print("- Enter: 현재값 유지, - 입력: 선택값 비우기")
     print("- password/token/private key 본문은 묻지 않고 root 전용 파일 경로만 받습니다.")
+    if args.apply:
+        print(f"- 저장 후 {args.phase} phase를 실제 적용합니다.")
+        if args.phase == "all":
+            print("- Git commit/push와 노드 순차 재시작에 따른 서비스 중단이 포함됩니다.")
     for title, questions in SECTIONS:
         print(f"\n== {title} ==")
         for question in questions:
@@ -356,4 +374,8 @@ def main() -> int:
 
 
 if __name__ == "__main__":
-    raise SystemExit(main())
+    try:
+        raise SystemExit(main())
+    except (EOFError, KeyboardInterrupt, RuntimeError, OSError, ValueError) as error:
+        print(f"\n[FAIL] 질문형 설치 중단: {error}", file=sys.stderr)
+        raise SystemExit(1)

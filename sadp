@@ -93,6 +93,7 @@ SADP 설치 명령어
 
 옵션은 그대로 대상 스크립트에 전달됩니다.
   bash ./sadp --install --env-file /etc/sadp/site.env --phase render
+  sudo bash ./sadp --install --interactive --apply
   sudo bash ./sadp --install --env-file /etc/sadp/site.env --phase node --apply
   sudo bash ./sadp --install --env-file /etc/sadp/site.env --phase cluster --apply
 

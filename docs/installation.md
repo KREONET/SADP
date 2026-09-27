@@ -34,6 +34,12 @@
 sudo bash ./sadp --install --env-file /etc/sadp/site.env --apply
 ```
 
+env 파일을 질문·답변으로 만들면서 설치하려면 같은 명령에 `--interactive`를 붙입니다.
+
+```bash
+sudo bash ./sadp --install --interactive --apply
+```
+
 `--phase all`이 기본입니다. 다음 입력과 권한을 먼저 준비합니다.
 
 - Git 밖의 `site.env`: root 소유 `0600`, 쓰기 가능한 디렉터리. 실제 사이트 값이어야 합니다.
@@ -97,6 +103,20 @@ sudo bash ./sadp --install-wizard
 ```bash
 sudo bash ./sadp --install-wizard --phase all
 ```
+
+원클릭 설치 진입점에서도 질문형을 선택할 수 있습니다. `--env-file`은 답변을 저장할 경로이며,
+기본값은 `/etc/sadp/site.env`입니다.
+
+```bash
+# 질문 → env 검증·저장 → 설치 계획
+sudo bash ./sadp --install --interactive
+# 질문 → env 검증·저장 → 실제 설치(노드 재시작 포함)
+sudo bash ./sadp --install --interactive --apply
+```
+
+마법사는 worker SSH 계정, Git push token 파일, Portal 봇 token 파일, 사전 빌드 bundle도
+질문합니다. Secret 파일 자체와 외부 OIDC client는 미리 준비해야 합니다. 저장 확인을 취소하거나
+입력이 중단되면 설치를 실행하지 않습니다. `--install-wizard --phase all --apply`도 같은 흐름입니다.
 
 기존 파일이 있으면 그 값을 기본 답변으로 사용합니다. 고급 `SYSTEMS`, 외부 서비스, machine-auth,
 상위 SAML IdP 설정은 마법사 실행 후 [사이트 설정](site-configuration.md)에 따라 편집합니다.
