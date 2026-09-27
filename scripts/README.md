@@ -25,6 +25,13 @@ sudo bash ./sadp --install-wizard --phase all
 # 1. 입력과 전체 계획 검사. 호스트나 클러스터를 바꾸지 않음
 bash ./sadp --install --env-file /etc/sadp/site.env --phase all
 
+# 2. control-plane에서 생성물 반영·전체 노드 재시작·TLS·앱 설치까지 자동 실행
+sudo bash ./sadp --install --env-file /etc/sadp/site.env --apply
+```
+
+개별 단계를 수동으로 실행할 수도 있습니다.
+
+```bash
 # 2. 계약과 생성물을 쓰기. 생성 diff를 검토해 commit/push
 bash ./sadp --install --env-file /etc/sadp/site.env --phase render --apply
 
@@ -35,9 +42,10 @@ sudo bash ./sadp --install --env-file /etc/sadp/site.env --phase node --apply
 sudo bash ./sadp --install --env-file /etc/sadp/site.env --phase cluster --apply
 ```
 
-`--phase all --apply`는 안전상 거부됩니다. `node`와 `cluster` 사이에 관리자가 노드를 한 대씩
-drain/restart/Ready 확인해야 하기 때문입니다. `render` 외 phase는 checkout이 `site.env`에서
-생성될 결과와 같은지 먼저 확인합니다. 설치기는 생성물을 자동 commit/push하지 않습니다.
+기본 `all --apply`만 생성물 commit/push, etcd snapshot, SSH를 통한 노드 순차
+drain/restart/새 lease·Ready 확인을 자동 수행합니다. 준비 조건과 실패 복구는
+[통합 설치](../docs/installation.md)를 따릅니다. 개별 `node/cluster`는 checkout과 env의
+동기화를 요구하며 자동 commit/push나 RKE2 재시작을 하지 않습니다.
 
 ## site — 워크스테이션에서 실행
 
@@ -78,7 +86,7 @@ bash ./sadp --render-all
 
 앞의 다섯 스크립트는 `--apply` 2단계입니다. Squid/DNS 설치기는 통합 설치기의 node apply에서만
 자동 호출되며, 직접 호출할 때는 기본 동작이 실제 변경일 수 있으므로 각 `--help`를 먼저 봅니다.
-어떤 스크립트도 RKE2를 자동 재시작하지 않습니다.
+개별 노드 스크립트는 RKE2를 자동 재시작하지 않습니다. 통합 `all --apply`만 예외입니다.
 
 원툴 설치는 `site.env`와 생성물 동기화를 먼저 확인합니다. `SQUID_INTERNAL_IP` 담당 노드에서는
 Squid를 containerd proxy보다 먼저 설치하며, cluster phase는 Devtron/Helm chart/image 작업 전에
@@ -126,7 +134,7 @@ cluster apply는 TLS 진행 상태를 읽습니다. 운영 인증서가 아직 R
 
 cluster apply는 외부 OIDC client secret이 root-only 파일로 준비됐는지 확인하고 OpenBao→ESO 소비
 설정만 수렴합니다. IdP realm/tenant/client/user/group이나 SAML broker 설정은 변경하지 않습니다.
-`--phase all --apply`의 노드 재시작 안전 경계도 그대로 유지됩니다.
+`all --apply`는 초기화 뒤 별도 unseal apply를 호출하고 TLS 준비 단계도 자동으로 이어갑니다.
 
 ## 검수와 운영
 

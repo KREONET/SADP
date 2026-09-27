@@ -1,0 +1,330 @@
+#!/usr/bin/env python3
+"""호스트를 바꾸지 않고 무인 설치의 중단·재시작·TLS 기록 경계를 검증한다."""
+import importlib.util
+import io
+import json
+import os
+from pathlib import Path
+import subprocess
+import tempfile
+import tarfile
+import unittest
+from unittest.mock import patch
+
+ROOT = Path(__file__).resolve().parents[2]
+spec = importlib.util.spec_from_file_location("install_all", ROOT / "scripts/install/sadp-install-all.py")
+mod = importlib.util.module_from_spec(spec)
+spec.loader.exec_module(mod)
+EXAMPLE = (ROOT / "environments/site.env.example").read_text()
+
+
+class Simulation(mod.Installer):
+    def __init__(self, path):
+        super().__init__(path)
+        self.events = []
+        self.fail_phase = False
+        self.fail_drain = False
+        self.cordoned = False
+        self.bad_certificate = False
+
+    def kctl(self, *args, **kwargs):
+        self.events.append(args)
+        if args[0] == "drain" and self.fail_drain:
+            raise mod.InstallError("PDB rejected drain")
+        if args[:2] == ("get", "node"):
+            body = {"spec": {"unschedulable": self.cordoned}}
+        elif args[:2] == ("get", "certificate"):
+            tls = self.cfg["tls"]
+            suffix = "-staging" if tls["issuerMode"] == "staging" else ""
+            body = {"metadata": {"generation": 2},
+                    "spec": {"issuerRef": {"name": tls["clusterIssuerName"] + suffix}},
+                    "status": {"conditions": [{"type": "Ready", "status": "True",
+                                                "observedGeneration": 1 if self.bad_certificate else 2}]}}
+        else:
+            body = {}
+        return subprocess.CompletedProcess(args, 0, json.dumps(body).encode())
+
+    def phase(self, phase, **kwargs):
+        self.events.append((phase, self.cfg["tls"]["issuerMode"], self.cfg["tls"]["existingReady"]))
+        if self.fail_phase:
+            raise mod.InstallError("platform unavailable")
+
+    def publish(self):
+        self.events.append(("publish", self.cfg["tls"]["issuerMode"], self.cfg["tls"]["existingReady"]))
+
+    def wait_node(self, name):
+        self.events.append(("ready", name))
+
+
+class InstallAllTest(unittest.TestCase):
+    def setUp(self):
+        self.temp = tempfile.TemporaryDirectory()
+        self.addCleanup(self.temp.cleanup)
+        self.env = Path(self.temp.name) / "site.env"
+        self.env.write_text(EXAMPLE)
+        self.installer = Simulation(self.env)
+
+    def test_default_plan_never_changes_host_or_env(self):
+        result = subprocess.run(["bash", "./sadp", "--install", "--env-file", str(self.env)],
+                                cwd=ROOT, capture_output=True, text=True)
+        self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertIn("[PLAN]", result.stdout)
+        self.assertEqual(self.env.read_text(), EXAMPLE)
+
+    def test_staging_to_production_to_https_in_one_run(self):
+        self.installer.finish_tls()
+        steps = [e for e in self.installer.events if e[0] in ("cluster", "publish")]
+        self.assertEqual(steps, [("cluster", "staging", False), ("publish", "production", False),
+                                 ("cluster", "production", False), ("publish", "production", True),
+                                 ("cluster", "production", True)])
+        values = mod.site.parse_env(self.env)
+        self.assertEqual(values["ACME_STAGING_VERIFIED"], "true")
+        self.assertEqual(values["EXISTING_GATEWAY_TLS_READY"], "true")
+        self.assertEqual(self.env.stat().st_mode & 0o777, 0o600)
+
+    def test_failed_platform_does_not_advance_env(self):
+        self.installer.fail_phase = True
+        with self.assertRaises(mod.InstallError):
+            self.installer.finish_tls()
+        self.assertEqual(self.env.read_text(), EXAMPLE)
+
+    def test_stale_ready_condition_does_not_advance_env(self):
+        self.installer.bad_certificate = True
+        with self.assertRaises(mod.InstallError):
+            self.installer.finish_tls()
+        self.assertEqual(self.env.read_text(), EXAMPLE)
+
+    def test_resume_production_does_not_reissue_staging(self):
+        mod.atomic_env_update(self.env, {"ACME_STAGING_VERIFIED": "true", "TLS_ISSUER_MODE": "production"})
+        self.installer.reload()
+        self.installer.finish_tls()
+        self.assertNotIn(("cluster", "staging", False), self.installer.events)
+
+    def test_provided_tls_skips_acme_promotion(self):
+        mod.atomic_env_update(self.env, {"TLS_SOURCE": "provided", "EXISTING_GATEWAY_TLS_READY": "true"})
+        self.installer.reload()
+        self.installer.finish_tls()
+        self.assertEqual(len(self.installer.events), 1)
+
+    def test_invalid_tls_transition_is_atomic(self):
+        with self.assertRaises(mod.site.ConfigError):
+            mod.atomic_env_update(self.env, {"TLS_ISSUER_MODE": "production"})
+        self.assertEqual(self.env.read_text(), EXAMPLE)
+
+    def test_drain_failure_prevents_configuration_and_restart(self):
+        i = self.installer
+        i.fail_drain = True
+        with self.assertRaises(mod.InstallError):
+            i.restart_node("worker", lambda: i.events.append(("configure",)), lambda: i.events.append(("restart",)))
+        self.assertFalse(any(e[0] in ("configure", "restart", "uncordon") for e in i.events))
+
+    def test_restart_failure_keeps_node_cordoned(self):
+        def fail():
+            raise mod.InstallError("restart failed")
+        with self.assertRaises(mod.InstallError):
+            self.installer.restart_node("worker", lambda: None, fail)
+        self.assertFalse(any(e[0] == "uncordon" for e in self.installer.events))
+
+    def test_success_uncordons_only_after_ready(self):
+        i = self.installer
+        i.restart_node("worker", lambda: i.events.append(("configure",)), lambda: i.events.append(("restart",)))
+        self.assertEqual([e[0] for e in i.events], ["get", "drain", "configure", "restart", "ready", "uncordon"])
+
+    def test_existing_cordon_is_preserved(self):
+        i = self.installer
+        i.cordoned = True
+        i.restart_node("worker", lambda: None, lambda: None)
+        self.assertFalse(any(e[0] == "uncordon" for e in i.events))
+
+    def test_ssh_uses_noninteractive_strict_host_verification(self):
+        i = self.installer
+        i.cfg["installer"]["sshUser"] = "operator"
+        with patch.object(i, "run") as run:
+            i.ssh("192.0.2.1", "systemctl restart rke2-agent")
+        args = run.call_args.args[0]
+        self.assertIn("StrictHostKeyChecking=yes", args)
+        self.assertIn("BatchMode=yes", args)
+        self.assertIn("sudo -n bash -ceu", args[-1])
+
+    def test_parser_rejects_ssh_option_injection(self):
+        values = mod.site.parse_env(self.env)
+        values["SADP_SSH_USER"] = "-oProxyCommand=bad"
+        with self.assertRaises(mod.site.ConfigError):
+            mod.site.validate(values)
+
+    def test_parser_accepts_only_push_token_path(self):
+        values = mod.site.parse_env(self.env)
+        values["SADP_GIT_PUSH_TOKEN_FILE"] = "/etc/sadp/secrets/git-write"
+        self.assertEqual(mod.site.validate(values)["installer"]["pushTokenFile"], values["SADP_GIT_PUSH_TOKEN_FILE"])
+        values["SADP_GIT_PUSH_TOKEN_FILE"] = "relative/file"
+        with self.assertRaises(mod.site.ConfigError):
+            mod.site.validate(values)
+
+    def test_all_snapshots_before_publish_and_nodes_before_cluster(self):
+        i = self.installer
+        i.state = Path(self.temp.name) / "state"
+        events = []
+
+        def run(args, **kwargs):
+            events.append(tuple(str(a) for a in args))
+            return subprocess.CompletedProcess(args, 0, b"")
+
+        with patch.object(i, "preflight", side_effect=lambda: events.append(("preflight",))), \
+             patch.object(i, "run", side_effect=run), \
+             patch.object(i, "ssh", side_effect=lambda *a, **kw: events.append(("ssh-check",))), \
+             patch.object(i, "publish", side_effect=lambda: events.append(("publish",))), \
+             patch.object(i, "nodes", side_effect=lambda: events.append(("nodes",))), \
+             patch.object(i, "finish_tls", side_effect=lambda: events.append(("cluster",))):
+            i.install()
+        labels = [e[0] for e in events]
+        self.assertLess(labels.index("preflight"), labels.index("publish"))
+        self.assertLess(labels.index("/usr/local/bin/rke2"), labels.index("publish"))
+        self.assertLess(labels.index("publish"), labels.index("nodes"))
+        self.assertLess(labels.index("/usr/local/bin/rke2"), labels.index("nodes"))
+        self.assertLess(labels.index("nodes"), labels.index("cluster"))
+        self.assertEqual(i.process_env["SADP_INSTALL_ALL"], "true")
+
+    def test_push_failure_prevents_host_changes(self):
+        i = self.installer
+        i.state = Path(self.temp.name) / "state"
+        with patch.object(i, "preflight"), patch.object(i, "ssh"), \
+             patch.object(i, "git", side_effect=mod.InstallError("push denied")), \
+             patch.object(i, "nodes") as nodes, patch.object(i, "finish_tls") as cluster:
+            with self.assertRaises(mod.InstallError):
+                i.install()
+        nodes.assert_not_called()
+        cluster.assert_not_called()
+
+    def test_workers_finish_before_control_plane_restart(self):
+        i = self.installer
+        i.node_name = i.cfg["nodes"]["controlHostname"]
+        completed = []
+        with patch.object(i, "prepare_workers"), patch.object(i, "run"), patch.object(i, "ssh"), \
+             patch.object(i, "restart_node", side_effect=lambda name, *_: completed.append(name)):
+            i.nodes()
+        self.assertEqual(completed, [name for name, _ in i.cfg["nodes"]["workers"]] + [i.node_name])
+
+    def test_single_server_needs_no_ssh(self):
+        i = self.installer
+        i.cfg["nodes"]["workers"] = []
+        with patch.object(i, "prepare_workers"), patch.object(i, "run"), \
+             patch.object(i, "ssh") as ssh, patch.object(i, "restart_node") as restart:
+            i.nodes()
+        ssh.assert_not_called()
+        self.assertEqual(restart.call_count, 1)
+
+    def git_fixture(self):
+        repo = Path(self.temp.name) / "repo"
+        repo.mkdir()
+        def git(*args):
+            return subprocess.run(["git", "-c", "user.name=Test", "-c", "user.email=test@example.invalid", *args],
+                                  cwd=repo, check=True, capture_output=True).stdout
+        git("init", "-b", "main")
+        (repo / "contract.yaml").write_text("old: value\n")
+        git("add", "contract.yaml")
+        git("commit", "-m", "base")
+        return repo, git
+
+    def test_worker_archive_excludes_untracked_credentials(self):
+        repo, _ = self.git_fixture()
+        (repo / "private.env").write_text("sensitive fixture")
+        captured = []
+        i = self.installer
+        with patch.object(mod, "ROOT", repo), patch.object(i, "ssh", side_effect=lambda *a, **kw: captured.append(kw["input"])):
+            i.prepare_workers()
+        with tarfile.open(fileobj=io.BytesIO(captured[0])) as archive:
+            self.assertEqual(archive.getnames(), ["contract.yaml"])
+        self.assertEqual(captured[1], self.env.read_bytes())
+
+    def test_publish_commits_only_generated_paths_to_real_git_remote(self):
+        repo, git = self.git_fixture()
+        remote = Path(self.temp.name) / "remote.git"
+        subprocess.run(["git", "init", "--bare", str(remote)], check=True, capture_output=True)
+        i = mod.Installer(self.env)
+        i.cfg["forgejo"]["repoURL"] = str(remote)
+        original_run = i.run
+        def render_or_run(args, **kwargs):
+            if args[0] == "python3":
+                (repo / "contract.yaml").write_text("generated: value\n")
+                (repo / "unrelated.txt").write_text("keep private")
+                return subprocess.CompletedProcess(args, 0)
+            return original_run(args, **kwargs)
+        with patch.object(mod, "ROOT", repo), patch.object(mod.site, "CONTRACT_PATH", repo / "contract.yaml"), \
+             patch.object(mod.site, "prepare_updates", return_value={repo / "contract.yaml": "generated: value\n"}), \
+             patch.object(mod.site, "GENERATED_PATHS", ()), patch.object(i, "run", side_effect=render_or_run):
+            i.publish()
+        self.assertEqual(git("show", "--format=", "--name-only", "HEAD").decode().strip(), "contract.yaml")
+        self.assertEqual(git("status", "--porcelain").decode().strip(), "?? unrelated.txt")
+        self.assertEqual(git("ls-remote", str(remote), "refs/heads/main").decode().split()[0],
+                         i.process_env["SADP_INSTALL_REVISION"])
+
+    def test_cluster_apply_initializes_unseals_and_seeds_before_deploy(self):
+        for fail_init in (False, True):
+            with self.subTest(fail_init=fail_init), tempfile.TemporaryDirectory() as temp:
+                root = Path(temp)
+                script = root / "scripts/install/sadp-install.sh"
+                script.parent.mkdir(parents=True)
+                script.write_text((ROOT / "scripts/install/sadp-install.sh").read_text())
+                token = root / "token"
+                token.write_text("fixture only")
+                env_file = root / "site.env"
+                env_file.write_text(EXAMPLE)
+                cfg = mod.site.validate(mod.site.parse_env(env_file))
+                cfg["baseDomain"] = "fixture.invalid"
+                cfg["forgejo"]["repoURL"] = "https://fixture.invalid/repo/site.git"
+                cfg["registry"]["host"] = "registry.fixture.invalid"
+                cfg["network"]["publicIP"] = "198.18.0.1"
+                cfg["tls"].update(source="provided", existingReady=True)
+                cfg["installer"].update(gitops=False, installMonitoring=False, buildImages=False,
+                                        portalTokenFile=str(token), registryPullDockerconfig=str(token),
+                                        registryPushDockerconfig=str(token))
+                values = root / "validated.env"
+                values.write_text(mod.site.install_env(cfg))
+                bin_dir = root / "bin"
+                bin_dir.mkdir()
+                executables = {
+                    "id": "echo 0\n",
+                    "stat": 'if [[ "$2" == "%u" ]]; then echo 0; else echo 600; fi\n',
+                    "python3": 'if [[ "$*" == *--print-install-env* ]]; then cat "$VALIDATED_ENV"; fi\n',
+                    "kubectl": 'if [[ "$*" == *status.sync.revision* ]]; then printf "%s" "$SADP_INSTALL_REVISION"; '
+                               'elif [[ "$*" == *status.sync.status* ]]; then echo Synced; fi\n',
+                }
+                for name, body in executables.items():
+                    path = bin_dir / name
+                    path.write_text("#!/usr/bin/env bash\n" + body)
+                    path.chmod(0o700)
+                paths = ("scripts/verify/verify-squid-egress.sh", "scripts/cluster/install-local-path-storage.sh",
+                         "scripts/cluster/preflight.sh", "scripts/node/install-docker-proxy.sh",
+                         "scripts/cluster/install-devtron.sh", "scripts/cluster/install-testbed-platform.sh",
+                         "scripts/cluster/bootstrap-testbed-services.sh", "scripts/ops/unseal-openbao.sh",
+                         "scripts/ops/configure-openbao-oidc.sh", "scripts/cluster/install-portal-backend.sh",
+                         "scripts/cluster/deploy-testbed-apps.sh", "scripts/verify/verify-portal-auth.sh",
+                         "scripts/verify/verify-testbed.sh")
+                for name in paths:
+                    path = root / name
+                    path.parent.mkdir(parents=True, exist_ok=True)
+                    path.write_text('printf "%s\\n" "$0 $*" >> "$CALL_LOG"\n'
+                                    'if [[ "$*" == *--init-only* && "$FAIL_INIT" == true ]]; then exit 1; fi\n')
+                log = root / "calls"
+                environment = dict(os.environ, PATH=str(bin_dir) + ":" + os.environ["PATH"],
+                                   VALIDATED_ENV=str(values), CALL_LOG=str(log), FAIL_INIT=str(fail_init).lower(),
+                                   SADP_INSTALL_ALL="true", SADP_INSTALL_REVISION="a" * 40,
+                                   KUBECTL_BIN=str(bin_dir / "kubectl"), SADP_STATE_DIR=str(root / "state"))
+                result = subprocess.run(["bash", str(script), "--phase", "cluster", "--apply",
+                                         "--env-file", str(env_file), "--node-name", cfg["nodes"]["controlHostname"]],
+                                        env=environment, capture_output=True, text=True)
+                self.assertEqual(result.returncode, 1 if fail_init else 0, result.stdout + result.stderr)
+                calls = log.read_text()
+                if fail_init:
+                    self.assertNotIn("unseal-openbao.sh", calls)
+                    self.assertNotIn("deploy-testbed-apps.sh", calls)
+                else:
+                    sequence = ("--init-only", "unseal-openbao.sh --apply", "--skip-openbao-oidc",
+                                "configure-openbao-oidc.sh --apply", "--token-only", "deploy-testbed-apps.sh",
+                                "verify-testbed.sh")
+                    positions = [calls.index(item) for item in sequence]
+                    self.assertEqual(positions, sorted(positions))
+
+
+if __name__ == "__main__":
+    unittest.main()

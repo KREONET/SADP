@@ -23,8 +23,52 @@
 9. acceptance와 인수인계
 ```
 
-`--apply`가 없으면 계획만 확인합니다. `--phase all --apply`는 node와 cluster 사이의 수동 재시작
-경계를 건너뛰므로 거부됩니다.
+위 흐름은 개별 phase로 실행할 때의 절차입니다. 기본 `all --apply`는 같은 순서를 자동으로
+이어갑니다. `--apply`가 없으면 env 검증과 계획 출력만 하며 접속·재시작·Git 쓰기는 하지 않습니다.
+
+### 한 명령으로 설치
+
+기존 RKE2가 Ready인 control-plane에서 실행합니다. OS/RKE2 신규 설치는 포함하지 않습니다.
+
+```bash
+sudo bash ./sadp --install --env-file /etc/sadp/site.env --apply
+```
+
+`--phase all`이 기본입니다. 다음 입력과 권한을 먼저 준비합니다.
+
+- Git 밖의 `site.env`: root 소유 `0600`, 쓰기 가능한 디렉터리. 실제 사이트 값이어야 합니다.
+- 깨끗한 checkout과 `FORGEJO_REVISION`과 같은 현재 branch. 실행하는 root 계정에서
+  `FORGEJO_REPO_URL`의 해당 branch로 fast-forward push가 가능해야 합니다. 보호 branch라면
+  설치용 branch를 사용합니다. 자동 branch 전환·force push·기존 변경의 자동 commit은 하지 않습니다.
+- `SADP_GIT_PUSH_TOKEN_FILE`: 선택적인 root 전용 Git 쓰기 token 파일. 비우면 root의 기존
+  Git credential helper를 사용합니다. 파일을 지정하면 `SADP_ARGO_REPO_USERNAME` 계정으로
+  인증합니다. token은 URL이나 명령행 인자로 넘기지 않습니다.
+- 멀티 노드는 control-plane의 root 계정에서 각 worker 내부 IP로 SSH 접속 가능해야 합니다.
+  `SADP_SSH_USER`는 기본 `root`이며 다른 계정은 비밀번호 없는 sudo가 필요합니다.
+  SSH key와 검증된 known_hosts를 준비합니다. 미확인 host key는 자동 수락하지 않습니다.
+  worker에는 Python 3/PyYAML·tar와 실행 중인 RKE2 agent가 필요합니다.
+- 기존 설치와 같은 OIDC client Secret 3개, DNS TSIG(ACME 사용 시), Argo 읽기 token,
+  registry pull/push 파일을 준비합니다. 앱 배포를 켜면 `SADP_PORTAL_FORGEJO_TOKEN_FILE`도
+  지정합니다. Portal 봇의 저장소/PR 권한을 가진 token이며 Argo 읽기 token과 별개입니다.
+- control-plane에 Git, Helm, Python 3/PyYAML, jq, OpenSSL, Docker와 RKE2 도구가 필요합니다.
+  제공 인증서를 쓰면 기존 `PROVIDED_CERTIFICATE_PATH`/`PROVIDED_PRIVATE_KEY_PATH` 또는
+  Gateway의 기존 TLS Secret을 준비합니다.
+
+설치기는 etcd snapshot을 만든 뒤 env 렌더·회귀 검사와 생성물 commit/push를 수행하고,
+worker를 한 대씩 drain·설정·재시작합니다. 새 Node lease와 Ready를 확인한 뒤 원래
+스케줄 가능했던 노드만 uncordon합니다. control-plane과 Docker도 재시작하므로 서비스 중단이
+발생합니다. PDB/drain 실패를 강제로 우회하지 않으며 실패한 노드는 cordon 상태로 남습니다.
+worker에는 Git 추적 파일만 묶은 설치본과 root-only env를 전송하며 Secret 본문은 전송하지 않습니다.
+
+ACME는 staging 인증서의 현재 generation Ready를 확인한 뒤에만 production으로 올리고,
+운영 인증서가 준비되면 HTTPS 진행값을 원본 env에 원자적으로 기록합니다. 각 전환마다
+재렌더·commit/push하고 Argo의 해당 revision 동기화를 기다립니다. OpenBao 초기화·명시적
+unseal, 서비스 Secret 설정, 선택한 이미지·앱 배포와 검수까지 이어집니다.
+
+중간 실패는 종료 코드 1로 중단됩니다. 원인을 해결한 뒤 같은 명령을 다시 실행하면 완료된
+TLS 단계는 유지하며 설치 단계를 다시 검증합니다. 노드 재시작은 다시 수행합니다. 이전 실패로
+cordon이 남은 노드는 자동 해제하지 않으므로 상태를 확인해 복구해야 합니다. Git commit 자체가
+실패해 생성물이 dirty로 남았으면 변경을 검토·정리한 뒤 재실행합니다.
 
 ## 설치 입력 방식 선택
 
@@ -351,8 +395,8 @@ bash ./sadp --verify-squid
 
 ## 6. 나머지 노드 적용과 수동 재시작
 
-control-plane과 각 worker에서 같은 node 계획·적용 명령을 실행합니다. 설치기는 RKE2와 Docker를
-자동 재시작하지 않습니다.
+개별 phase로 설치할 때 control-plane과 각 worker에서 같은 node 계획·적용 명령을 실행합니다.
+이 개별 단계는 RKE2와 Docker를 자동 재시작하지 않습니다. 통합 all은 위 절차를 자동 수행합니다.
 
 권장 순서는 다음과 같습니다.
 

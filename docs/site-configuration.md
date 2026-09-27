@@ -46,6 +46,8 @@ SADP_ARGO_REPO_TOKEN_FILE=/etc/sadp/secrets/<FORGEJO_READ_TOKEN_FILE>
 SADP_DNS_TSIG_SECRET_FILE=/etc/sadp/secrets/<RFC2136_TSIG_FILE>
 SADP_REGISTRY_PULL_DOCKERCONFIG=/etc/sadp/secrets/<PULL_DOCKERCONFIG_FILE>
 SADP_REGISTRY_PUSH_DOCKERCONFIG=/etc/sadp/secrets/<PUSH_DOCKERCONFIG_FILE>
+SADP_GIT_PUSH_TOKEN_FILE=/etc/sadp/secrets/<FORGEJO_WRITE_TOKEN_FILE>
+SADP_PORTAL_FORGEJO_TOKEN_FILE=/etc/sadp/secrets/<PORTAL_BOT_TOKEN_FILE>
 ```
 
 pull/push Docker config 경로와 권한은 분리합니다.
@@ -287,18 +289,20 @@ SADP는 SAML SP가 아닙니다. `IDENTITY_SOURCE_PROTOCOL=saml`은 외부 broke
 | `SADP_BUILD_NODE` | 빌드 worker 지정, 비우면 자동 선택 |
 | `SADP_DEPLOY_APPS` | 기본 앱과 Portal 배포 |
 | `SADP_RUN_VERIFY` | Portal 인증과 핵심 검수 실행 |
+| `SADP_SSH_USER` | all에서 worker 접속에 사용할 계정. 기본 root, 다른 계정은 비밀번호 없는 sudo 필요 |
+| `SADP_GIT_PUSH_TOKEN_FILE` | all의 사이트 branch 쓰기 token 파일. 비우면 기존 Git credential helper 사용 |
+| `SADP_PORTAL_FORGEJO_TOKEN_FILE` | all 앱 설치 시 OpenBao에 공급할 Portal 봇 token 파일 |
 
 계획과 적용:
 
 ```bash
 bash ./sadp --install --env-file /etc/sadp/site.env --phase all
-bash ./sadp --install --env-file /etc/sadp/site.env --phase render --apply
-sudo bash ./sadp --install --env-file /etc/sadp/site.env --phase node --apply
-# 노드별 수동 restart/Ready 확인
-sudo bash ./sadp --install --env-file /etc/sadp/site.env --phase cluster --apply
+sudo bash ./sadp --install --env-file /etc/sadp/site.env --apply
 ```
 
-`all`은 계획 전용이라 `--apply`와 함께 쓸 수 없습니다. node/cluster의 no-apply mode는 실제 preflight
+`all --apply`는 생성물 commit/push·노드 순차 재시작·TLS 진행값 갱신까지 포함합니다.
+원본 env는 Git 밖에 두며, SSH/Git 권한과 Secret 파일 준비는 [설치 가이드](installation.md)를 따릅니다.
+개별 node/cluster의 no-apply mode는 실제 preflight
 나 변경을 실행하지 않고 검증된 입력으로 실행할 명령을 출력합니다.
 
 cluster apply는 Devtron/번들 Argo CD가 완전히 없으면 `versions.lock.yaml`의 고정 버전으로 먼저

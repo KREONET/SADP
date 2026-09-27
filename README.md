@@ -46,23 +46,19 @@ sudo install -d -m 0700 /etc/sadp /etc/sadp/secrets
 sudo install -m 0600 environments/site.env.example /etc/sadp/site.env
 sudoedit /etc/sadp/site.env
 
-# 1. 설정 검증 → 생성 → diff 검토 → 사이트 branch에 commit/push
-bash ./sadp --install --env-file /etc/sadp/site.env --phase render
-bash ./sadp --install --env-file /etc/sadp/site.env --phase render --apply
-
-# 2. control-plane과 각 worker에서 자동 역할 판별 후 노드 설정
-sudo bash ./sadp --install --env-file /etc/sadp/site.env --phase node --apply
-
-# 3. 노드별 유지보수 재시작/Ready 확인 뒤 control-plane에서 플랫폼 설치
-sudo bash ./sadp --install --env-file /etc/sadp/site.env --phase cluster --apply
+# control-plane에서 전체 계획 확인 후 한 번에 설치
+sudo bash ./sadp --install --env-file /etc/sadp/site.env
+sudo bash ./sadp --install --env-file /etc/sadp/site.env --apply
 ```
 
 cluster phase는 Devtron과 번들 Argo CD가 완전히 없으면 승인된 고정 버전으로 먼저 설치합니다.
 정확한 기존 설치는 유지하며, 다른 버전이나 부분 설치를 자동 덮어쓰지는 않습니다.
 
 > [!CAUTION]
-> `--apply`가 없으면 검증과 계획 출력만 합니다. 노드 단계는 RKE2를 자동 재시작하지
-> 않습니다. 생성 결과도 자동 commit/push하지 않으므로 GitOps branch를 먼저 검토·배포해야 합니다.
+> `--apply`가 없으면 검증과 계획 출력만 합니다. 기본 `all --apply`는 생성물 commit/push,
+> SSH를 통한 노드 순차 재시작, TLS 진행값 갱신, OpenBao 초기화·unseal까지 수행합니다.
+> 유지보수 창에 실행하며 [통합 설치 선행 조건](docs/installation.md)을 먼저 준비합니다.
+> 개별 `render/node/cluster` phase는 기존 수동 경계를 유지합니다.
 
 ## 아키텍처
 

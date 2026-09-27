@@ -20,7 +20,7 @@ cd "${ROOT}"
 COMMANDS=$(
   cat <<'TABLE'
 GROUP:install — site.env 기반·대화형 통합 설치
-install|bash|scripts/install/sadp-install.sh|render/node/cluster phase를 검증된 env 값으로 자동 실행
+install|bash|scripts/install/sadp-install.sh|env 기반 단일 명령 설치(all) 또는 render/node/cluster 개별 실행
 install-wizard|python3|scripts/install/sadp-install-wizard.py|질문과 답변으로 site.env를 만들고 같은 설치 phase 실행
 GROUP:site — 계약과 생성물 (워크스테이션, 클러스터 불필요)
 configure-site|python3|scripts/site/configure-site.py|site.env -> 계약. 기본 read-only, --write 필요

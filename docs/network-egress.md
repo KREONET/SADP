@@ -91,15 +91,16 @@ node phase가 자동 역할 판별 후 수행하는 일:
 Devtron/Helm chart 작업 전에 Squid를 다시 확인하고 Prometheus/Loki/Alloy 이미지를 이 경로로
 모든 노드에 선배포합니다.
 
-Docker daemon은 셸의 `HTTP_PROXY`만으로 바뀌지 않습니다. control-plane node phase 적용 후
+Docker daemon은 셸의 `HTTP_PROXY`만으로 바뀌지 않습니다. 개별 control-plane node phase 적용 후
 `systemctl restart docker`를 사람이 실행하고 다음 검사를 통과시킵니다.
 
 ```bash
 sudo bash ./sadp --install-docker-proxy --check
 ```
 
-설치기는 RKE2를 자동 재시작하지 않습니다. worker를 한 대씩 drain → `rke2-agent` restart →
+개별 노드 설치기는 RKE2를 자동 재시작하지 않습니다. worker를 한 대씩 drain → `rke2-agent` restart →
 Ready → uncordon하고 마지막에 승인된 창에서 server를 재시작합니다.
+통합 `--install --apply`는 이 순서와 Docker 재시작을 자동으로 수행합니다.
 
 ### 개별 identity 진단
 

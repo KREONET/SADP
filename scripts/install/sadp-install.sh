@@ -16,22 +16,22 @@ usage() {
 SADP 통합 설치기
 
 사용법:
-  sudo bash ./sadp --install --env-file /etc/sadp/site.env --phase <phase> [--apply]
+  sudo bash ./sadp --install --env-file /etc/sadp/site.env [--phase <phase>] [--apply]
 
 phase:
   render   site.env 검증과 계약/매니페스트 생성. 실제 클러스터는 변경하지 않음
   node     현재 호스트 이름으로 server/agent를 판별해 노드 설정 적용
   cluster  control-plane에서 GitOps/플랫폼/서비스/앱/검수를 순서대로 실행
-  all      읽기 전용으로 node + cluster 전체 계획 검사(--apply와 함께 사용할 수 없음)
+  all      env 렌더·GitOps 반영·노드 순차 재시작·TLS 전환·서비스 설치(기본)
 
 옵션:
   --node-name <name>  hostname -s 대신 WORKER_NODES/CONTROL_PLANE_HOSTNAME의 이름 사용
   --allow-dirty       render --apply에서 기존 worktree 변경을 검토했음을 명시
-  --apply             계획 출력이 아니라 실제 적용. RKE2 서비스는 자동 재시작하지 않음
+  --apply             실제 적용. all은 유지보수 중단을 포함해 자동 재시작함
 
 안전한 기본 동작:
-  --apply가 없으면 site.env와 전체 실행 계획만 검사한다. render 이외 phase의 --apply는
-  현재 checkout이 site.env와 정확히 일치해야 하며, 생성물을 자동 commit/push하지 않는다.
+  --apply가 없으면 site.env와 실행 계획만 검사한다. 개별 node/cluster --apply는
+  checkout이 site.env와 정확히 일치해야 한다. all은 렌더한 생성물만 commit/push한다.
 EOF
 }
 
@@ -53,9 +53,12 @@ case "${PHASE}" in
   *) printf '[FAIL] --phase는 render|node|cluster|all 중 하나여야 함\n' >&2; exit 2 ;;
 esac
 [[ -r ${ENV_FILE} ]] || { printf '[FAIL] site.env를 읽을 수 없음: %s\n' "${ENV_FILE}" >&2; exit 1; }
-if [[ ${APPLY} == true && ${PHASE} == all ]]; then
-  printf '[FAIL] all phase는 계획 검사 전용이다. node를 적용하고 수동 재시작/Ready 확인 후 cluster를 별도로 적용해야 함\n' >&2
-  exit 1
+if [[ ${PHASE} == all ]]; then
+  args=(--env-file "${ENV_FILE}")
+  [[ ${APPLY} == false ]] || args+=(--apply)
+  [[ -z ${NODE_NAME} ]] || args+=(--node-name "${NODE_NAME}")
+  [[ ${ALLOW_DIRTY} == false ]] || args+=(--allow-dirty)
+  exec python3 scripts/install/sadp-install-all.py "${args[@]}"
 fi
 if [[ ${APPLY} == true && $(id -u) -ne 0 && ${PHASE} != render ]]; then
   printf '[FAIL] node/cluster 적용은 root로 실행해야 함\n' >&2
@@ -258,6 +261,27 @@ PY
   die "Argo Application 생성 timeout: ${missing[*]}"
 }
 
+wait_for_install_revision() {
+  local application deadline revision status
+  [[ ${SADP_INSTALL_ALL:-false} == true ]] || return 0
+  [[ ${SADP_INSTALL_REVISION:-} =~ ^[0-9a-f]{40}$ ]] || die "통합 설치 Git revision 없음"
+  for application in platform-bootstrap platform-resources; do
+    kctl annotate applications.argoproj.io -n devtroncd "${application}" \
+      argocd.argoproj.io/refresh=hard --overwrite >/dev/null
+    deadline=$((SECONDS + 900))
+    while ((SECONDS < deadline)); do
+      revision=$(kctl get applications.argoproj.io -n devtroncd "${application}" \
+        --request-timeout=15s -o jsonpath='{.status.sync.revision}' 2>/dev/null || true)
+      status=$(kctl get applications.argoproj.io -n devtroncd "${application}" \
+        --request-timeout=15s -o jsonpath='{.status.sync.status}' 2>/dev/null || true)
+      [[ ${revision} != "${SADP_INSTALL_REVISION}" || ${status} != Synced ]] || break
+      sleep 5
+    done
+    [[ ${revision} == "${SADP_INSTALL_REVISION}" && ${status} == Synced ]] \
+      || die "${application}이 이번 설치 revision으로 동기화되지 않음"
+  done
+}
+
 # Devtron Helm repository와 뒤의 외부 image pull을 시작하기 전에 실제 허용/차단 요청으로 Squid를
 # 확인한다. proxy.env 파일 존재만 검사하면 daemon 미기동이나 잘못된 allowlist를 늦게 발견한다.
 step "패키지·차트 설치 전 Squid egress 확인" bash scripts/verify/verify-squid-egress.sh
@@ -331,6 +355,9 @@ platform_install=(bash scripts/cluster/install-testbed-platform.sh)
 [[ ${monitoring_images_preloaded} != true ]] \
   || platform_install+=(--skip-monitoring-image-sync)
 step "SADP 플랫폼 기반 서비스 설치" "${platform_install[@]}"
+if [[ ${APPLY} == true ]]; then
+  wait_for_install_revision
+fi
 
 if [[ ${EXISTING_GATEWAY_TLS_READY} != true ]]; then
   note "TLS 인증서 준비 단계이므로 서비스 초기화·앱 배포·검수를 보류한다"
@@ -347,6 +374,13 @@ elif [[ ${SADP_BUILD_IMAGES} == true ]]; then
   step "SADP 로컬 이미지 빌드와 전체 노드 import" "${build[@]}"
 fi
 
+if [[ ${SADP_INSTALL_ALL:-false} == true ]]; then
+  # 단일 명령 설치가 복구 재료 사용까지 명시적으로 수행한다. 개별 cluster 경계는 유지한다.
+  step "OpenBao 초기화와 root-only 복구 재료 준비" \
+    bash scripts/cluster/bootstrap-testbed-services.sh --init-only
+  step "OpenBao 명시적 unseal 및 active Ready" bash scripts/ops/unseal-openbao.sh --apply
+fi
+
 step "OpenBao 서비스 초기화(OIDC config 제외)" \
   bash scripts/cluster/bootstrap-testbed-services.sh --skip-openbao-oidc
 
@@ -359,6 +393,11 @@ if [[ ${SADP_DEPLOY_APPS} == true ]]; then
   if [[ ${APPLY} == true ]]; then
     require_input_file "${SADP_REGISTRY_PULL_DOCKERCONFIG}" "Registry pull Docker config"
     require_input_file "${SADP_REGISTRY_PUSH_DOCKERCONFIG}" "Registry push Docker config"
+  fi
+  if [[ ${SADP_INSTALL_ALL:-false} == true ]]; then
+    step "Portal Forgejo 봇 자격증명을 OpenBao에 공급" \
+      bash scripts/cluster/install-portal-backend.sh --token-only \
+        --forgejo-token-file "${SADP_PORTAL_FORGEJO_TOKEN_FILE:?통합 설치 Portal token 파일 필요}"
   fi
   step "기본 앱과 Portal 배포" bash scripts/cluster/deploy-testbed-apps.sh \
     --registry-pull-dockerconfig "${SADP_REGISTRY_PULL_DOCKERCONFIG}" \

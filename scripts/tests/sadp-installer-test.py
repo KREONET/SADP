@@ -88,7 +88,7 @@ check(
     ("예제 BASE_DOMAIN을 실제 설치에 사용할 수 없음",),
 )
 check(
-    "SI-04 all apply cannot cross the manual restart boundary",
+    "SI-04 all plan describes rendering, restart and TLS without applying",
     [
         "bash",
         "./sadp",
@@ -97,10 +97,9 @@ check(
         str(ENV_FILE),
         "--phase",
         "all",
-        "--apply",
     ],
-    1,
-    ("수동 재시작/Ready 확인 후 cluster를 별도로 적용",),
+    0,
+    ("Git commit/push", "RKE2 재시작", "Certificate 확인", "OpenBao 초기화·unseal"),
 )
 check(
     "SI-05 cluster phase plans automatic Devtron/Argo bootstrap",
