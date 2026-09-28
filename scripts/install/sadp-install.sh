@@ -11,6 +11,7 @@ APPLY=false
 ALLOW_DIRTY=false
 NODE_NAME=
 INTERACTIVE=false
+WIZARD_OPTIONS=()
 
 usage() {
   cat <<'EOF'
@@ -30,6 +31,8 @@ phase:
   --allow-dirty       render --apply에서 기존 worktree 변경을 검토했음을 명시
   --apply             실제 적용. all은 유지보수 중단을 포함해 자동 재시작함
   --interactive       질문으로 --env-file을 생성한 뒤 같은 phase 실행
+  --advanced          --interactive의 기본값 묶음·로컬 탐지 없이 상세 질문
+  --no-detect         --interactive의 로컬 NIC·IPv4 후보 조회 생략
 
 안전한 기본 동작:
   --apply가 없으면 site.env와 실행 계획만 검사한다. 개별 node/cluster --apply는
@@ -46,6 +49,7 @@ while (($#)); do
     --allow-dirty) ALLOW_DIRTY=true ;;
     --apply) APPLY=true ;;
     --interactive) INTERACTIVE=true ;;
+    --advanced|--no-detect) WIZARD_OPTIONS+=("$1") ;;
     -h|--help) usage; exit 0 ;;
     *) printf '[FAIL] 알 수 없는 인자: %s\n' "$1" >&2; usage >&2; exit 2 ;;
   esac
@@ -56,8 +60,13 @@ case "${PHASE}" in
   render|node|cluster|all) ;;
   *) printf '[FAIL] --phase는 render|node|cluster|all 중 하나여야 함\n' >&2; exit 2 ;;
 esac
+if [[ ${INTERACTIVE} == false && ${#WIZARD_OPTIONS[@]} -gt 0 ]]; then
+  printf '[FAIL] --advanced/--no-detect는 --interactive와 함께 사용하십시오\n' >&2
+  exit 2
+fi
 if [[ ${INTERACTIVE} == true ]]; then
   args=(--output "${ENV_FILE}" --phase "${PHASE}")
+  args+=("${WIZARD_OPTIONS[@]}")
   [[ ${APPLY} == false ]] || args+=(--apply)
   [[ -z ${NODE_NAME} ]] || args+=(--node-name "${NODE_NAME}")
   [[ ${ALLOW_DIRTY} == false ]] || args+=(--allow-dirty)

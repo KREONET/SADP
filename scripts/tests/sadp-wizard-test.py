@@ -9,6 +9,9 @@ import pathlib
 import subprocess
 import sys
 import tempfile
+from unittest.mock import patch
+import io
+from contextlib import redirect_stdout
 
 
 ROOT = pathlib.Path(__file__).resolve().parents[2]
@@ -126,12 +129,16 @@ wizard.clear_inactive(single)
 check("SW-07 single 선택 시 예제 worker 목록 제거", single["WORKER_NODES"] == "")
 check("SW-08 multi는 worker 질문 유지", wizard.should_ask(worker_question, dict(values, CLUSTER_MODE="multi")))
 
-def answers(overrides: dict[str, str]) -> str:
+def answers(overrides: dict[str, str], *, quick: bool = False) -> str:
     current = dict(values)
     lines = []
     for _, questions in wizard.SECTIONS:
+        defaults = wizard.default_questions(questions, current) if quick else []
+        skipped = {q.key for q in defaults} if len(defaults) > 1 else set()
+        if skipped:
+            lines.append("")
         for question in questions:
-            if wizard.should_ask(question, current):
+            if question.key not in skipped and wizard.should_ask(question, current):
                 value = overrides.get(question.key, current.get(question.key, ""))
                 lines.append(value or "-")
                 current[question.key] = value
@@ -140,7 +147,7 @@ def answers(overrides: dict[str, str]) -> str:
 
 with tempfile.TemporaryDirectory() as raw_directory:
     output = pathlib.Path(raw_directory) / "site.env"
-    command = ["bash", "./sadp", "--install", "--interactive", "--env-file", str(output)]
+    command = ["bash", "./sadp", "--install", "--interactive", "--advanced", "--env-file", str(output)]
     replies = answers({"SADP_PORTAL_FORGEJO_TOKEN_FILE": "/etc/sadp/secrets/portal-token"})
     result = subprocess.run(command, cwd=ROOT, input=replies + "y\n", capture_output=True, text=True)
     check("SW-09 질문형 진입점에서 env 저장 후 all 계획 실행",
@@ -175,6 +182,84 @@ preserved = dict(values, SADP_INSTALL_GITOPS="false", SADP_GIT_PUSH_TOKEN_FILE="
 wizard.clear_inactive(preserved)
 check("SW-15 GitOps 구성을 꺼도 Git push 인증 사용자 유지",
       preserved["SADP_ARGO_REPO_USERNAME"] == values["SADP_ARGO_REPO_USERNAME"])
+
+with patch("builtins.input", return_value=""), redirect_stdout(io.StringIO()):
+    quick = dict(values)
+    quick["SADP_PORTAL_FORGEJO_TOKEN_FILE"] = "/etc/sadp/secrets/portal-token"
+    with patch.object(wizard, "answer", side_effect=lambda q, current: current) as quick_answer:
+        wizard.collect_answers(quick, advanced=False, detect=False)
+    detailed = dict(quick)
+    with patch.object(wizard, "answer", side_effect=lambda q, current: current) as full_answer:
+        wizard.collect_answers(detailed, advanced=True, detect=False)
+check("SW-16 간편 모드는 값을 유지하면서 개별 질문을 10개 이상 줄임",
+      quick == detailed and full_answer.call_count - quick_answer.call_count >= 10)
+asked = {call.args[0].key for call in quick_answer.call_args_list}
+check("SW-17 간편 모드도 주소·인증·이미지·보호 NIC·Secret 경로는 확인",
+      {"BASE_DOMAIN", "OCI_REGISTRY", "OIDC_ISSUER", "PUBLIC_EXPOSURE_MODE",
+       "GUARDED_INTERFACES", "POD_CIDRS", "TEST_APP_IMAGE_TAG",
+       "SADP_PORTAL_FORGEJO_TOKEN_FILE"} <= asked)
+
+with patch("builtins.input", return_value="n"), redirect_stdout(io.StringIO()):
+    with patch.object(wizard, "answer", side_effect=lambda q, current: current) as edit_answer:
+        wizard.collect_answers(dict(quick), advanced=False, detect=False)
+check("SW-18 기본 설정 묶음 거절 시 상세 질문으로 복귀", edit_answer.call_count == full_answer.call_count)
+
+interfaces = [
+    {"ifname": "lan0", "addr_info": [{"family": "inet", "scope": "global",
+                                      "local": "10.20.30.11", "prefixlen": 24}]},
+    {"ifname": "wan0", "addr_info": []},
+]
+with patch.object(wizard, "local_interfaces", return_value=interfaces), \
+     patch.object(wizard.socket, "gethostname", return_value="control.test.invalid"), \
+     patch("builtins.input", side_effect=["1", "1", "y"]), redirect_stdout(io.StringIO()):
+    detected = dict(values)
+    skipped = wizard.suggest_network(detected)
+check("SW-19 명시적으로 선택·수락한 로컬 주소와 NIC만 반영",
+      detected["CONTROL_PLANE_HOSTNAME"] == "control"
+      and detected["INTERNAL_INTERFACE"] == "lan0" and detected["EXTERNAL_INTERFACE"] == "wan0"
+      and detected["NODE_INTERNAL_CIDRS"] == "10.20.30.0/24"
+      and skipped == {"CONTROL_PLANE_HOSTNAME", "CONTROL_PLANE_IP", "INTERNAL_INTERFACE",
+                      "EXTERNAL_INTERFACE", "NODE_INTERNAL_CIDRS"}
+      and detected["WORKER_NODES"] == values["WORKER_NODES"]
+      and detected["PUBLIC_EXPOSURE_MODE"] == values["PUBLIC_EXPOSURE_MODE"])
+with patch.object(wizard, "local_interfaces", return_value=interfaces), \
+     patch("builtins.input", side_effect=["1", "1", "n"]), redirect_stdout(io.StringIO()):
+    rejected = dict(values)
+    skipped = wizard.suggest_network(rejected)
+check("SW-20 탐지값 거절 시 기존 env 값과 질문 보존", rejected == values and not skipped)
+with patch.object(wizard.subprocess, "run", side_effect=FileNotFoundError):
+    check("SW-21 ip 도구가 없으면 탐지 없이 수동 입력 가능", wizard.local_interfaces() == [])
+with patch.object(wizard.subprocess, "run", return_value=subprocess.CompletedProcess([], 0, "not-json")):
+    check("SW-22 잘못된 탐지 출력은 수동 입력으로 복귀", wizard.local_interfaces() == [])
+with patch.object(wizard, "local_interfaces") as probe, \
+     patch.object(wizard, "answer", side_effect=lambda q, current: current), \
+     patch("builtins.input", return_value=""), redirect_stdout(io.StringIO()):
+    wizard.collect_answers(dict(quick), advanced=False, detect=False)
+check("SW-23 no-detect에서는 시스템 조회를 하지 않음", not probe.called)
+result = subprocess.run(["bash", "./sadp", "--install", "--no-detect"], cwd=ROOT,
+                        capture_output=True, text=True)
+check("SW-24 일반 설치에서 마법사 전용 옵션 오용 거부", result.returncode == 2)
+
+with tempfile.TemporaryDirectory() as raw_directory:
+    output = pathlib.Path(raw_directory) / "site.env"
+    result = subprocess.run(
+        ["bash", "./sadp", "--install", "--interactive", "--no-detect", "--env-file", str(output)],
+        cwd=ROOT, input=answers({"SADP_PORTAL_FORGEJO_TOKEN_FILE": "/etc/sadp/secrets/portal-token"},
+                               quick=True) + "y\n", capture_output=True, text=True)
+    check("SW-25 간편 입력·no-detect도 env 검증·저장 후 기존 all 계획 실행",
+          result.returncode == 0 and output.exists() and "[PLAN]" in result.stdout
+          and output.stat().st_mode & 0o777 == 0o600)
+
+multiple = [{"ifname": "lan0", "addr_info": interfaces[0]["addr_info"] + [
+    {"family": "inet", "scope": "global", "local": "10.20.40.11", "prefixlen": 24}]}]
+with patch.object(wizard, "local_interfaces", return_value=multiple), \
+     patch("builtins.input", side_effect=["1", "2", "y"]), redirect_stdout(io.StringIO()):
+    detected = dict(values)
+    skipped = wizard.suggest_network(detected)
+check("SW-26 다중 주소는 사용자가 선택하며 없는 외부 NIC는 수동 질문 유지",
+      detected["CONTROL_PLANE_IP"] == "10.20.40.11"
+      and detected["NODE_INTERNAL_CIDRS"] == "10.20.40.0/24"
+      and "EXTERNAL_INTERFACE" not in skipped)
 
 print(f"통과 {passed} / 실패 {failed}")
 raise SystemExit(1 if failed else 0)

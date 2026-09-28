@@ -49,6 +49,10 @@ bash ./sadp --install --env-file /etc/sadp/site.env --phase all
 sudo bash ./sadp --install-wizard
 ```
 
+간편 모드에서는 기본 설정을 묶어서 유지하고, 로컬 NIC·IPv4 후보를 확인해 관련 질문을
+건너뛸 수 있습니다. 모든 활성 항목을 직접 입력하려면 `--advanced`, 로컬 조회만 생략하려면
+`--no-detect`를 붙입니다. 자세한 선택 방법은 [설치 가이드](installation.md)를 따릅니다.
+
 마법사가 만든 `/etc/sadp/site.env`도 반드시 render 계획, 생성, test, commit/push 순서를 거칩니다.
 
 ## 설치 후 참고 문서

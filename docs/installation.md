@@ -95,6 +95,30 @@ token, private key 본문을 묻지 않고 파일 경로만 받습니다.
 sudo bash ./sadp --install-wizard
 ```
 
+기본은 **간편 모드**입니다. 사이트 이름·앱 환경·StorageClass, OIDC claim, 설치 선택 등은
+기본값 또는 기존 값을 묶어 보여 줍니다. Enter로 유지하면 개별 질문을 생략하고, `n`을 입력하면
+해당 묶음을 하나씩 수정합니다. 도메인, Registry, 이미지 tag, 인증 endpoint, Secret 파일 경로는
+직접 확인합니다. **OCI Registry는 컨테이너 이미지 저장소이며 OIDC 로그인 공급자와 별개입니다.**
+
+네트워크 단계에서는 `ip -j address show`로 현재 호스트의 NIC·IPv4 후보를 읽습니다. 설치 대상
+control-plane에서 실행 중이면 내부 NIC·주소와 외부 NIC를 선택하고, 제안된 hostname·IP·CIDR을
+확인해 관련 질문을 생략할 수 있습니다. 여러 IPv4가 있으면 사용할 주소도 선택합니다.
+후보 선택에서 Enter를 누르거나 제안값을 거절하면 직접 입력합니다. `ip`가 없거나 조회에 실패해도
+수동 입력을 계속합니다. worker, 추가 보호 NIC, 공인 IP, NAT/direct, Gateway VIP,
+기존 RKE2 Pod/Service CIDR·DNS는 추측하지 않습니다. NIC 이름은 모든 노드에서 같아야 하며,
+제안된 hostname은 Kubernetes Node 이름, CIDR은 전체 노드 내부망과 일치하는지 확인합니다.
+
+```bash
+# 간편 모드에서 로컬 네트워크 조회만 생략
+sudo bash ./sadp --install --interactive --no-detect
+# 기존처럼 모든 활성 항목을 개별 질문 (로컬 조회도 생략)
+sudo bash ./sadp --install --interactive --advanced
+```
+
+`--install-wizard`에도 `--no-detect`와 `--advanced`를 사용할 수 있습니다. 실행 중인 이전
+마법사에는 변경이 반영되지 않으므로 새로 실행해야 합니다. 아직 저장하지 않은 답변은 재실행 시
+복원되지 않습니다.
+
 답변으로 만든 파일도 동일한 검증기를 통과해야 `/etc/sadp/site.env`에 mode `0600`으로 저장됩니다.
 마법사에서 바로 계획을 보려면 다음처럼 실행할 수 있습니다.
 
