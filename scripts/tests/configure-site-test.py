@@ -1205,5 +1205,83 @@ for count in (1, 4):
          True, check_multi_render(count+1), write=True)
 
 
+
+def provided_path_parity():
+    import importlib.util
+    configure = load_configure_site()
+    spec = importlib.util.spec_from_file_location("provided_exposure", ROOT / "scripts/site/render-exposure.py")
+    exposure = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(exposure)
+    baseline = dict(line.split("=", 1) for line in VALID.splitlines() if line and not line.startswith("#"))
+    baseline["TLS_SOURCE"] = "provided"
+    baseline["EXISTING_GATEWAY_TLS_READY"] = "true"
+    cases = [
+        ("/etc/letsencrypt/live/example.invalid/fullchain.pem", "/etc/letsencrypt/live/example.invalid/privkey.pem", True),
+        ("/tmp/../fullchain.pem", "/tmp/privkey.pem", False),
+        ("wildcard/fullchain.pem", "wildcard/privkey.pem", True),
+        ("wildcard/site/fullchain.PEM", "wildcard/site/privkey.pem", True),
+        ("/tmp/fullchain.pem", "wildcard/privkey.pem", True),
+        ("wildcard/fullchain.pem", "/tmp/privkey.pem", True),
+        ("outside/fullchain.pem", "wildcard/privkey.pem", False),
+        ("wildcard/../fullchain.pem", "wildcard/privkey.pem", False),
+        ("wildcard", "wildcard/privkey.pem", False),
+        ("wildcard/fullchain.crt", "wildcard/privkey.pem", False),
+        ("wildcard/fullchain.pem", "wildcard/privkey.key", False),
+        ("wildcard/same.pem", "wildcard/same.pem", False),
+    ]
+    for cert, key, expected in cases:
+        values = dict(baseline, PROVIDED_CERTIFICATE_PATH=cert, PROVIDED_PRIVATE_KEY_PATH=key)
+        try:
+            configure.validate(values)
+            accepted = True
+        except configure.ConfigError as error:
+            accepted = False
+            assert "PROVIDED_" in str(error), str(error)
+        try:
+            exposure.provided_inputs({"tls": {"source": "provided", "provided": {
+                "certificatePath": cert, "privateKeyPath": key}}})
+            rendered = True
+        except ValueError:
+            rendered = False
+        assert accepted == rendered == expected, (cert, key, accepted, rendered, expected)
+
+
+direct_case("SC-54 provided PEM 경로는 저장 전 검사와 렌더러의 허용·거부 규칙 일치", provided_path_parity)
+
+case("SC-55 Certbot 절대경로로 생성 및 CI 검증",
+     VALID.replace("TLS_SOURCE=acme", "TLS_SOURCE=provided")
+          .replace("EXISTING_GATEWAY_TLS_READY=false", "EXISTING_GATEWAY_TLS_READY=true")
+          .replace("wildcard/fullchain.pem", "/etc/letsencrypt/live/example.invalid/fullchain.pem")
+          .replace("wildcard/privkey.pem", "/etc/letsencrypt/live/example.invalid/privkey.pem"),
+     True, write=True)
+
+def check_shared_oidc(workspace, result):
+    shared = "Authentik.Shared-Client_123"
+    contract = yaml.safe_load((workspace / "contracts/platform-production.yaml").read_text())["spec"]
+    assert contract["identityProvider"]["sharedClientID"] == shared
+    assert contract["identityProvider"]["portalClientID"] == shared
+    portal = yaml.safe_load((workspace / "apps/portal-lite/values-beta.yaml").read_text())
+    assert portal["configuration"]["config"]["AUTH_OIDC_ID"] == shared
+    namespace = load_configure_site().validate(load_configure_site().parse_env(workspace / "site.env"))["layout"]["workloadNamespace"]
+    rendered = subprocess.run(["helm", "template", "secure-demo", "charts/app-profile", "-n", namespace,
+                               "-f", "contracts/values-platform-production.yaml",
+                               "-f", "apps/secure-demo/values-beta.yaml"],
+                              cwd=workspace, capture_output=True, text=True)
+    assert rendered.returncode == 0, rendered.stderr
+    policies = [doc for doc in yaml.safe_load_all(rendered.stdout) if doc and doc.get("kind") == "SecurityPolicy"]
+    assert policies[0]["spec"]["oidc"]["clientID"] == shared
+    values = (workspace / "site.env").read_text().replace("OIDC_SHARED_CLIENT_ID=" + shared, "OIDC_SHARED_CLIENT_ID=")
+    (workspace / "site.env").write_text(values)
+    result = subprocess.run([sys.executable, "scripts/site/configure-site.py", "--env-file", "site.env", "--write"],
+                            cwd=workspace, capture_output=True, text=True)
+    assert result.returncode == 0, result.stderr
+    identity = yaml.safe_load((workspace / "contracts/platform-production.yaml").read_text())["spec"]["identityProvider"]
+    assert "sharedClientID" not in identity and identity["portalClientID"] == "portal-prod"
+
+
+case("SC-56 공통 OIDC ID 대소문자 보존·Portal·Envoy 동기화 및 앱별 설정 복귀",
+     VALID + "OIDC_SHARED_CLIENT_ID=Authentik.Shared-Client_123\n", True, check_shared_oidc, write=True)
+case("SC-57 공통 OIDC ID 공백 거부", VALID + "OIDC_SHARED_CLIENT_ID=invalid client\n", False)
+
 print(f"통과 {PASSED} / 실패 {FAILED}")
 raise SystemExit(FAILED != 0)

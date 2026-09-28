@@ -1,9 +1,11 @@
 #!/usr/bin/env python3
 """호스트를 바꾸지 않고 무인 설치의 중단·재시작·TLS 기록 경계를 검증한다."""
 import importlib.util
+from contextlib import redirect_stdout
 import io
 import json
 import os
+import shlex
 from pathlib import Path
 import subprocess
 import tempfile
@@ -63,6 +65,28 @@ class InstallAllTest(unittest.TestCase):
         self.env = Path(self.temp.name) / "site.env"
         self.env.write_text(EXAMPLE)
         self.installer = Simulation(self.env)
+
+    def test_service_failure_names_only_known_unit_and_action(self):
+        for unit in ("rke2-server", "docker"):
+            for arguments, action in ((["is-active", "--quiet", unit], "실행 상태 확인"),
+                                      (["restart", unit], "재시작")):
+                with self.subTest(unit=unit, action=action), patch.object(mod.subprocess, "Popen") as process:
+                    process.return_value.communicate.return_value = (b"", b"private-response-fixture")
+                    process.return_value.returncode = 4
+                    with self.assertRaises(mod.InstallError) as caught:
+                        self.installer.run(["systemctl", *arguments], capture=True)
+                    message = str(caught.exception)
+                    self.assertIn(unit + ".service " + action, message)
+                    self.assertIn("systemctl show " + unit, message)
+                    self.assertNotIn("private-response-fixture", message)
+
+    def test_other_failure_keeps_arguments_and_response_private(self):
+        with patch.object(mod.subprocess, "Popen") as process:
+            process.return_value.communicate.return_value = (b"", b"private-response-fixture")
+            process.return_value.returncode = 1
+            with self.assertRaises(mod.InstallError) as caught:
+                self.installer.run(["git", "private-argument-fixture"], capture=True)
+            self.assertNotIn("private-", str(caught.exception))
 
     def test_default_plan_never_changes_host_or_env(self):
         result = subprocess.run(["bash", "./sadp", "--install", "--env-file", str(self.env)],
@@ -144,7 +168,28 @@ class InstallAllTest(unittest.TestCase):
         args = run.call_args.args[0]
         self.assertIn("StrictHostKeyChecking=yes", args)
         self.assertIn("BatchMode=yes", args)
-        self.assertIn("sudo -n bash -ceu", args[-1])
+        self.assertIn("sudo -n env -u BASH_ENV -u ENV bash --noprofile --norc -ceu", args[-1])
+
+    def test_remote_shell_skips_interactive_startup_and_preserves_stdin(self):
+        startup = Path(self.temp.name) / "startup.bash"
+        startup.write_text('printf "%s" "$PS1"\nexit 99\n')
+        environment = dict(os.environ, BASH_ENV=str(startup), ENV=str(startup))
+        for key in ("PS1", "SSH_CLIENT", "SSH_CONNECTION", "SSH_TTY"):
+            environment.pop(key, None)
+        broken = subprocess.run(["bash", "-ceu", "true"], env=environment, stdin=subprocess.DEVNULL, capture_output=True)
+        self.assertIn(b"PS1: unbound variable", broken.stderr)
+        self.installer.cfg["installer"]["sshUser"] = "root"
+        payload = b"archive-fixture\x00bytes"
+        with patch.object(self.installer, "run") as run:
+            self.installer.ssh("192.0.2.1", "cat", input=payload, capture=True)
+        command = shlex.split(run.call_args.args[0][-1])
+        result = subprocess.run(command, env=environment, input=payload, capture_output=True)
+        self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertEqual(result.stdout, payload)
+        self.assertEqual(result.stderr, b"")
+        failed = subprocess.run(command[:-1] + ["false; echo should-not-run"], env=environment, capture_output=True)
+        self.assertNotEqual(failed.returncode, 0)
+        self.assertNotIn(b"should-not-run", failed.stdout)
 
     def test_parser_rejects_ssh_option_injection(self):
         values = mod.site.parse_env(self.env)
@@ -324,6 +369,98 @@ class InstallAllTest(unittest.TestCase):
                                 "verify-testbed.sh")
                     positions = [calls.index(item) for item in sequence]
                     self.assertEqual(positions, sorted(positions))
+
+
+class OIDCCredentialsTest(unittest.TestCase):
+    def setUp(self):
+        self.temp = tempfile.TemporaryDirectory()
+        self.addCleanup(self.temp.cleanup)
+        self.state = Path(self.temp.name)
+        self.directory = self.state / "credentials"
+        self.directory.mkdir(mode=0o700)
+        self.output = io.StringIO()
+        # root 전용 설치 동작은 소유권만 모사하고 실제 파일·권한·링크 처리는 임시 디스크에서 검증한다.
+        original = Path.lstat
+        def root_stat(path, *args, **kwargs):
+            result = list(original(path, *args, **kwargs))
+            result[4:6] = [0, 0]
+            return os.stat_result(result)
+        for context in (patch.object(Path, "lstat", root_stat),
+                        patch.object(mod.os, "geteuid", return_value=0),
+                        patch.object(mod.os, "fchown"), redirect_stdout(self.output)):
+            context.__enter__()
+            self.addCleanup(context.__exit__, None, None, None)
+
+    def path(self, name):
+        return self.directory / f"oidc-{name}-client-secret"
+
+    def test_shared_asks_once_and_ignores_legacy_files(self):
+        self.path("portal").write_text("legacy")
+        self.path("portal").chmod(0o600)
+        with patch.object(mod.getpass, "getpass", side_effect=["shared-fixture"] * 2) as prompt:
+            mod.prepare_oidc_credentials(self.state, interactive=True, shared=True)
+            self.assertEqual(prompt.call_count, 2)
+        self.assertEqual(self.path("shared").read_text(), "shared-fixture")
+        self.assertEqual(self.path("portal").read_text(), "legacy")
+        self.assertFalse(self.path("secure-demo").exists())
+        self.assertFalse(self.path("openbao").exists())
+        self.assertNotIn("shared-fixture", self.output.getvalue())
+        with patch.object(mod.getpass, "getpass") as prompt:
+            mod.prepare_oidc_credentials(self.state, interactive=False, shared=True)
+            prompt.assert_not_called()
+
+    def test_missing_noninteractive_lists_all_without_writing(self):
+        with patch.object(mod.getpass, "getpass") as prompt:
+            with self.assertRaises(mod.InstallError) as caught:
+                mod.prepare_oidc_credentials(self.state, interactive=False)
+            for name in mod.OIDC_CLIENTS:
+                self.assertIn(str(self.path(name)), str(caught.exception))
+            prompt.assert_not_called()
+        self.assertEqual(list(self.directory.iterdir()), [])
+
+    def test_prompt_only_missing_preserve_existing_and_no_secret_output(self):
+        existing = self.path("portal")
+        existing.write_text("existing-fixture")
+        existing.chmod(0o600)
+        with patch.object(mod.getpass, "getpass", side_effect=["demo-fixture"] * 2 + ["bao-fixture"] * 2) as prompt:
+            mod.prepare_oidc_credentials(self.state, interactive=True)
+            self.assertEqual(prompt.call_count, 4)
+        self.assertEqual(existing.read_text(), "existing-fixture")
+        for name, expected in (("secure-demo", "demo-fixture"), ("openbao", "bao-fixture")):
+            self.assertEqual(self.path(name).read_text(), expected)
+            self.assertEqual(self.path(name).stat().st_mode & 0o777, 0o600)
+            self.assertNotIn(expected, self.output.getvalue())
+        with patch.object(mod.getpass, "getpass") as prompt:
+            mod.prepare_oidc_credentials(self.state, interactive=False)
+            prompt.assert_not_called()
+
+    def test_mismatch_retries_only_current_and_cancel_keeps_completed(self):
+        with patch.object(mod.getpass, "getpass", side_effect=["one", "two", "demo", "demo", ""]):
+            with self.assertRaises(mod.InstallError):
+                mod.prepare_oidc_credentials(self.state, interactive=True)
+        self.assertEqual(self.path("secure-demo").read_text(), "demo")
+        self.assertFalse(self.path("portal").exists())
+        self.assertFalse(list(self.directory.glob(".oidc-*")))
+
+    def test_symlink_and_broad_permissions_are_not_replaced(self):
+        path = self.path("secure-demo")
+        path.symlink_to(self.state / "absent")
+        with self.assertRaises(mod.InstallError):
+            mod.prepare_oidc_credentials(self.state, interactive=True)
+        self.assertTrue(path.is_symlink())
+        path.unlink()
+        path.write_text("existing")
+        path.chmod(0o644)
+        with self.assertRaises(mod.InstallError):
+            mod.prepare_oidc_credentials(self.state, interactive=True)
+        self.assertEqual(path.read_text(), "existing")
+
+    def test_echo_fallback_and_eof_never_write(self):
+        for error in (mod.getpass.GetPassWarning, EOFError):
+            with patch.object(mod.getpass, "getpass", side_effect=error):
+                with self.assertRaises(mod.InstallError):
+                    mod.prepare_oidc_credentials(self.state, interactive=True)
+            self.assertEqual(list(self.directory.iterdir()), [])
 
 
 if __name__ == "__main__":

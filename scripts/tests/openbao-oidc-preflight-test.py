@@ -83,7 +83,7 @@ bao() {
   case "$*" in
     "auth list -format=json") printf '%s\n' '{"oidc/":{"type":"oidc"}}' ;;
     "read auth/oidc/config -format=json")
-      printf '%s\n' '{"data":{"oidc_discovery_url":"https://idp.example.invalid/application/o/sadp","oidc_client_id":"openbao","default_role":"user"}}'
+      jq -nc --arg client "${OIDC_OPENBAO_CLIENT_ID}" '{data:{oidc_discovery_url:"https://idp.example.invalid/application/o/sadp",oidc_client_id:$client,default_role:"user"}}'
       ;;
     "read auth/oidc/role/user -format=json")
       printf '%s\n' '{"data":{"role_type":"oidc","user_claim":"preferred_username"}}'
@@ -201,6 +201,14 @@ with tempfile.TemporaryDirectory(prefix="sadp-openbao-oidc-test-") as temporary:
         "OIDC client Secret과 config 본문을 로그에 출력하지 않는다",
         output,
     )
+
+    shared_contract = yaml.safe_load(contract.read_text())
+    shared_contract["spec"]["identityProvider"]["sharedClientID"] = "Authentik.Shared_123"
+    contract.write_text(yaml.safe_dump(shared_contract))
+    result = run_case(contract, secret, log, "success-twice")
+    applied = json.loads(last_body.read_text())
+    check(result.returncode == 0 and applied["oidc_client_id"] == "Authentik.Shared_123",
+          "공통 Provider ID를 OpenBao 적용과 재검증에 동일하게 사용", result.stdout + result.stderr)
 
 print(f"\nOpenBao OIDC preflight tests: {passed} passed, {failed} failed")
 raise SystemExit(1 if failed else 0)

@@ -344,7 +344,8 @@ with patch.object(wizard, "cluster_network_candidates", return_value=discovered)
     rejected = dict(network_values)
     rejected_keys = wizard.suggest_cluster_network(rejected)
 check("SW-36 조회값 거절 시 기존 값과 개별 질문 유지", not rejected_keys and rejected == network_values)
-with patch.object(wizard, "suggest_network", return_value=set()), \
+with patch.object(wizard, "automatic_network_defaults", return_value={}), \
+     patch.object(wizard, "suggest_network", return_value=set()), \
      patch.object(wizard, "cluster_network_candidates", return_value=discovered), \
      patch.object(wizard, "local_interfaces", return_value=interfaces), \
      patch.object(wizard, "confirm", side_effect=lambda prompt, **kw: not prompt.startswith("IP·CIDR")), \
@@ -366,7 +367,8 @@ with patch.object(wizard.pathlib.Path, "is_file", return_value=True), \
     timed_out = wizard.read_cluster("nodes")
 check("SW-39 조회 timeout은 원문 출력 없이 수동 입력으로 복귀", not timed_out and not output.getvalue())
 
-with patch.object(wizard, "suggest_network") as local_probe, \
+with patch.object(wizard, "automatic_network_defaults", return_value={}), \
+     patch.object(wizard, "suggest_network") as local_probe, \
      patch.object(wizard, "suggest_cluster_network") as cluster_probe, \
      patch("builtins.input", return_value=""), \
      patch.object(wizard, "answer", side_effect=lambda q, current: current) as questions, \
@@ -392,7 +394,7 @@ with tempfile.TemporaryDirectory() as raw_directory:
     output = pathlib.Path(raw_directory) / "site.env"
     output.write_text(wizard.replace_values(template, {"CLUSTER_UPSTREAM_DNS": "10.20.30.11:1053"}))
     result = subprocess.run(
-        ["bash", "./sadp", "--install", "--interactive", "--env-file", str(output)],
+        ["bash", "./sadp", "--install", "--interactive", "--no-detect", "--env-file", str(output)],
         cwd=ROOT, input=answers({"SADP_PORTAL_FORGEJO_TOKEN_FILE": "/etc/sadp/secrets/portal-token"},
                                quick=True) + "y\n", capture_output=True, text=True)
     check("SW-43 재실행의 기본값은 template이 아닌 저장된 DNS 주소이며 검증 후 계획만 실행",
@@ -480,6 +482,98 @@ with tempfile.TemporaryDirectory() as raw_directory:
     check("SW-53 필수 key가 빠진 파일도 요약에서 중단하지 않고 누락 항목만 복원",
           result.returncode == 0 and repaired.get("SITE_NAME") == "repair-site"
           and repaired.get("WORKLOAD_NAMESPACE") == "sadp-apps" and "Traceback" not in result.stderr)
+
+
+stale = dict(network_values, CONTROL_PLANE_HOSTNAME="old-node", CONTROL_PLANE_IP="10.99.0.11",
+             NODE_INTERNAL_CIDRS="10.99.0.0/24", INTERNAL_INTERFACE="old0")
+with patch.object(wizard, "read_cluster", side_effect=lambda *args: cluster_responses.get(args, {})), \
+     patch.object(wizard, "local_interfaces", return_value=interfaces):
+    actual = wizard.automatic_network_defaults(stale)
+check("SW-54 예제 hostname·IP와 달라도 실제 Node와 로컬 NIC를 대조해 기본값 조회",
+      actual["CONTROL_PLANE_HOSTNAME"][0] == "control" and actual["CONTROL_PLANE_IP"][0] == "10.20.30.11"
+      and actual["NODE_INTERNAL_CIDRS"][0] == "10.20.30.0/24" and actual["INTERNAL_INTERFACE"][0] == "lan0"
+      and actual["POD_CIDRS"][0] == "10.42.0.0/16" and actual["SERVICE_CIDRS"][0] == "10.43.0.0/16"
+      and actual["RKE2_SERVER_ENDPOINT"][0] == "10.20.30.11" and stale["CONTROL_PLANE_IP"] == "10.99.0.11")
+with patch.object(wizard, "automatic_network_defaults", return_value=actual) as lookup, \
+     patch.object(wizard, "suggest_network") as manual, \
+     patch.object(wizard, "suggest_cluster_network") as repeat, \
+     patch.object(wizard, "confirm", return_value=True), \
+     patch.object(wizard, "answer", side_effect=lambda q, current: current) as remaining, \
+     redirect_stdout(io.StringIO()) as screen:
+    accepted = dict(stale)
+    wizard.collect_answers(accepted, advanced=False, detect=True)
+check("SW-55 실제 조회값을 먼저 표시하고 Enter 유지 시 한 번 반영·중복 질문 생략",
+      lookup.call_count == 1 and not manual.called and not repeat.called
+      and all(accepted[key] == value for key, (value, _) in actual.items())
+      and not set(actual).intersection(call.args[0].key for call in remaining.call_args_list)
+      and "로컬 내부 NIC의 prefix" in screen.getvalue() and "예제와 동일·미확인" in screen.getvalue())
+with patch.object(wizard, "automatic_network_defaults", return_value=actual), \
+     patch.object(wizard, "suggest_cluster_network", return_value=set()), \
+     patch.object(wizard, "confirm", side_effect=lambda prompt, **kw: not prompt.startswith("IP·CIDR")), \
+     patch.object(wizard, "answer", side_effect=lambda q, current: current), redirect_stdout(io.StringIO()):
+    rejected = dict(stale)
+    wizard.collect_answers(rejected, advanced=False, detect=True)
+check("SW-56 조회값을 거절하면 기존 값을 자동 덮어쓰지 않음",
+      all(rejected[key] == value for key, value in stale.items()))
+with patch.object(wizard, "read_cluster", side_effect=lambda *args: cluster_responses.get(args, {})), \
+     patch.object(wizard, "local_interfaces", return_value=[]):
+    remote = wizard.automatic_network_defaults(stale)
+check("SW-57 현재 호스트 NIC와 일치하지 않는 control-plane은 자동 선택하지 않음", not remote)
+with patch.object(wizard, "read_cluster", side_effect=lambda *args: cluster_responses.get(args, {})), \
+     patch.object(wizard, "local_interfaces", return_value=interfaces + [dict(interfaces[0], ifname="bond0")]):
+    ambiguous = wizard.automatic_network_defaults(stale)
+check("SW-58 같은 IP가 여러 NIC에 있으면 역할을 임의로 선택하지 않음", not ambiguous)
+with patch.object(wizard, "automatic_network_defaults") as lookup, \
+     patch.object(wizard, "confirm", return_value=True), \
+     patch.object(wizard, "answer", side_effect=lambda q, current: current), redirect_stdout(io.StringIO()):
+    wizard.collect_answers(dict(stale), advanced=False, detect=False)
+check("SW-59 no-detect는 기존값을 유지하고 새 자동 기본값 조회도 생략", not lookup.called)
+
+
+with tempfile.TemporaryDirectory() as raw_directory:
+    output = pathlib.Path(raw_directory) / "site.env"
+    content = wizard.replace_values(template, {
+        "TLS_SOURCE": "provided", "PROVIDED_CERTIFICATE_PATH": "outside/fullchain.pem",
+        "PROVIDED_PRIVATE_KEY_PATH": "outside/privkey.pem",
+    })
+    output.write_text(content)
+    result = subprocess.run(
+        ["bash", "./sadp", "--install-wizard", "--repair", "--output", str(output)],
+        cwd=ROOT, input="y\nPROVIDED_CERTIFICATE_PATH,PROVIDED_PRIVATE_KEY_PATH\nwildcard/fullchain.pem\nwildcard/privkey.pem\n",
+        capture_output=True, text=True)
+    saved = wizard.parse_values(output.read_text())
+    check("SW-60 제공 PEM의 잘못된 상대경로는 렌더 전 거부하고 두 경로만 수정하여 저장",
+          result.returncode == 0 and "PROVIDED_CERTIFICATE_PATH must be an absolute path or a relative path under wildcard/" in result.stderr
+          and saved["PROVIDED_CERTIFICATE_PATH"] == "wildcard/fullchain.pem"
+          and saved["PROVIDED_PRIVATE_KEY_PATH"] == "wildcard/privkey.pem"
+          and "== 사이트 이름" not in result.stdout)
+
+with tempfile.TemporaryDirectory() as raw_directory:
+    output = pathlib.Path(raw_directory) / "site.env"
+    paths = {
+        "TLS_SOURCE": "provided",
+        "PROVIDED_CERTIFICATE_PATH": "/etc/letsencrypt/live/example.invalid/fullchain.pem",
+        "PROVIDED_PRIVATE_KEY_PATH": "/etc/letsencrypt/live/example.invalid/privkey.pem",
+    }
+    output.write_text(wizard.replace_values(template, paths))
+    result = subprocess.run(
+        ["bash", "./sadp", "--install-wizard", "--repair", "--output", str(output)],
+        cwd=ROOT, input="y\n", capture_output=True, text=True)
+    saved = wizard.parse_values(output.read_text())
+    check("SW-61 Certbot 절대경로를 PEM 본문 없이 그대로 검증하고 저장",
+          result.returncode == 0 and all(saved[key] == value for key, value in paths.items()))
+
+with tempfile.TemporaryDirectory() as raw_directory:
+    output = pathlib.Path(raw_directory) / "site.env"
+    result = subprocess.run(
+        ["bash", "./sadp", "--install-wizard", "--advanced", "--phase", "all", "--output", str(output)],
+        cwd=ROOT, input=answers({"OIDC_SHARED_CLIENT_ID": "Authentik.Shared_123",
+                                "SADP_PORTAL_FORGEJO_TOKEN_FILE": "/etc/sadp/secrets/portal-token"}) + "y\n",
+        capture_output=True, text=True)
+    check("SW-62 공유 Provider는 Client ID 한 번 입력·Portal 질문 생략·callback 목록 안내",
+          result.returncode == 0 and "Portal OIDC client ID [" not in result.stdout
+          and "공통 Secret 1개" in result.stdout and "/api/auth/callback/oidc" in result.stdout
+          and wizard.parse_values(output.read_text())["OIDC_SHARED_CLIENT_ID"] == "Authentik.Shared_123")
 
 print(f"통과 {passed} / 실패 {failed}")
 raise SystemExit(1 if failed else 0)

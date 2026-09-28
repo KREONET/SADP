@@ -79,6 +79,8 @@ resolved = (
     ("issuer", issuer),
     ("issuer-host", parsed.hostname),
     ("openbao-namespace", str(openbao.get("namespace") or "openbao")),
+    ("openbao-client-id", str(identity.get("sharedClientID") or "openbao")),
+    ("openbao-secret-name", "oidc-shared-client-secret" if identity.get("sharedClientID") else "oidc-openbao-client-secret"),
 )
 for label, value in resolved:
     if not value:
@@ -100,6 +102,8 @@ PY
   OIDC_EXPECTED_ISSUER=${values[9]}
   OIDC_ISSUER_HOST=${values[10]}
   OIDC_OPENBAO_NAMESPACE=${values[11]}
+  OIDC_OPENBAO_CLIENT_ID=${values[12]}
+  OIDC_OPENBAO_SECRET_NAME=${values[13]}
   OIDC_OPENBAO_POD=${SADP_OPENBAO_POD:-openbao-0}
   OIDC_DISCOVERY_URL="${OIDC_EXPECTED_ISSUER}/.well-known/openid-configuration"
 }
@@ -306,9 +310,9 @@ oidc_discovery_preflight() {
 
 oidc_public_config_matches() {
   bao read auth/oidc/config -format=json 2>/dev/null | jq -e \
-    --arg issuer "${OIDC_EXPECTED_ISSUER}" '
+    --arg client "${OIDC_OPENBAO_CLIENT_ID:-openbao}" --arg issuer "${OIDC_EXPECTED_ISSUER}" '
       .data.oidc_discovery_url == $issuer
-      and .data.oidc_client_id == "openbao"
+      and .data.oidc_client_id == $client
       and .data.default_role == "user"
     ' >/dev/null
 }
@@ -329,8 +333,8 @@ oidc_apply_config() {
   fi
 
   # client secret은 host/Pod argv에 두지 않고 root-only 파일→stdin JSON으로만 전달한다.
-  jq -nc --arg discovery "${OIDC_EXPECTED_ISSUER}" --rawfile secret "${secret_file}" '{
-    oidc_discovery_url:$discovery, oidc_client_id:"openbao",
+  jq -nc --arg client "${OIDC_OPENBAO_CLIENT_ID:-openbao}" --arg discovery "${OIDC_EXPECTED_ISSUER}" --rawfile secret "${secret_file}" '{
+    oidc_discovery_url:$discovery, oidc_client_id:$client,
     oidc_client_secret:($secret | sub("[\\r\\n]+$"; "")), default_role:"user"
   }' | bao_input write auth/oidc/config - >/dev/null
 

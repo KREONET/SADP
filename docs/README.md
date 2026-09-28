@@ -49,8 +49,8 @@ bash ./sadp --install --env-file /etc/sadp/site.env --phase all
 sudo bash ./sadp --install-wizard
 ```
 
-간편 모드에서는 IP·CIDR·DNS·Gateway·Squid를 포함한 기본 설정을 묶어서 Enter로 유지할 수 있습니다.
-IP 묶음에서 `n`을 선택하면 로컬 NIC와 기존 RKE2 주소를 조회해 수정합니다.
+간편 모드에서는 RKE2와 로컬 NIC를 먼저 조회해 확인된 실제 IP·CIDR·DNS를 기본값으로 제안합니다.
+조회되지 않은 기존값·예제값은 미확인으로 표시합니다. 묶음에서 Enter로 수락하거나 `n`으로 수정할 수 있습니다.
 노드·NIC 역할과 공인 IP·공개 방식·인증 설정은 별도로 확인합니다.
 모든 활성 항목을 직접 입력하려면 `--advanced`,
 자동 조회만 생략하려면

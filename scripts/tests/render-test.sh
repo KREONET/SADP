@@ -1008,6 +1008,7 @@ GROUP_EGRESS_NP=${GROUP_TYPED_NAMES[6]}
 helm template group-sso charts/app-profile -n app-mobility-platform -f $CONTRACT \
   -f apps/_template/values-sso.yaml \
   --set app.name=api --set app.group=mobility-platform \
+  --set-string platform.identityProvider.sharedClientID=Shared-Test-Client \
   --set app.environment=${APP_ENV} \
   --set-string eso.role=portal-group-app-eso \
   --set-string "exposure.host=${GROUP_APP_HOST}" \

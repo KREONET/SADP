@@ -118,8 +118,8 @@ def provided_inputs(specification: dict) -> dict[str, str]:
     for key in ("certificatePath", "privateKeyPath"):
         value = required_now(provided, key, "tls.provided")
         path = pathlib.PurePosixPath(value)
-        if path.is_absolute() or ".." in path.parts or not path.parts or path.parts[0] != "wildcard":
-            raise ValueError(f"spec.tls.provided.{key} must be a relative path under wildcard/")
+        if ".." in path.parts or not path.parts or (not path.is_absolute() and path.parts[0] != "wildcard"):
+            raise ValueError(f"spec.tls.provided.{key} must be an absolute path or a relative path under wildcard/")
         if path.suffix.lower() != ".pem":
             raise ValueError(f"spec.tls.provided.{key} must name a PEM file")
         resolved[key] = value

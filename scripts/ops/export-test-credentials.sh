@@ -15,17 +15,6 @@ case ${output} in
   *) die "자격증명표는 ${TESTBED_STATE_DIR} 아래에만 생성할 수 있음" ;;
 esac
 
-required_files=(
-  oidc-secure-demo-client-secret
-  oidc-openbao-client-secret
-  oidc-portal-client-secret
-  portal-auth-secret
-  app-db-password
-  app-api-token
-)
-for name in "${required_files[@]}"; do
-  [[ -s ${CREDENTIAL_DIR}/${name} ]] || die "자격증명 파일 없음: ${CREDENTIAL_DIR}/${name}"
-done
 [[ -s ${TESTBED_STATE_DIR}/openbao-init.json ]] || die "OpenBao 초기화 파일 없음"
 [[ -s /var/lib/rancher/rke2/server/token ]] || die "RKE2 server token 없음"
 
@@ -48,6 +37,7 @@ print(hosts["openbao"])
 print(identity["issuer"])
 print(identity["portalClientID"])
 print(spec["environment"])
+print(identity.get("sharedClientID") or "")
 PY
 )
 BASE_DOMAIN=${site_values[0]}
@@ -56,6 +46,29 @@ OPENBAO_HOST=${site_values[2]}
 OIDC_ISSUER=${site_values[3]}
 PORTAL_CLIENT_ID=${site_values[4]}
 APP_ENVIRONMENT=${site_values[5]}
+
+SHARED_CLIENT_ID=${site_values[6]}
+SECURE_DEMO_CLIENT_ID=${SHARED_CLIENT_ID:-secure-demo-${APP_ENVIRONMENT}}
+OPENBAO_CLIENT_ID=${SHARED_CLIENT_ID:-openbao}
+SECURE_DEMO_SECRET=oidc-secure-demo-client-secret
+OPENBAO_SECRET=oidc-openbao-client-secret
+PORTAL_SECRET=oidc-portal-client-secret
+if [[ -n ${SHARED_CLIENT_ID} ]]; then
+  SECURE_DEMO_SECRET=oidc-shared-client-secret
+  OPENBAO_SECRET=${SECURE_DEMO_SECRET}
+  PORTAL_SECRET=${SECURE_DEMO_SECRET}
+fi
+required_files=(
+  "${SECURE_DEMO_SECRET}"
+  "${OPENBAO_SECRET}"
+  "${PORTAL_SECRET}"
+  portal-auth-secret
+  app-db-password
+  app-api-token
+)
+for name in "${required_files[@]}"; do
+  [[ -s ${CREDENTIAL_DIR}/${name} ]] || die "자격증명 파일 없음: ${CREDENTIAL_DIR}/${name}"
+done
 
 temporary=$(mktemp "${TESTBED_STATE_DIR}/.test-credentials.XXXXXX")
 cleanup() { rm -f "${temporary}"; }
@@ -83,15 +96,15 @@ trap cleanup EXIT
   printf 'UNSEAL_MATERIAL=%s/openbao-init.json\n\n' "${TESTBED_STATE_DIR}"
 
   printf '[OIDC confidential client secrets - 일반 사용자에게 전달 금지]\n'
-  printf 'SECURE_DEMO_CLIENT_ID=secure-demo-%s\n' "${APP_ENVIRONMENT}"
+  printf 'SECURE_DEMO_CLIENT_ID=%s\n' "${SECURE_DEMO_CLIENT_ID}"
   printf 'SECURE_DEMO_CLIENT_SECRET=%s\n' \
-    "$(read_secret_file "${CREDENTIAL_DIR}/oidc-secure-demo-client-secret")"
-  printf 'OPENBAO_CLIENT_ID=openbao\n'
+    "$(read_secret_file "${CREDENTIAL_DIR}/${SECURE_DEMO_SECRET}")"
+  printf 'OPENBAO_CLIENT_ID=%s\n' "${OPENBAO_CLIENT_ID}"
   printf 'OPENBAO_CLIENT_SECRET=%s\n\n' \
-    "$(read_secret_file "${CREDENTIAL_DIR}/oidc-openbao-client-secret")"
+    "$(read_secret_file "${CREDENTIAL_DIR}/${OPENBAO_SECRET}")"
   printf 'PORTAL_CLIENT_ID=%s\n' "${PORTAL_CLIENT_ID}"
   printf 'PORTAL_CLIENT_SECRET=%s\n' \
-    "$(read_secret_file "${CREDENTIAL_DIR}/oidc-portal-client-secret")"
+    "$(read_secret_file "${CREDENTIAL_DIR}/${PORTAL_SECRET}")"
   printf 'PORTAL_AUTH_SECRET_FILE=%s/portal-auth-secret\n\n' "${CREDENTIAL_DIR}"
 
   printf '[secure-demo runtime test secrets - 로그인 자격증명 아님]\n'

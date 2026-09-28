@@ -41,6 +41,7 @@ identity = spec.get("identityProvider") or {}
 print(str(spec.get("baseDomain") or ""))
 print(str(identity.get("groupsClaim") or "groups"))
 print(str(identity.get("sourceProtocol") or ""))
+print("true" if identity.get("sharedClientID") else "false")
 PY
 )
 BASE_DOMAIN=${identity_values[0]:?계약에 baseDomain이 없다}
@@ -56,7 +57,15 @@ require_oidc_client_secret() {
   [[ ${owner} == 0:0 && ${mode} == 600 ]] \
     || die "외부 IdP client secret은 root:root 0600이어야 함: ${path}"
 }
-for credential in oidc-secure-demo-client-secret oidc-portal-client-secret oidc-openbao-client-secret; do
+SECURE_DEMO_SECRET=oidc-secure-demo-client-secret
+PORTAL_SECRET=oidc-portal-client-secret
+OPENBAO_SECRET=oidc-openbao-client-secret
+if [[ ${identity_values[3]} == true ]]; then
+  SECURE_DEMO_SECRET=oidc-shared-client-secret
+  PORTAL_SECRET=${SECURE_DEMO_SECRET}
+  OPENBAO_SECRET=${SECURE_DEMO_SECRET}
+fi
+for credential in "${SECURE_DEMO_SECRET}" "${PORTAL_SECRET}" "${OPENBAO_SECRET}"; do
   require_oidc_client_secret "${credential}"
 done
 ensure_random_file "${CREDENTIAL_DIR}/portal-auth-secret"
@@ -284,9 +293,9 @@ seed_kv_file_key "${kv_prefix}/secure-demo" DB_PASSWORD \
 seed_kv_file_key "${kv_prefix}/secure-demo" API_TOKEN \
   "${CREDENTIAL_DIR}/app-api-token"
 seed_kv_file_key "${kv_prefix}/secure-demo" OIDC_CLIENT_SECRET \
-  "${CREDENTIAL_DIR}/oidc-secure-demo-client-secret"
+  "${CREDENTIAL_DIR}/${SECURE_DEMO_SECRET}"
 seed_kv_file_key "${kv_prefix}/portal-lite" AUTH_OIDC_SECRET \
-  "${CREDENTIAL_DIR}/oidc-portal-client-secret"
+  "${CREDENTIAL_DIR}/${PORTAL_SECRET}"
 seed_kv_file_key "${kv_prefix}/portal-lite" AUTH_SECRET \
   "${CREDENTIAL_DIR}/portal-auth-secret"
 

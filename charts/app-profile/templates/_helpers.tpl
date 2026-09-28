@@ -496,7 +496,9 @@ false
 
 {{/* AppGroup마다 api 같은 이름을 재사용하므로 OIDC client도 group 경계가 필요하다. */}}
 {{- define "app-profile.oidcClientID" -}}
-{{- if .Values.app.group -}}
+{{- if and (not .Values.app.group) (eq .Values.app.name "secure-demo") .Values.platform.identityProvider.sharedClientID -}}
+{{- .Values.platform.identityProvider.sharedClientID -}}
+{{- else if .Values.app.group -}}
 {{- include "app-profile.typedName" (dict "prefix" "oc-a-" "slug" (printf "%s-%s-%s" .Values.app.group .Values.app.name .Values.app.environment) "canonical" (include "app-profile.canonicalAppID" .)) -}}
 {{- else -}}
 {{- printf "%s-%s" .Values.app.name .Values.app.environment -}}

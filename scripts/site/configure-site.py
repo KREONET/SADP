@@ -184,7 +184,7 @@ KNOWN_KEYS = {
     "MACHINE_AUTH_ALLOWED_CIDRS",
     "IDENTITY_SOURCE_PROTOCOL", "OIDC_ISSUER", "OIDC_AUTHORIZATION_ENDPOINT",
     "OIDC_TOKEN_ENDPOINT", "OIDC_JWKS_URI", "OIDC_END_SESSION_ENDPOINT",
-    "OIDC_GROUPS_CLAIM", "OIDC_CLIENT_ID_CLAIM", "PORTAL_OIDC_CLIENT_ID",
+    "OIDC_GROUPS_CLAIM", "OIDC_CLIENT_ID_CLAIM", "PORTAL_OIDC_CLIENT_ID", "OIDC_SHARED_CLIENT_ID",
     "STORAGE_CLASS", "APP_GROUP_VOLUME_SIZE", "APP_GROUP_MAX_SERVICES", "FORGEJO_REPO_URL",
     "FORGEJO_REVISION", "OCI_REGISTRY", "OCI_PROJECT", "REGISTRY_PULL_SECRET",
     "TEST_APP_IMAGE_TAG", "PORTAL_IMAGE_TAG", "IMAGE_PULL_POLICY",
@@ -406,6 +406,10 @@ def parse_identity_provider(values: dict[str, str]) -> dict[str, str]:
     for name, value in (("OIDC_GROUPS_CLAIM", groups_claim), ("OIDC_CLIENT_ID_CLAIM", client_id_claim)):
         if not re.fullmatch(r"[A-Za-z0-9._/-]{1,128}", value):
             raise ConfigError(f"{name} has an invalid claim name")
+    shared_client = optional(values, "OIDC_SHARED_CLIENT_ID")
+    # IdP가 발급한 Client ID는 Kubernetes 이름이 아니므로 대소문자를 그대로 보존한다.
+    if shared_client and not re.fullmatch(r"[!-~]{1,512}", shared_client):
+        raise ConfigError("OIDC_SHARED_CLIENT_ID must be 1-512 printable ASCII characters without spaces")
     return {
         "managed": "external",
         "sourceProtocol": source_protocol,
@@ -416,9 +420,10 @@ def parse_identity_provider(values: dict[str, str]) -> dict[str, str]:
         "endSessionEndpoint": end_session,
         "groupsClaim": groups_claim,
         "clientIDClaim": client_id_claim,
-        "portalClientID": kube_name(
+        "portalClientID": shared_client or kube_name(
             required(values, "PORTAL_OIDC_CLIENT_ID"), "PORTAL_OIDC_CLIENT_ID"
         ),
+        **({"sharedClientID": shared_client} if shared_client else {}),
     }
 
 
@@ -945,6 +950,20 @@ def validate(values: dict[str, str]) -> dict:
     tls_source = required(values, "TLS_SOURCE")
     if tls_source not in {"acme", "provided"}:
         raise ConfigError("TLS_SOURCE must be acme or provided")
+    provided_certificate = required(values, "PROVIDED_CERTIFICATE_PATH")
+    provided_private_key = required(values, "PROVIDED_PRIVATE_KEY_PATH")
+    if tls_source == "provided":
+        # 렌더러에서 뒤늦게 거부하면 이미 저장한 env로 설치가 중단되므로 같은 경계를 먼저 검사한다.
+        # PEM 본문은 Git에 없을 수 있다. 파일 내용·일치 여부는 운영 bootstrap에서 검증한다.
+        for key, value in (("PROVIDED_CERTIFICATE_PATH", provided_certificate),
+                           ("PROVIDED_PRIVATE_KEY_PATH", provided_private_key)):
+            path = pathlib.PurePosixPath(value)
+            if ".." in path.parts or not path.parts or (not path.is_absolute() and path.parts[0] != "wildcard"):
+                raise ConfigError(f"{key} must be an absolute path or a relative path under wildcard/")
+            if path.suffix.lower() != ".pem":
+                raise ConfigError(f"{key} must name a PEM file")
+        if provided_certificate == provided_private_key:
+            raise ConfigError("PROVIDED_CERTIFICATE_PATH and PROVIDED_PRIVATE_KEY_PATH must be different")
     issuer_mode = required(values, "TLS_ISSUER_MODE")
     if issuer_mode not in {"staging", "production"}:
         raise ConfigError("TLS_ISSUER_MODE must be staging or production")
@@ -1264,8 +1283,8 @@ def validate(values: dict[str, str]) -> dict:
             "accountKeySecretName": acme_account_secret,
             "recursiveNameservers": recursive_nameservers,
             "certManagerPlacement": cert_manager_placement,
-            "providedCertificatePath": required(values, "PROVIDED_CERTIFICATE_PATH"),
-            "providedPrivateKeyPath": required(values, "PROVIDED_PRIVATE_KEY_PATH"),
+            "providedCertificatePath": provided_certificate,
+            "providedPrivateKeyPath": provided_private_key,
         },
         "identityProvider": identity_provider,
         "installer": {

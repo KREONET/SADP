@@ -43,7 +43,7 @@ if [[ ${APPLY} != true ]]; then
 fi
 
 INIT_FILE=${TESTBED_STATE_DIR}/openbao-init.json
-CLIENT_SECRET_FILE=${CREDENTIAL_DIR}/oidc-openbao-client-secret
+CLIENT_SECRET_FILE=${CREDENTIAL_DIR}/${OIDC_OPENBAO_SECRET_NAME}
 [[ -s ${INIT_FILE} ]] || die "OpenBao 초기화 파일 없음: ${INIT_FILE}"
 jq -e '.root_token | type == "string" and length > 0' "${INIT_FILE}" >/dev/null \
   || die "OpenBao root token을 읽지 못함"

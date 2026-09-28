@@ -970,9 +970,10 @@ else:
         for field in ("certificatePath", "privateKeyPath"):
             value = str(provided.get(field) or "")
             path = pathlib.PurePosixPath(value)
-            if (not value or path.is_absolute() or ".." in path.parts
-                    or not path.parts or path.parts[0] != "wildcard" or path.suffix.lower() != ".pem"):
-                bad(f"spec.tls.provided.{field} 는 wildcard/ 아래 상대 PEM 경로여야 한다")
+            if (not value or ".." in path.parts or not path.parts
+                    or (not path.is_absolute() and path.parts[0] != "wildcard")
+                    or path.suffix.lower() != ".pem"):
+                bad(f"spec.tls.provided.{field} 는 PEM 절대경로 또는 wildcard/ 아래 상대 PEM 경로여야 한다")
             provided_paths.append(value)
         if len(set(provided_paths)) != 2:
             bad("provided 인증서와 private key 경로가 같을 수 없다")
@@ -1067,6 +1068,11 @@ else:
         bad("spec.identityProvider HTTPS endpoint 오류: " + ", ".join(endpoint_errors))
     elif not str(identity_provider.get("portalClientID") or "").strip():
         bad("spec.identityProvider.portalClientID 가 비어 있다")
+    elif identity_provider.get("sharedClientID") and (
+        not re.fullmatch(r"[!-~]{1,512}", str(identity_provider["sharedClientID"]))
+        or identity_provider["portalClientID"] != identity_provider["sharedClientID"]
+    ):
+        bad("공통 OIDC Client ID 형식 또는 Portal Client ID 일치 오류")
     elif not str(identity_provider.get("groupsClaim") or "").strip():
         bad("spec.identityProvider.groupsClaim 이 비어 있다")
     else:

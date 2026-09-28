@@ -51,12 +51,89 @@ sudo bash ./sadp --install --interactive --apply
   `SADP_SSH_USER`는 기본 `root`이며 다른 계정은 비밀번호 없는 sudo가 필요합니다.
   SSH key와 검증된 known_hosts를 준비합니다. 미확인 host key는 자동 수락하지 않습니다.
   worker에는 Python 3/PyYAML·tar와 실행 중인 RKE2 agent가 필요합니다.
-- 기존 설치와 같은 OIDC client Secret 3개, DNS TSIG(ACME 사용 시), Argo 읽기 token,
+- 외부 IdP에서 발급한 OIDC client Secret 3개(`secure-demo`, `portal`, `openbao`),
+  DNS TSIG(ACME 사용 시), Argo 읽기 token,
   registry pull/push 파일을 준비합니다. 앱 배포를 켜면 `SADP_PORTAL_FORGEJO_TOKEN_FILE`도
   지정합니다. Portal 봇의 저장소/PR 권한을 가진 token이며 Argo 읽기 token과 별개입니다.
 - control-plane에 Git, Helm, Python 3/PyYAML, jq, OpenSSL, Docker와 RKE2 도구가 필요합니다.
   제공 인증서를 쓰면 기존 `PROVIDED_CERTIFICATE_PATH`/`PROVIDED_PRIVATE_KEY_PATH` 또는
   Gateway의 기존 TLS Secret을 준비합니다.
+
+**control-plane에는 실행 중인 Docker Engine 서비스도 필요합니다.** RKE2에 포함된 containerd와
+별개이며, 통합 설치기의 사전 검사와 모니터링 이미지 동기화에서 사용합니다. `docker` CLI만
+있거나 `docker.service`가 `not-found`인 상태로는 설치를 진행할 수 없습니다.
+
+Ubuntu에서 Docker가 아직 설치되지 않았다면 control-plane에서 먼저 실행합니다.
+
+```bash
+sudo apt-get update
+sudo apt-get install -y docker.io
+sudo systemctl enable --now docker
+sudo systemctl show rke2-server docker -p Id -p LoadState -p ActiveState -p SubState
+```
+
+두 서비스 모두 `LoadState=loaded`, `ActiveState=active`, `SubState=running`인지 확인한 뒤
+통합 설치 명령을 실행합니다. Docker가 이미 설치된 서버에서는 재설치하지 않고 상태만 확인합니다.
+`all --apply`는 이후 계약의 Docker 프록시 설정을 적용하고 Docker를 재시작합니다.
+
+Authentik Provider 하나를 세 기본 앱에서 공유하려면 `site.env`에 다음 공개값을 지정합니다.
+기존 env에는 이 한 줄만 추가하면 다른 답변을 다시 입력할 필요가 없습니다. 마법사에서는
+“Provider 하나를 공유할 Client ID”에 같은 값을 입력하면 Portal 전용 Client ID 질문을 생략합니다.
+
+```dotenv
+OIDC_SHARED_CLIENT_ID=<AUTHENTIK_CLIENT_ID>
+```
+
+이 값이 있으면 secure-demo·Portal·OpenBao가 같은 Client ID를 사용하며, `PORTAL_OIDC_CLIENT_ID`보다
+우선합니다. Secret은 한 번의 숨김 입력과 확인 입력으로
+`/var/lib/sadp/credentials/oidc-shared-client-secret`에 저장합니다. 무인 설치는 이 파일 하나를
+`root:root 0600`으로 준비합니다. 기존 앱별 Secret 파일을 자동 복사하거나 덮어쓰지 않습니다.
+공통 값을 비우면 앱별 Provider 방식으로 돌아갑니다. 사용자 생성 AppGroup 앱은 공유 대상이 아닙니다.
+
+Authentik의 해당 OAuth2/OIDC Provider에는 다음 redirect URI를 등록합니다. 설치 계획은 실제
+사이트 hostname을 사용한 목록도 출력합니다. Client type은 `Confidential`을 사용합니다.
+
+| 용도 | Redirect URI |
+|---|---|
+| secure-demo | `https://<SECURE_DEMO_HOST>/oauth2/callback` |
+| Portal | `https://<PORTAL_HOST>/api/auth/callback/oidc` |
+| OpenBao 웹 | `https://<OPENBAO_HOST>/ui/vault/auth/oidc/oidc/callback` |
+| OpenBao CLI | `http://localhost:8250/oidc/callback` |
+
+아래의 앱별 파일 3개 준비 절차는 **공통 Client ID를 비운 경우**에 해당합니다.
+
+터미널에서 `--phase all --apply`를 실행하면 없는 OIDC client Secret만 숨김 입력과 확인 입력을
+받습니다. 기존 파일은 다시 묻거나 덮어쓰지 않습니다. Secret은 사용자 비밀번호나 access token이
+아니라 외부 IdP에 등록한 각 앱의 client Secret입니다. IdP 등록·Secret 발급 자체는 자동화하지 않습니다.
+빈 입력이나 Ctrl+C로 중단해도 이미 준비된 파일은 남아 다음 실행에서 재사용합니다.
+
+무인 실행 및 개별 `cluster` phase는 다음 파일을 미리 준비하십시오. 각 파일에는 해당 Secret
+문자열 하나만 저장하며(JSON/key=value 형식 아님), 소유자는 `root:root`, 권한은 `0600`입니다.
+기본 위치는 아래와 같고 `SADP_STATE_DIR`을 지정하면 그 디렉터리의 `credentials/`를 사용합니다.
+
+```text
+/var/lib/sadp/credentials/oidc-secure-demo-client-secret
+/var/lib/sadp/credentials/oidc-portal-client-secret
+/var/lib/sadp/credentials/oidc-openbao-client-secret
+```
+
+Secret 본문은 `site.env`, Git 또는 명령행 인자에 넣지 않습니다.
+
+`TLS_SOURCE=provided`에서는 control-plane의 **PEM 절대경로를 그대로 입력**할 수 있습니다.
+Certbot으로 발급했다면 복사할 필요 없이 다음처럼 지정합니다.
+
+```dotenv
+TLS_SOURCE=provided
+PROVIDED_CERTIFICATE_PATH=/etc/letsencrypt/live/<CERTIFICATE_NAME>/fullchain.pem
+PROVIDED_PRIVATE_KEY_PATH=/etc/letsencrypt/live/<CERTIFICATE_NAME>/privkey.pem
+```
+
+기존 `wildcard/fullchain.pem`, `wildcard/privkey.pem`처럼 저장소 루트 기준 `wildcard/` 아래
+상대경로도 지원합니다. `..` 포함 경로, `.pem`이 아닌 확장자, 인증서·개인키의 동일 경로는 거부합니다.
+PEM 본문은 env나 Git에 넣지 않습니다. 저장 전에는 경로 형식만 검사하며, cluster 단계에서 실제
+파일의 apex·wildcard SAN, 7일 이상의 잔여 유효기간, 키 일치를 검증합니다. Certbot 심볼릭 링크는
+따라가되 실제 개인키 파일에 그룹·다른 사용자 권한이 있으면 거부합니다(권장 `0600`).
+Certbot 갱신만으로 Kubernetes TLS Secret이 자동 갱신되지는 않습니다.
 
 설치기는 etcd snapshot을 만든 뒤 env 렌더·회귀 검사와 생성물 commit/push를 수행하고,
 worker를 한 대씩 drain·설정·재시작합니다. 새 Node lease와 Ready를 확인한 뒤 원래
@@ -100,19 +177,23 @@ sudo bash ./sadp --install-wizard
 해당 묶음을 하나씩 수정합니다. 도메인, Registry, 이미지 tag, 인증 endpoint, Secret 파일 경로는
 직접 확인합니다. **OCI Registry는 컨테이너 이미지 저장소이며 OIDC 로그인 공급자와 별개입니다.**
 
-IP·CIDR은 먼저 현재 기본값을 묶어서 보여 주고 **Enter로 한 번에 유지**할 수 있습니다.
+IP·CIDR은 먼저 현재 RKE2·로컬 NIC를 조회한 뒤 제안값을 묶어서 보여 주며 **Enter로 한 번에 사용**할 수 있습니다.
 내부 IP, Pod/Service CIDR, DNS, API 주소, RKE2 endpoint와 Gateway VIP/pool·Squid 주소가
-대상입니다. 기존 `site.env`가 있으면 저장된 값을 사용하고, 없으면 template 값을 보여 줍니다.
-유지를 선택하면 해당 묶음의 개별 질문과 자동 조회를 생략하며 다른 값으로 덮어쓰지 않습니다.
+대상입니다. RKE2의 단일 control-plane Node InternalIP가 로컬 NIC 주소 하나와 일치하면,
+실제 Node 이름·내부 IP·NIC·prefix로 조회 기준을 잡습니다. 기존 env의 예제 hostname·IP가
+틀려도 이 대조는 가능합니다. 확인된 실행 값은 출처와 함께 우선 제안하고 변경 전 값도 표시합니다.
+조회하지 못한 값은 `기존값·미확인` 또는 `예제와 동일·미확인`으로 구분합니다.
+Enter로 수락한 뒤에만 답변에 반영하고 해당 질문을 생략합니다. 거절하면 기존 답변을 유지한 채
+수정할 수 있습니다. `--no-detect`는 사전 조회 없이 기존 env/template 값을 사용하는 경로입니다.
 필수 값이 비어 있으면 직접 질문합니다. 기본값 유지도 최종 env 검증과 실제 적용 시 예제값 차단을
 우회하지 않습니다.
 
-노드 구성(single/multi), 실제 노드 이름·worker 목록, NIC 역할·추가 보호 NIC,
+노드 구성(single/multi), 조회로 확인하지 못한 노드 이름·NIC 역할, worker 목록·추가 보호 NIC,
 공인 IP·NAT/direct 방식은 별도로 확인합니다. 공개 주소가 다른 사이트의 예제값인 채 설치되지
 않도록 도메인·Registry·인증 공급자·TLS 방식·Secret 파일 경로도 계속 질문합니다.
 
-IP·CIDR 묶음에서 `n`을 선택하면 자동 조회와 개별 수정으로 진행합니다.
-이때 `ip -j address show`로 현재 호스트의 NIC·IPv4 후보를 읽습니다. 설치 대상
+IP·CIDR 묶음에서 `n`을 선택하면 개별 수정으로 진행합니다. 사전 조회에서 내부 NIC를 확정하지
+못했다면 `ip -j address show`로 현재 호스트의 NIC·IPv4 후보를 보여 줍니다. 설치 대상
 control-plane에서 실행 중이면 내부 NIC·주소와 외부 NIC를 선택하고, 제안된 hostname·IP·CIDR을
 확인해 관련 질문을 생략할 수 있습니다. 여러 IPv4가 있으면 사용할 주소도 선택합니다.
 후보 선택에서 Enter를 누르거나 제안값을 거절하면 직접 입력합니다. `ip`가 없거나 조회에 실패해도
@@ -120,7 +201,7 @@ control-plane에서 실행 중이면 내부 NIC·주소와 외부 NIC를 선택�
 NIC 이름은 모든 노드에서 같아야 하며,
 제안된 hostname은 Kubernetes Node 이름, CIDR은 전체 노드 내부망과 일치하는지 확인합니다.
 
-그다음 기존 RKE2 클러스터를 읽어 아래 값을 **출처와 함께 한 번에 제안**합니다. 수락한 항목은
+사전 조회 또는 NIC 수동 선택 뒤 기존 RKE2 클러스터를 읽어 아래 값을 **출처와 함께 한 번에 제안**합니다. 수락한 항목은
 개별 질문을 생략합니다. 조회 실패·권한 부족·모호한 설정은 현재값을 유지하고 직접 질문합니다.
 
 | 항목 | 조회 근거와 자동 제안 조건 |

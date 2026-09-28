@@ -96,6 +96,7 @@ SECTIONS: tuple[tuple[str, tuple[Question, ...]], ...] = (
             Question("OIDC_END_SESSION_ENDPOINT", "OIDC logout endpoint(없으면 -)", optional=True),
             Question("OIDC_GROUPS_CLAIM", "OIDC 그룹 claim"),
             Question("OIDC_CLIENT_ID_CLAIM", "OIDC client ID claim"),
+            Question("OIDC_SHARED_CLIENT_ID", "Provider 하나를 공유할 Client ID (앱별 Provider 사용은 -)", optional=True),
             Question("PORTAL_OIDC_CLIENT_ID", "Portal OIDC client ID"),
             Question("TLS_SOURCE", "TLS 인증서 방식", ("acme", "provided")),
             Question("ACME_EMAIL", "ACME 알림 email"),
@@ -105,8 +106,8 @@ SECTIONS: tuple[tuple[str, tuple[Question, ...]], ...] = (
             Question("RFC2136_NAMESERVER", "RFC2136 nameserver IPv4:port"),
             Question("RFC2136_TSIG_KEY_NAME", "RFC2136 TSIG key 이름"),
             Question("DNS_RECURSIVE_NAMESERVERS", "DNS-01 self-check resolver 목록"),
-            Question("PROVIDED_CERTIFICATE_PATH", "제공 인증서 파일 경로"),
-            Question("PROVIDED_PRIVATE_KEY_PATH", "제공 개인키 파일 경로"),
+            Question("PROVIDED_CERTIFICATE_PATH", "제공 인증서 경로 (.pem 절대경로 또는 wildcard/ 아래 상대경로)"),
+            Question("PROVIDED_PRIVATE_KEY_PATH", "제공 개인키 경로 (.pem 절대경로 또는 wildcard/ 아래 상대경로)"),
         ),
     ),
     (
@@ -135,7 +136,7 @@ SECTIONS: tuple[tuple[str, tuple[Question, ...]], ...] = (
 # 사이트의 인증 경계·이미지 식별자는 기본값이라는 이유로 생략하지 않는다.
 QUICK_DEFAULTS = frozenset({
     "SITE_NAME", "APP_ENVIRONMENT", "CLUSTER_NAME", "APP_PROJECT", "STORAGE_CLASS",
-    "FORGEJO_REVISION", "OIDC_GROUPS_CLAIM", "OIDC_CLIENT_ID_CLAIM", "PORTAL_OIDC_CLIENT_ID",
+    "FORGEJO_REVISION", "OIDC_GROUPS_CLAIM", "OIDC_CLIENT_ID_CLAIM",
     "SADP_INSTALL_GITOPS", "SADP_INSTALL_MONITORING", "SADP_BUILD_IMAGES",
     "SADP_BUILD_NODE", "SADP_DEPLOY_APPS", "SADP_RUN_VERIFY", "SADP_SSH_USER",
 })
@@ -358,9 +359,10 @@ def guarded_candidates(values: dict[str, str], interfaces: list[dict]) -> str | 
     return ",".join(dict.fromkeys(existing + candidates)) if candidates else None
 
 
-def cluster_network_candidates(values: dict[str, str]) -> dict[str, tuple[str, str]]:
+def cluster_network_candidates(values: dict[str, str], nodes: list[dict] | None = None) -> dict[str, tuple[str, str]]:
     candidates: dict[str, tuple[str, str]] = {}
-    nodes = read_cluster("nodes").get("items", [])
+    if nodes is None:
+        nodes = read_cluster("nodes").get("items", [])
     control_nodes = [node for node in nodes if any(
         role in node.get("metadata", {}).get("labels", {}) for role in
         ("node-role.kubernetes.io/control-plane", "node-role.kubernetes.io/master"))]
@@ -445,20 +447,64 @@ def suggest_cluster_network(values: dict[str, str]) -> set[str]:
     return set(candidates)
 
 
+def automatic_network_defaults(values: dict[str, str]) -> dict[str, tuple[str, str]]:
+    nodes = read_cluster("nodes").get("items", [])
+    controls = [node for node in nodes if any(role in node.get("metadata", {}).get("labels", {})
+                for role in ("node-role.kubernetes.io/control-plane", "node-role.kubernetes.io/master"))]
+    if len(controls) != 1:
+        return {}
+    control = controls[0]
+    ips = [item.get("address") for item in control.get("status", {}).get("addresses", [])
+           if item.get("type") == "InternalIP" and ipv4_list([item.get("address")])]
+    if len(ips) != 1:
+        return {}
+    interfaces = local_interfaces()
+    matches = [(item["ifname"], ipaddress.IPv4Interface(address))
+               for item in interfaces for address in interface_ipv4(item)
+               if str(ipaddress.IPv4Interface(address).ip) == ips[0]]
+    # default route나 사설 IP 여부로 내부 NIC를 추측하지 않고 실제 Node identity와 대조한다.
+    if len(matches) != 1 or not control.get("metadata", {}).get("name"):
+        return {}
+    interface, address = matches[0]
+    candidates = {
+        "CONTROL_PLANE_HOSTNAME": (control["metadata"]["name"], "실제 control-plane Node 이름"),
+        "CONTROL_PLANE_IP": (ips[0], "Node InternalIP와 로컬 NIC 일치"),
+        "INTERNAL_INTERFACE": (interface, "Node InternalIP를 가진 로컬 NIC"),
+        "NODE_INTERNAL_CIDRS": (str(address.network), "로컬 내부 NIC의 prefix·worker의 별도 대역은 확인 필요"),
+    }
+    probe = dict(values, **{key: value for key, (value, _) in candidates.items()})
+    candidates.update(cluster_network_candidates(probe, nodes))
+    return candidates
+
+
 def collect_answers(values: dict[str, str], *, advanced: bool, detect: bool) -> None:
+    template_values = parse_values(DEFAULT_TEMPLATE.read_text(encoding="utf-8"))
     for title, questions in SECTIONS:
         print(f"\n== {title} ==")
         skipped: set[str] = set()
         keep_network = False
-        network_defaults = network_default_questions(questions, values) if not advanced else []
+        automatic = {}
+        if detect and not advanced and any(q.key == "INTERNAL_INTERFACE" for q in questions):
+            print("  기본값을 표시하기 전에 현재 RKE2·로컬 NIC 정보를 조회합니다.")
+            automatic = automatic_network_defaults(values)
+        proposed = dict(values, **{key: value for key, (value, _) in automatic.items()})
+        network_defaults = network_default_questions(questions, proposed) if not advanced else []
         if network_defaults:
-            print("  IP·CIDR 기본/기존값 (기존 site.env가 있으면 저장된 값):")
-            for question in network_defaults:
-                print(f"    {question.label}: {values.get(question.key) or '비움'}")
-            keep_network = confirm("IP·CIDR은 위 값으로 유지하고 질문을 생략할까요?", default=True)
+            print("  IP·CIDR 제안값 (확인된 실제 값 우선, 나머지는 출처 표시):")
+            displayed = [q for q in questions if q in network_defaults or q.key in automatic]
+            for question in displayed:
+                value = proposed.get(question.key, "")
+                source = (automatic[question.key][1] if question.key in automatic else
+                          "예제와 동일·미확인" if value == template_values.get(question.key) else "기존값·미확인")
+                print(f"    {question.label}: {value or '비움'} [{source}]")
+                if question.key in automatic and values.get(question.key) != value:
+                    print(f"      기존/예제값: {values.get(question.key) or '비움'}")
+            keep_network = confirm("IP·CIDR은 위 제안값을 사용하고 질문을 생략할까요?", default=True)
             if keep_network:
+                values.update({key: value for key, (value, _) in automatic.items()})
                 skipped.update(q.key for q in network_defaults)
-            print("  노드 구성·NIC 역할·추가 보호 NIC·공인 IP·공개 방식은 별도로 확인합니다.")
+                skipped.update(automatic)
+            print("  미확인 노드·NIC 역할과 추가 보호 NIC·공인 IP·공개 방식은 별도로 확인합니다.")
         defaults = default_questions(questions, values) if not advanced else []
         if len(defaults) > 1:
             print("  다음 기본/기존 설정은 한 번에 유지할 수 있습니다:")
@@ -466,7 +512,7 @@ def collect_answers(values: dict[str, str], *, advanced: bool, detect: bool) -> 
                 print(f"    {question.label}: {values.get(question.key) or '자동 선택'}")
             if confirm("위 설정을 유지하고 개별 질문을 생략할까요?", default=True):
                 skipped.update(q.key for q in defaults)
-        if detect and not keep_network and any(q.key == "INTERNAL_INTERFACE" for q in questions):
+        if detect and not keep_network and not automatic and any(q.key == "INTERNAL_INTERFACE" for q in questions):
             skipped.update(suggest_network(values))
         for question in questions:
             if detect and not keep_network and question.key == "GUARDED_INTERFACES":
@@ -524,6 +570,8 @@ def answer(question: Question, current: str) -> str:
 
 
 def should_ask(question: Question, values: dict[str, str]) -> bool:
+    if question.key == "PORTAL_OIDC_CLIENT_ID":
+        return not values.get("OIDC_SHARED_CLIENT_ID")
     if question.key == "WORKER_NODES":
         return values.get("CLUSTER_MODE", "multi") != "single"
     if question.key == "SADP_SSH_USER":
@@ -773,6 +821,9 @@ def main() -> int:
         print(f"[FAIL] {error}", file=sys.stderr)
         return 1
     print(f"[OK]   검증된 site.env 저장(mode 0600): {args.output}")
+    print("[INFO] 외부 IdP client Secret을 준비하십시오: "
+          + ("공통 Secret 1개" if values.get("OIDC_SHARED_CLIENT_ID") else "secure-demo/portal/openbao 각각 1개"))
+    print("[INFO] all --apply를 터미널에서 실행하면 없는 Secret만 숨김 입력받아 root 전용 파일로 저장합니다.")
 
     if args.phase == "none":
         print("다음 단계:")

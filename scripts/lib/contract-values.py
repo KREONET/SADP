@@ -132,6 +132,8 @@ def build(spec: dict) -> dict:
                 "issuer": spec["identityProvider"]["issuer"],
                 "jwksURI": spec["identityProvider"]["jwksURI"],
                 "groupsClaim": spec["identityProvider"]["groupsClaim"],
+                **({"sharedClientID": spec["identityProvider"]["sharedClientID"]}
+                   if spec["identityProvider"].get("sharedClientID") else {}),
             },
         }
     }

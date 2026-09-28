@@ -5,6 +5,8 @@ from __future__ import annotations
 import argparse
 from datetime import datetime, timezone
 import fcntl
+import getpass
+import warnings
 import importlib.util
 import json
 import os
@@ -32,6 +34,71 @@ def private_file(path: Path) -> None:
     info = path.lstat()
     if not stat.S_ISREG(info.st_mode) or info.st_uid != 0 or stat.S_IMODE(info.st_mode) not in (0o400, 0o600) or not info.st_size:
         raise InstallError(f"root 소유 0400/0600 일반 파일이 필요함: {path}")
+
+
+OIDC_CLIENTS = ("secure-demo", "portal", "openbao")
+
+
+def prepare_oidc_credentials(state: Path, *, interactive: bool, shared: bool = False) -> None:
+    directory = state / "credentials"
+    missing = []
+    for name in (("shared",) if shared else OIDC_CLIENTS):
+        path = directory / f"oidc-{name}-client-secret"
+        try:
+            info = path.lstat()
+        except FileNotFoundError:
+            missing.append((name, path))
+            continue
+        if (not stat.S_ISREG(info.st_mode) or info.st_uid != 0 or info.st_gid != 0
+                or stat.S_IMODE(info.st_mode) != 0o600 or not info.st_size):
+            raise InstallError(f"OIDC client Secret은 비어 있지 않은 root:root 0600 일반 파일이어야 함: {path}")
+    if not missing:
+        return
+    guidance = ("외부 IdP에서 발급한 client Secret이 필요합니다(사용자 비밀번호/토큰 아님).\n"
+                + "\n".join(f"  {name}: {path}" for name, path in missing)
+                + "\n파일에는 해당 Secret 문자열 하나만 넣고 root:root 0600으로 준비하십시오."
+                + "\n터미널에서 같은 --phase all --apply 명령을 실행하면 없는 항목만 숨김 입력받습니다.")
+    if not interactive:
+        raise InstallError(guidance)
+    if os.geteuid() != 0:
+        raise InstallError("OIDC Secret 준비는 root로 실행해야 함")
+    print("[INFO] " + guidance, flush=True)
+    print("[INFO] 기존 파일은 유지하며 Secret은 site.env·Git·로그에 기록하지 않습니다.", flush=True)
+    directory.mkdir(mode=0o700, parents=True, exist_ok=True)
+    # 링크나 다른 사용자가 바꿀 수 있는 디렉터리로 Secret이 새지 않게 한다.
+    for parent in (state, directory):
+        info = parent.lstat()
+        if not stat.S_ISDIR(info.st_mode) or info.st_uid != 0 or info.st_mode & 0o022:
+            raise InstallError(f"Secret 저장 디렉터리는 root 소유이며 다른 사용자 쓰기가 금지되어야 함: {parent}")
+    for name, path in missing:
+        while True:
+            # echo 차단 실패 시 getpass가 평문 입력으로 대체하지 않도록 중단한다.
+            with warnings.catch_warnings():
+                warnings.simplefilter("error", getpass.GetPassWarning)
+                try:
+                    value = getpass.getpass(f"{name} OIDC client Secret (숨김 입력): ")
+                    confirm = getpass.getpass(f"{name} OIDC client Secret 확인: ") if value else ""
+                except (EOFError, getpass.GetPassWarning) as error:
+                    raise InstallError("OIDC Secret 숨김 입력을 사용할 수 없습니다. 파일로 준비 후 재실행하십시오.") from error
+            if not value:
+                raise InstallError("OIDC Secret 입력 취소. 준비된 파일과 기존 설정을 유지합니다.")
+            if value != confirm or any(char in value for char in "\r\n\x00"):
+                print("[INFO] 입력이 다르거나 여러 줄입니다. 해당 항목만 다시 입력하십시오.", flush=True)
+                continue
+            break
+        # 완성된 0600 파일만 게시하며 재실행이나 경쟁으로 생긴 기존 파일은 덮어쓰지 않는다.
+        fd, temporary = tempfile.mkstemp(prefix=".oidc-", dir=directory)
+        try:
+            with os.fdopen(fd, "w") as stream:
+                os.fchmod(stream.fileno(), 0o600)
+                os.fchown(stream.fileno(), 0, 0)
+                stream.write(value)
+                stream.flush()
+                os.fsync(stream.fileno())
+            os.link(temporary, path)
+        finally:
+            os.unlink(temporary)
+        print(f"[OK] {name} OIDC client Secret 파일 준비", flush=True)
 
 
 def atomic_env_update(path: Path, changes: dict[str, str]) -> None:
@@ -102,6 +169,22 @@ class Installer:
             raise
         result = subprocess.CompletedProcess(command, process.returncode, stdout, stderr)
         if check and result.returncode:
+            # 전체 argv에는 자격증명이 있을 수 있다. 설치기가 고정한 서비스 명령만 식별한다.
+            service_actions = {
+                ("systemctl", "is-active", "--quiet", "rke2-server"): ("rke2-server", "실행 상태 확인"),
+                ("systemctl", "is-active", "--quiet", "docker"): ("docker", "실행 상태 확인"),
+                ("systemctl", "restart", "rke2-server"): ("rke2-server", "재시작"),
+                ("systemctl", "restart", "docker"): ("docker", "재시작"),
+            }
+            if tuple(command) in service_actions:
+                unit, action = service_actions[tuple(command)]
+                raise InstallError(
+                    f"{unit}.service {action} 실패(exit={result.returncode}); 후속 단계 중단. "
+                    f"확인: sudo systemctl show {unit} -p LoadState -p ActiveState -p SubState. "
+                    + ("RKE2가 설치되고 실행 중인 control-plane에서 실행해야 합니다."
+                       if unit == "rke2-server" else
+                       "Docker 서비스 설치·실행 여부를 확인하십시오. RKE2의 containerd와 별개입니다.")
+                )
             raise InstallError(f"{Path(str(args[0])).name} 단계 실패(exit={result.returncode}); 후속 단계 중단")
         return result
 
@@ -116,6 +199,17 @@ class Installer:
         print("[PLAN] Squid 준비 → 노드별 drain·설정·RKE2 재시작·Ready·uncordon → Docker 재시작", flush=True)
         print("[PLAN] 플랫폼 → staging/production Certificate 확인·env 갱신·재렌더/push → HTTPS", flush=True)
         print("[PLAN] OpenBao 초기화·unseal → 서비스·이미지·앱 → 선택한 acceptance", flush=True)
+        shared = self.cfg["identityProvider"].get("sharedClientID")
+        print("[PLAN] OIDC " + ("공통 Secret 1개" if shared else "앱별 Secret 3개")
+              + ": 기존 파일 재사용, 적용 시 없는 항목만 숨김 입력", flush=True)
+        if shared:
+            hosts = self.cfg["hosts"]
+            print("[INFO] 공유 Provider에 등록할 redirect URI:", flush=True)
+            for uri in (f"https://{hosts['secure-demo']}/oauth2/callback",
+                        f"https://{hosts['portal']}/api/auth/callback/oidc",
+                        f"https://{hosts['openbao']}/ui/vault/auth/oidc/oidc/callback",
+                        "http://localhost:8250/oidc/callback"):
+                print("  " + uri, flush=True)
         print("[INFO] --apply는 서비스 중단, 생성물 Git 반영, TLS 진행값 기록을 포함한다", flush=True)
 
     def preflight(self):
@@ -156,11 +250,8 @@ class Installer:
             if not c["installer"]["portalTokenFile"]:
                 raise InstallError("all 앱 설치에는 SADP_PORTAL_FORGEJO_TOKEN_FILE이 필요함")
             private_file(Path(c["installer"]["portalTokenFile"]))
-        for name in ("secure-demo", "portal", "openbao"):
-            credential = self.state / "credentials" / f"oidc-{name}-client-secret"
-            private_file(credential)
-            if credential.stat().st_gid != 0 or stat.S_IMODE(credential.stat().st_mode) != 0o600:
-                raise InstallError("OIDC client 파일은 root:root 0600이어야 함")
+        prepare_oidc_credentials(self.state, interactive=sys.stdin.isatty(),
+                                 shared=bool(c["identityProvider"].get("sharedClientID")))
         if c["installer"]["pushTokenFile"]:
             private_file(Path(c["installer"]["pushTokenFile"]))
         self.run(["systemctl", "is-active", "--quiet", "rke2-server"])
@@ -203,7 +294,11 @@ class Installer:
 
     def ssh(self, address, script, *, input=None, capture=False):
         user = self.cfg["installer"]["sshUser"]
-        remote = (["sudo", "-n"] if user != "root" else []) + ["bash", "-ceu", script]
+        # SSH 하위 Bash가 .bashrc/BASH_ENV를 읽으면 PS1 같은 대화형 설정이 nounset에서 실패한다.
+        # 설치용 셸만 격리하고 원격 사용자의 시작 파일은 수정하지 않는다.
+        remote = (["sudo", "-n"] if user != "root" else []) + [
+            "env", "-u", "BASH_ENV", "-u", "ENV", "bash", "--noprofile", "--norc", "-ceu", script,
+        ]
         return self.run(["ssh", "-o", "BatchMode=yes", "-o", "StrictHostKeyChecking=yes",
                          "-o", "ConnectTimeout=10", f"{user}@{address}", shlex.join(remote)],
                         input=input, capture=capture)

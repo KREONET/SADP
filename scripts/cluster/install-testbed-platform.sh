@@ -49,8 +49,15 @@ print(str(bool((spec.get("monitoring") or {}).get("enabled", True))).lower())
 PY
 )
 BASE_DOMAIN=${contract_values[0]}
-CERT_FILE=${TESTBED_ROOT}/${contract_values[1]}
-KEY_FILE=${TESTBED_ROOT}/${contract_values[2]}
+# Certbot live 경로는 복사하지 않아야 갱신된 파일을 다음 설치에서도 읽을 수 있다.
+resolve_tls_path() {
+  case "$1" in
+    /*) printf '%s\n' "$1" ;;
+    *) printf '%s/%s\n' "${TESTBED_ROOT}" "$1" ;;
+  esac
+}
+CERT_FILE=$(resolve_tls_path "${contract_values[1]}")
+KEY_FILE=$(resolve_tls_path "${contract_values[2]}")
 TLS_SECRET=${contract_values[3]}
 TLS_SOURCE=${contract_values[4]}
 INSTALL_MONITORING=${contract_values[5]}
@@ -85,6 +92,7 @@ load_gateway_tls() {
 }
 
 validate_wildcard_files() {
+  [[ -f ${CERT_FILE} && -r ${CERT_FILE} && -f ${KEY_FILE} && -r ${KEY_FILE} ]] || die "제공 PEM 파일을 읽을 수 없음"
   openssl x509 -in "${CERT_FILE}" -noout >/dev/null
   openssl pkey -in "${KEY_FILE}" -noout >/dev/null
   openssl x509 -in "${CERT_FILE}" -checkend 604800 -noout >/dev/null \
@@ -95,7 +103,8 @@ validate_wildcard_files() {
   cert_hash=$(openssl x509 -in "${CERT_FILE}" -pubkey -noout | openssl pkey -pubin -outform DER | sha256sum | cut -d' ' -f1)
   key_hash=$(openssl pkey -in "${KEY_FILE}" -pubout -outform DER | sha256sum | cut -d' ' -f1)
   [[ ${cert_hash} == "${key_hash}" ]] || die "wildcard 인증서와 private key가 일치하지 않음"
-  key_mode=$(stat -c '%a' "${KEY_FILE}")
+  # Certbot live 링크의 777 대신 archive에 있는 실제 개인키 권한을 검사한다.
+  key_mode=$(stat -L -c '%a' "${KEY_FILE}")
   (( (8#${key_mode} & 077) == 0 )) || die "private key 권한이 너무 넓음(${key_mode}); 600 권장"
   ok "wildcard SAN/유효기간/key 일치/파일 권한 검증"
 }
