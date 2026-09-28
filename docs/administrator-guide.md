@@ -33,13 +33,15 @@ sudo bash ./sadp --install --env-file /etc/sadp/site.env --apply
 
 ## 3. 설정과 GitOps 원칙
 
-```text
-/etc/sadp/site.env
-  → configure-site.py --write
-  → contracts/platform-production.yaml
-  → platform/ · argocd/ · apps/ · rke/
-  → review · test · commit/push
-  → Argo CD
+```mermaid
+flowchart TD
+    Env["Git 밖의 site.env"] --> Render["configure-site.py: 계약·생성물 렌더"]
+    Render --> Review["diff 검토·테스트"]
+    Review --> Git["사이트 branch에 commit/push"]
+    Git --> Argo["Argo CD: GitOps 리소스 동기화"]
+    Git --> Phase["변경 범위에 맞게 node·cluster phase 적용"]
+    Argo --> Verify["상태·접속·Secret 동기화 검수"]
+    Phase --> Verify
 ```
 
 - 실제 사이트에서는 Git 밖의 `/etc/sadp/site.env`가 상류입니다.

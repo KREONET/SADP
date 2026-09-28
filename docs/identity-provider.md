@@ -10,10 +10,22 @@ SADP는 인증 서버를 설치하거나 realm, tenant, client, 사용자, 그�
 SADP 런타임의 인증 소비자는 OIDC를 사용합니다. 상위 인증원이 SAML만 제공한다면 조직이 운영하는
 broker에서 SAML을 받아 OIDC로 내보내고, SADP에는 그 broker의 OIDC endpoint를 연결합니다.
 
-```text
-OpenID 조직 IdP ──────────────────────────────┐
-                                              ├─ OIDC ─→ Portal / Envoy / OpenBao
-SAML 조직 IdP ─→ 외부 SAML→OIDC broker ──────┘
+```mermaid
+flowchart LR
+    subgraph External["조직 인증팀 운영"]
+        OIDC["OIDC IdP"]
+        SAML["SAML IdP"] --> Broker["외부 SAML → OIDC broker"]
+    end
+    OIDC --> Endpoints["공개 OIDC endpoint·claim"]
+    Broker --> Endpoints
+    subgraph SADP["SADP 인증 소비자"]
+        Portal["Portal"]
+        Envoy["Envoy Gateway"]
+        Bao["OpenBao"]
+    end
+    Endpoints --> Portal
+    Endpoints --> Envoy
+    Endpoints --> Bao
 ```
 
 ## 1. 외부 IdP에서 준비할 항목

@@ -9,6 +9,24 @@
 
 ## 1. 실제 백업 산출물
 
+```mermaid
+flowchart TD
+    Backup["control-plane에서 백업"] --> Etcd["RKE2 etcd snapshot + 같은 run의 server token"]
+    Backup --> Bao["OpenBao Raft snapshot"]
+    Backup --> Inventory["Node·Gateway 목록 + checksum"]
+    Etcd --> Check["checksum·형식·필수 파일 비파괴 검증"]
+    Bao --> Check
+    Inventory --> Check
+    Check --> Copy["별도 호스트·암호화 저장소에 2차 복제"]
+    Check --> Drill["격리 환경에서 복원 훈련"]
+    Drill --> Verify["component별 검수·verify-testbed"]
+    Separate["별도 보관: openbao-init.json"] -.-> Drill
+```
+
+백업 파일 검증과 복원 성공 검증은 별개입니다. 외부 IdP·broker와 앱 PVC 데이터의 복구를
+이 백업만으로 보장하지 않습니다.
+
+
 백업은 `/var/lib/sadp/backups/<UTC_TIMESTAMP>/`에 생성되고 `latest` symlink가 마지막 run을
 가리킵니다.
 

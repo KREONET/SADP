@@ -8,16 +8,24 @@ SADP는 RKE2 Canal(Flannel VXLAN + Calico NetworkPolicy)을 사용합니다. Wor
 
 ## 1. 통신 경계
 
-```text
-일반 앱 Pod
-  ├─ DNS와 선언한 내부 앱 연결
-  └─ blocked/web/custom AppProfile egress 정책
-
-cert-manager controller
-  ├─ Kubernetes API/CoreDNS 직접
-  ├─ Squid → ACME HTTPS
-  └─ RFC2136 authoritative DNS IPv4:port 직접
+```mermaid
+flowchart TD
+    subgraph AppPath["일반 앱의 정책 경계"]
+        App["앱 Pod"] --> DNS["DNS·선언한 내부 앱 연결"]
+        App --> Policy{"AppProfile egress mode"}
+        Policy --> Blocked["blocked: 외부 추가 허용 없음"]
+        Policy --> Web["web: 내부 대역 제외 TCP 80/443"]
+        Policy --> Custom["custom: 지정 CIDR·port·protocol"]
+    end
+    subgraph CertPath["cert-manager controller의 경로"]
+        CM["cert-manager"] --> API["Kubernetes API·CoreDNS 직접"]
+        CM --> Squid["Squid"]
+        Squid --> ACME["ACME HTTPS"]
+        CM --> RFC["RFC2136 authoritative DNS 직접"]
+    end
 ```
+
+앱 영역은 NetworkPolicy가 허용하는 범위이며 실제 인터넷 경로의 연결 성공까지 보장하지 않습니다.
 
 기본 Kubernetes NetworkPolicy는 FQDN allowlist를 제공하지 않으므로 앱의 `web` mode는 내부
 대역을 제외한 TCP 80/443 포트 정책입니다.

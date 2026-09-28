@@ -5,23 +5,21 @@
 
 ## 전체 흐름
 
-```text
-1. 선행 조건 확인
-2. site.env와 root 전용 Secret 파일 준비
-   ├─ 허용 주소 접속 테스트
-   └─ Squid 및 네트워크 패키지 설치 준비
-3. render 계획 → 생성 → 테스트 → commit/push
-4. Squid 담당 노드에 node phase를 먼저 적용하고 egress 검증
-5. 나머지 노드에 node phase 적용
-   └─ 사람이 노드별 RKE2 재시작/Ready 확인
-6. control-plane cluster phase
-   ├─ Squid 재검증
-   ├─ Prometheus/Loki/Alloy 이미지 선배포
-   └─ Devtron/번들 Argo CD 보장 후 GitOps bootstrap
-7. staging → production TLS 진행값 반영
-8. 서비스 초기화·앱 배포
-9. acceptance와 인수인계
+개별 phase 실행 기준입니다. 노드 설정 뒤 재시작과 Ready 확인을 마친 후 클러스터 단계로 넘어갑니다.
+
+```mermaid
+flowchart TD
+    Ready["1–2. 사전 준비"] --> Render["3. 렌더·테스트<br/>commit/push"]
+    Render --> Nodes["4–5. 노드 적용<br/>Squid 노드부터"]
+    Nodes --> Restart["노드별 수동 재시작<br/>Ready 확인"]
+    Restart --> Cluster["6. cluster phase<br/>GitOps 준비"]
+    Cluster --> TLS["7–8. TLS 전환<br/>서비스·앱 배포"]
+    TLS --> Verify["9. acceptance<br/>인수인계"]
 ```
+
+Squid 노드 적용 후 egress를 검증합니다. cluster phase에서는 Squid 재검증, 모니터링 이미지
+선배포, Devtron/번들 Argo CD 보장과 GitOps bootstrap을 수행합니다. ACME 인증서는 staging →
+production 순으로 발급을 확인한 뒤 HTTPS로 전환합니다.
 
 위 흐름은 개별 phase로 실행할 때의 절차입니다. 기본 `all --apply`는 같은 순서를 자동으로
 이어갑니다. `--apply`가 없으면 env 검증과 계획 출력만 하며 접속·재시작·Git 쓰기는 하지 않습니다.

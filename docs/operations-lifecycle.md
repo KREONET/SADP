@@ -21,6 +21,23 @@ single은 아래 worker 종료·기동·drain 단계를 생략합니다. server�
 
 ## 1. 전체 테스트베드 안전 종료
 
+```mermaid
+flowchart TD
+    subgraph Off["종료"]
+        Prepare["server: Ready 확인·백업"] --> Drain["worker cordon·drain"]
+        Drain --> StopWorkers["각 worker: agent 중지"]
+        StopWorkers --> StopServer["server: 최종 snapshot·server 중지"]
+    end
+    subgraph On["기동"]
+        StartServer["server 시작·API와 Ready 확인"] --> StartWorkers["각 worker 시작"]
+        StartWorkers --> Resume["전체 Ready 확인 후 resume·uncordon"]
+        Resume --> Verify["인증·테스트베드 검수"]
+    end
+```
+
+single은 worker 단계를 건너뜁니다. OS 전원 작업은 관리자가 별도로 수행합니다.
+
+
 ### 1.1 control-plane에서 종료 준비
 
 먼저 계획을 확인한 뒤 적용합니다.

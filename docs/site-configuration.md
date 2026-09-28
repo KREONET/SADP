@@ -8,6 +8,25 @@
 
 ## 1. 값의 소유 위치
 
+사이트 설정과 Secret 실제 값은 서로 다른 경로로 전달됩니다.
+
+```mermaid
+flowchart TD
+    Env["Git 밖의 site.env"] --> Configure["configure-site.py"]
+    Configure --> Contract["플랫폼 계약"]
+    Contract --> Render["render-*.py"]
+    Render --> Generated["platform · argocd · apps · rke 생성물"]
+    Generated --> Review["diff 검토·테스트·commit/push"]
+    Secret["root 전용 Secret 입력"] --> Bao["OpenBao"]
+    Bao --> ESO["ESO"]
+    Ref["Git: Secret 이름·path·key 참조"] -.-> ESO
+    ESO --> KSecret["Kubernetes Secret"]
+    KSecret --> Pod["Pod 런타임"]
+```
+
+`site.env`가 없는 개발 checkout에서 계약을 직접 관리하는 경우는 아래 설명을 따릅니다.
+
+
 | 종류 | 소유 위치 |
 | --- | --- |
 | 사이트별 비밀 아닌 입력 | `/etc/sadp/site.env` |

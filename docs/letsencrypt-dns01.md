@@ -8,15 +8,20 @@ metadata를 실제 사이트 값으로 바꾸지 않은 상태에서는 통합 i
 
 ## 1. 발급 구조
 
-```text
-Certificate: <BASE_DOMAIN> + *.<BASE_DOMAIN>
-  → cert-manager Order/Challenge
-  ├─ Squid CONNECT 443 → Let's Encrypt ACME directory
-  ├─ 지정 IPv4:port → RFC2136/TSIG DNS UPDATE
-  └─ 지정 recursive resolver → public TXT self-check
-      → Gateway Namespace TLS Secret
-      → Envoy HTTPS listener
+```mermaid
+flowchart TD
+    Cert["Certificate: apex + wildcard SAN"] --> CM["cert-manager Order·Challenge"]
+    CM --> Proxy["Squid CONNECT 443"]
+    Proxy --> ACME["Let's Encrypt ACME"]
+    CM --> Update["RFC2136·TSIG: DNS UPDATE 직접"]
+    CM --> Check["recursive resolver: 공개 TXT self-check"]
+    ACME --> Issued["DNS-01 검증 성공·인증서 발급"]
+    Issued --> Secret["Gateway Namespace TLS Secret"]
+    Secret --> Listener["HTTPS 활성화 후 Envoy listener에서 사용"]
 ```
+
+화살표는 발급에 필요한 통신과 결과의 흐름입니다. staging 발급 성공만으로 HTTPS를 활성화하지
+않으며, production 인증서 Ready까지 확인한 뒤 전환합니다.
 
 wildcard는 apex를 포함하지 않으므로 Certificate는 두 SAN을 모두 요청합니다. cert-manager
 controller에만 proxy가 들어가고 webhook/cainjector에는 들어가지 않습니다. raw DNS UPDATE는

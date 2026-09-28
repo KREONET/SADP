@@ -9,6 +9,25 @@
 
 ## 1. 인증 경계
 
+```mermaid
+sequenceDiagram
+    participant Browser as 브라우저
+    participant BFF as Portal BFF
+    participant Session as Auth.js 세션
+    participant API as loopback Go API
+    Browser->>BFF: same-origin API 요청 + session cookie
+    BFF->>Session: 로그인 세션 확인
+    Session-->>BFF: 검증된 사용자·역할
+    Note over BFF: 브라우저의 신원 header·requester 제거
+    BFF->>API: 검증한 신원·역할로 내부 요청
+    Note over API: endpoint 권한·소유권·입력 검증
+    API-->>BFF: 결과 또는 오류
+    BFF-->>Browser: API 응답
+```
+
+정상 로그인 요청의 흐름입니다. 세션·권한 검증에 실패하면 해당 경계에서 거부합니다.
+
+
 브라우저는 `https://<PORTAL_HOST>`의 same-origin BFF를 호출합니다. BFF가 Auth.js 세션을 확인한
 뒤 loopback Go API에 신원을 전달합니다.
 

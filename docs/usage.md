@@ -34,6 +34,21 @@ RKE2 token, OpenBao root token, Forgejo bot token이 필요하지 않습니다.
 
 ## 4. 단일 앱 신청
 
+```mermaid
+flowchart TD
+    Login["조직 SSO 로그인"] --> New["새 앱: 정보·정책 입력"]
+    New --> Submit["검토 후 신청"]
+    Submit --> Status["내 앱: 신청 ID로 진행 확인"]
+    Status --> Gates["보안 검사와 승인 상태를 각각 확인"]
+    Gates --> Deploy["검사 통과·승인 후 배포 진행"]
+    Deploy --> Ready["RUNNING: 목표 replica Ready"]
+    Gates --> Fix["반려: 상세 사유 확인·수정 후 재신청"]
+    Deploy --> Failure["FAILED: 단계·오류 확인 후 관리자에게 전달"]
+```
+
+승인 대기 중에는 build·merge·배포가 시작되지 않습니다.
+
+
 새 앱 화면의 다섯 단계를 순서대로 진행합니다.
 
 1. 앱 이름과 프로젝트를 정합니다.

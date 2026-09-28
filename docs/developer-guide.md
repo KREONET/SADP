@@ -66,6 +66,18 @@ commit하지 않습니다.
 
 ## 6. 앱 간 통신
 
+```mermaid
+flowchart LR
+    Caller["호출 앱"] --> Out{"송신 egress 허용?"}
+    Out -->|예| In{"수신 ingress 허용?"}
+    In -->|예| Receiver["수신 앱의 지정 port"]
+    Out -->|아니요| Deny["연결 차단"]
+    In -->|아니요| Deny
+```
+
+그림은 NetworkPolicy의 허용 조건입니다. 실제 연결에는 Service와 앱도 정상이어야 합니다.
+
+
 default-deny가 기본입니다. 호출 앱의 egress와 수신 앱의 ingress 양쪽이 모두 허용돼야 합니다.
 서비스 이름과 port를 문서화하고, 필요하지 않은 CIDR 전체 허용을 요청하지 않습니다.
 

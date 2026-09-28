@@ -32,19 +32,18 @@ Portal은 Git 기록을 만들기 전에 이 준비 상태를 확인합니다. �
 
 ## 배포 흐름
 
-```text
-앱 정보 입력
-  → Portal 입력/Namespace/이미지/접근 계약 검증
-  → Registry pull 및 OpenBao/ExternalSecret 사전검증
-  → Portal 런타임의 공용 Forgejo 봇으로 GitOps PR 생성
-  → 필수 보안 검사
-  → platform-admin 수동 승인(또는 감사되는 사용자별 자동 승인 예외)
-  → merge
-  → 이미지 build 또는 기존 image 사용
-  → Argo CD sync
-  → ESO 동기화 확인
-  → Deployment Ready
+```mermaid
+flowchart TD
+    Input["앱 입력·계약 검증<br/>Registry·Secret 확인"] --> PR["Forgejo 봇<br/>GitOps PR 생성"]
+    PR --> Security["필수 보안 검사 통과"]
+    Security --> Approval["수동 승인 또는<br/>자동 승인 예외"]
+    Approval --> Merge["병합 전 준비 검사<br/>merge·이미지 준비"]
+    Merge --> Sync["Argo CD sync<br/>ESO 동기화 확인"]
+    Sync --> Ready["Deployment Ready"]
 ```
+
+검사와 승인을 통과한 정상 경로입니다. 검사 실패·반려·준비 누락은 해결 전까지 다음 단계로
+진행하지 않습니다.
 
 전 사용자 기본값은 수동 승인입니다. 사용자별 자동 승인 예외가 켜져 있어도 보안 검사 반려를
 우회하지 않습니다. 보안 문제가 발견되면 사용자는 자신의 소스 저장소에서 취약 package/CVE의
@@ -59,13 +58,20 @@ Portal은 Git 기록을 만들기 전에 이 준비 상태를 확인합니다. �
 Secret이 없는 `authentication.mode=none` 앱은 OIDC client나 앱별 ExternalSecret을 만들지
 않습니다. runtime Secret이 있는 앱에만 다음 canonical 경계를 사용합니다.
 
-```text
-OpenBao kv/apps/<PROJECT>/<ENVIRONMENT>/workloads/<NAMESPACE>/<ESO_SERVICE_ACCOUNT>
-  → SecretStore 또는 경계가 고정된 ClusterSecretStore
-  → ExternalSecret
-  → ESO가 만든 Kubernetes Secret
-  → 앱 Pod
+```mermaid
+flowchart TD
+    Bao["OpenBao: 앱 경계별 Secret 실제 값"] --> ESO["ESO: 참조한 key 동기화"]
+    Store["SecretStore 또는 경계가 고정된 ClusterSecretStore"] -.-> ESO
+    Ref["ExternalSecret: 이름·path·key 참조"] -.-> ESO
+    ESO --> Runtime["runtime Kubernetes Secret"]
+    Runtime --> Pod["앱 Pod 환경변수"]
+    ESO --> OIDC["OIDC client Secret"]
+    OIDC --> Envoy["Envoy SecurityPolicy에서 참조"]
 ```
+
+앱 경계의 OpenBao 경로는
+`kv/apps/<PROJECT>/<ENVIRONMENT>/workloads/<NAMESPACE>/<ESO_SERVICE_ACCOUNT>`입니다.
+실선은 값의 전달, 점선은 ESO가 사용하는 설정 참조입니다.
 
 OIDC client secret도 같은 앱 경계의 OpenBao 문서에 저장되지만 앱 환경변수에는 주입하지
 않습니다. Envoy SecurityPolicy가 참조하는 `<APP>-oidc-client` Secret의 `client-secret` key로만
