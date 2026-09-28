@@ -49,11 +49,16 @@ bash ./sadp --install --env-file /etc/sadp/site.env --phase all
 sudo bash ./sadp --install-wizard
 ```
 
-간편 모드에서는 기본 설정을 묶어서 유지하고, 로컬 NIC·IPv4 후보를 확인해 관련 질문을
-건너뛸 수 있습니다. 모든 활성 항목을 직접 입력하려면 `--advanced`, 로컬 조회만 생략하려면
+간편 모드에서는 IP·CIDR·DNS·Gateway·Squid를 포함한 기본 설정을 묶어서 Enter로 유지할 수 있습니다.
+IP 묶음에서 `n`을 선택하면 로컬 NIC와 기존 RKE2 주소를 조회해 수정합니다.
+노드·NIC 역할과 공인 IP·공개 방식·인증 설정은 별도로 확인합니다.
+모든 활성 항목을 직접 입력하려면 `--advanced`,
+자동 조회만 생략하려면
 `--no-detect`를 붙입니다. 자세한 선택 방법은 [설치 가이드](installation.md)를 따릅니다.
 
 마법사가 만든 `/etc/sadp/site.env`도 반드시 render 계획, 생성, test, commit/push 순서를 거칩니다.
+검증 오류가 나면 다른 답변을 유지한 채 해당 항목만 수정합니다. 기존 파일의 오류만 고치려면
+`sudo bash ./sadp --install-wizard --repair`를 사용합니다. 저장되지 않은 이전 답변은 복원하지 않습니다.
 
 ## 설치 후 참고 문서
 

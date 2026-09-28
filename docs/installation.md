@@ -100,18 +100,56 @@ sudo bash ./sadp --install-wizard
 해당 묶음을 하나씩 수정합니다. 도메인, Registry, 이미지 tag, 인증 endpoint, Secret 파일 경로는
 직접 확인합니다. **OCI Registry는 컨테이너 이미지 저장소이며 OIDC 로그인 공급자와 별개입니다.**
 
-네트워크 단계에서는 `ip -j address show`로 현재 호스트의 NIC·IPv4 후보를 읽습니다. 설치 대상
+IP·CIDR은 먼저 현재 기본값을 묶어서 보여 주고 **Enter로 한 번에 유지**할 수 있습니다.
+내부 IP, Pod/Service CIDR, DNS, API 주소, RKE2 endpoint와 Gateway VIP/pool·Squid 주소가
+대상입니다. 기존 `site.env`가 있으면 저장된 값을 사용하고, 없으면 template 값을 보여 줍니다.
+유지를 선택하면 해당 묶음의 개별 질문과 자동 조회를 생략하며 다른 값으로 덮어쓰지 않습니다.
+필수 값이 비어 있으면 직접 질문합니다. 기본값 유지도 최종 env 검증과 실제 적용 시 예제값 차단을
+우회하지 않습니다.
+
+노드 구성(single/multi), 실제 노드 이름·worker 목록, NIC 역할·추가 보호 NIC,
+공인 IP·NAT/direct 방식은 별도로 확인합니다. 공개 주소가 다른 사이트의 예제값인 채 설치되지
+않도록 도메인·Registry·인증 공급자·TLS 방식·Secret 파일 경로도 계속 질문합니다.
+
+IP·CIDR 묶음에서 `n`을 선택하면 자동 조회와 개별 수정으로 진행합니다.
+이때 `ip -j address show`로 현재 호스트의 NIC·IPv4 후보를 읽습니다. 설치 대상
 control-plane에서 실행 중이면 내부 NIC·주소와 외부 NIC를 선택하고, 제안된 hostname·IP·CIDR을
 확인해 관련 질문을 생략할 수 있습니다. 여러 IPv4가 있으면 사용할 주소도 선택합니다.
 후보 선택에서 Enter를 누르거나 제안값을 거절하면 직접 입력합니다. `ip`가 없거나 조회에 실패해도
-수동 입력을 계속합니다. worker, 추가 보호 NIC, 공인 IP, NAT/direct, Gateway VIP,
-기존 RKE2 Pod/Service CIDR·DNS는 추측하지 않습니다. NIC 이름은 모든 노드에서 같아야 하며,
+수동 입력을 계속합니다. worker, 공인 IP, NAT/direct, Gateway VIP는 추측하지 않습니다.
+NIC 이름은 모든 노드에서 같아야 하며,
 제안된 hostname은 Kubernetes Node 이름, CIDR은 전체 노드 내부망과 일치하는지 확인합니다.
 
+그다음 기존 RKE2 클러스터를 읽어 아래 값을 **출처와 함께 한 번에 제안**합니다. 수락한 항목은
+개별 질문을 생략합니다. 조회 실패·권한 부족·모호한 설정은 현재값을 유지하고 직접 질문합니다.
+
+| 항목 | 조회 근거와 자동 제안 조건 |
+| --- | --- |
+| Pod CIDR | 실행 중인 control-plane의 kube-controller-manager `--cluster-cidr` |
+| Service CIDR | 실행 중인 kube-apiserver `--service-cluster-ip-range` |
+| Cluster DNS IP | `k8s-app=kube-dns` Service의 실제 clusterIP |
+| CoreDNS upstream | 실행 중인 CoreDNS Pod이 참조하는 Corefile의 단일 내부망 IPv4 `forward .` |
+| Kubernetes API 허용 주소 | `default/kubernetes` Service IP와 EndpointSlice 주소 |
+| RKE2 server endpoint | 선택한 단일 control-plane Node의 실제 InternalIP |
+| 추가 보호 NIC | 기존 목록에 현재 control-plane 호스트의 공인 IPv4/IPv6 NIC 후보를 추가해 확인 |
+
+클러스터 조회는 `/var/lib/rancher/rke2/bin/kubectl`과 `/etc/rancher/rke2/rke2.yaml`을 사용하며,
+선택한 control-plane 이름·IP가 실제 Node와 일치할 때만 값을 제안합니다. 다른 kubeconfig나
+`127.0.0.1` 접속 주소를 서버 내부 IP로 사용하지 않습니다. 노드별 Pod CIDR을 클러스터 전체
+CIDR로 추정하지 않으며, 실행 인자가 없거나 서로 다르면 직접 확인합니다.
+조회한 Pod/노드 CIDR이 기존 값과 다르면 이후 `SQUID_CLIENT_CIDRS` 질문에서도 해당 대역을
+포함해야 합니다. 기존 Squid 허용 범위는 자동으로 변경하지 않으며 최종 env 검증에서 포함 여부를 검사합니다.
+
+CoreDNS가 `/etc/resolv.conf`, 복수 upstream, 여러 zone 또는 `import`를 사용하면 단일 주소로
+자동 변환하지 않습니다. 조회한 DNS의 실제 worker/Pod 접근 가능 여부는 설치 검수에서 확인합니다.
+보호 NIC는 역할이 지정되지 않은 후보만 표시하고 기존 목록을 자동 삭제하지 않습니다. 후보가 없으면
+빈 목록으로 확정하지 않고 직접 질문합니다. 로컬 탐지는 worker NIC 상태를 검증하지 않으므로
+worker의 공인 IPv6와 추가 보호 대상도 함께 확인하십시오.
+
 ```bash
-# 간편 모드에서 로컬 네트워크 조회만 생략
+# 간편 모드에서 로컬 NIC·RKE2 클러스터 조회 생략
 sudo bash ./sadp --install --interactive --no-detect
-# 기존처럼 모든 활성 항목을 개별 질문 (로컬 조회도 생략)
+# 기존처럼 모든 활성 항목을 개별 질문 (자동 조회도 생략)
 sudo bash ./sadp --install --interactive --advanced
 ```
 
@@ -120,6 +158,29 @@ sudo bash ./sadp --install --interactive --advanced
 복원되지 않습니다.
 
 답변으로 만든 파일도 동일한 검증기를 통과해야 `/etc/sadp/site.env`에 mode `0600`으로 저장됩니다.
+검증에 실패하면 종료하지 않고 오류와 관련된 항목을 표시합니다. 번호 또는 key를 골라 그 값만
+수정하면 다른 답변을 유지한 채 재검증합니다. 여러 key는 쉼표로 구분하고, `?`로 key 목록,
+`q`로 취소할 수 있습니다. 수정이 끝나고 검증이 통과해야 파일을 저장하고 다음 phase로 진행합니다.
+취소·입력 중단·파일 저장 오류 시 기존 파일은 유지합니다. 검증 실패 답변은 파일로 자동 저장하지
+않으므로 프로그램을 종료하면 아직 저장하지 않은 내용은 사라집니다.
+
+`worker … is outside NODE_INTERNAL_CIDRS`는 worker IP가 지정한 노드 내부망에 포함되지 않는다는
+뜻입니다. `WORKER_NODES`의 IP 오타인지 `NODE_INTERNAL_CIDRS`의 대역/prefix가 잘못됐는지
+실제 NIC 주소와 비교하고 잘못된 항목만 수정합니다. worker 주소만 보고 CIDR을 자동 확대하지 않습니다.
+CIDR을 고친 뒤에도 control-plane·worker·Squid 주소와 Squid 허용 대역이 일치해야 검증을 통과합니다.
+
+이미 저장된 파일은 전체 질문 없이 검증·수정할 수 있습니다.
+
+```bash
+# 기존 파일의 오류만 수정·저장 (클러스터 적용 없음)
+sudo bash ./sadp --install-wizard --repair --output /etc/sadp/site.env
+# 오류 수정·저장 후 설치 계획까지 확인
+sudo bash ./sadp --install --interactive --repair --env-file /etc/sadp/site.env
+```
+
+`--repair`는 기존 파일이 있어야 합니다. 이전 버전 마법사에서 저장에 실패하고 종료된 답변은
+이 옵션으로 복구할 수 없습니다.
+
 마법사에서 바로 계획을 보려면 다음처럼 실행할 수 있습니다.
 
 ```bash

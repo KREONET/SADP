@@ -133,10 +133,14 @@ def answers(overrides: dict[str, str], *, quick: bool = False) -> str:
     current = dict(values)
     lines = []
     for _, questions in wizard.SECTIONS:
+        network_defaults = wizard.network_default_questions(questions, current) if quick else []
+        if network_defaults:
+            lines.append("")
         defaults = wizard.default_questions(questions, current) if quick else []
         skipped = {q.key for q in defaults} if len(defaults) > 1 else set()
         if skipped:
             lines.append("")
+        skipped.update(q.key for q in network_defaults)
         for question in questions:
             if question.key not in skipped and wizard.should_ask(question, current):
                 value = overrides.get(question.key, current.get(question.key, ""))
@@ -196,7 +200,7 @@ check("SW-16 간편 모드는 값을 유지하면서 개별 질문을 10개 이�
 asked = {call.args[0].key for call in quick_answer.call_args_list}
 check("SW-17 간편 모드도 주소·인증·이미지·보호 NIC·Secret 경로는 확인",
       {"BASE_DOMAIN", "OCI_REGISTRY", "OIDC_ISSUER", "PUBLIC_EXPOSURE_MODE",
-       "GUARDED_INTERFACES", "POD_CIDRS", "TEST_APP_IMAGE_TAG",
+       "GUARDED_INTERFACES", "CLUSTER_MODE", "INTERNAL_INTERFACE", "PUBLIC_IP", "TEST_APP_IMAGE_TAG",
        "SADP_PORTAL_FORGEJO_TOKEN_FILE"} <= asked)
 
 with patch("builtins.input", return_value="n"), redirect_stdout(io.StringIO()):
@@ -260,6 +264,222 @@ check("SW-26 다중 주소는 사용자가 선택하며 없는 외부 NIC는 수
       detected["CONTROL_PLANE_IP"] == "10.20.40.11"
       and detected["NODE_INTERNAL_CIDRS"] == "10.20.40.0/24"
       and "EXTERNAL_INTERFACE" not in skipped)
+
+
+network_values = dict(values, CONTROL_PLANE_HOSTNAME="control", CONTROL_PLANE_IP="10.20.30.11",
+                      NODE_INTERNAL_CIDRS="10.20.30.0/24", INTERNAL_INTERFACE="lan0", EXTERNAL_INTERFACE="wan0")
+def component(name, args):
+    return {"metadata": {"name": name}, "spec": {"nodeName": "control", "containers": [
+        {"name": name, "command": [name], "args": args}]}, "status": {"phase": "Running"}}
+
+cluster_pods = [
+    component("kube-controller-manager", ["--cluster-cidr=10.42.0.0/16"]),
+    component("kube-apiserver", ["--service-cluster-ip-range", "10.43.0.0/16"]),
+    {"metadata": {"labels": {"k8s-app": "kube-dns"}}, "status": {"phase": "Running"},
+     "spec": {"volumes": [{"configMap": {"name": "actual-coredns"}}]}},
+]
+cluster_responses = {
+    ("nodes",): {"items": [{"metadata": {"name": "control", "labels": {
+        "node-role.kubernetes.io/control-plane": "true"}},
+        "spec": {"podCIDR": "10.42.0.0/24"},
+        "status": {"addresses": [{"type": "InternalIP", "address": "10.20.30.11"}]}}]},
+    ("pods", "-n", "kube-system"): {"items": cluster_pods},
+    ("services", "-n", "kube-system", "-l", "k8s-app=kube-dns"):
+        {"items": [{"spec": {"clusterIP": "10.43.0.10"}}]},
+    ("service", "kubernetes", "-n", "default"): {"spec": {"clusterIP": "10.43.0.1"}},
+    ("endpointslices", "-n", "default", "-l", "kubernetes.io/service-name=kubernetes"):
+        {"items": [{"endpoints": [{"addresses": ["10.20.30.11"]}]}]},
+    ("configmap", "actual-coredns", "-n", "kube-system"):
+        {"data": {"Corefile": ".:53 {\n  errors\n  forward . 10.20.30.12 {\n    max_concurrent 1000\n  }\n}\n"}},
+}
+with patch.object(wizard, "read_cluster", side_effect=lambda *args: cluster_responses.get(args, {})):
+    discovered = wizard.cluster_network_candidates(network_values)
+check("SW-27 실행 인자·Service·EndpointSlice·Corefile에서 6개 실제 값 조회",
+      {key: value for key, (value, _) in discovered.items()} == {
+          "POD_CIDRS": "10.42.0.0/16", "SERVICE_CIDRS": "10.43.0.0/16",
+          "CLUSTER_DNS_IP": "10.43.0.10", "CLUSTER_UPSTREAM_DNS": "10.20.30.12:53",
+          "KUBERNETES_API_ADDRESSES": "10.43.0.1,10.20.30.11", "RKE2_SERVER_ENDPOINT": "10.20.30.11"})
+with patch.object(wizard, "read_cluster", side_effect=lambda *args: cluster_responses.get(args, {})):
+    mismatch = wizard.cluster_network_candidates(dict(network_values, CONTROL_PLANE_IP="10.20.30.99"))
+check("SW-28 선택한 control-plane 신원이 다르면 다른 클러스터의 값 사용 금지", not mismatch)
+with patch.object(wizard, "read_cluster", return_value={}):
+    unavailable = wizard.cluster_network_candidates(network_values)
+check("SW-29 API 조회 실패 시 예제 CIDR·기본값을 탐지값으로 승격하지 않음", not unavailable)
+no_flags = dict(cluster_responses)
+no_flags[("pods", "-n", "kube-system")] = {"items": []}
+with patch.object(wizard, "read_cluster", side_effect=lambda *args: no_flags.get(args, {})):
+    missing_flags = wizard.cluster_network_candidates(network_values)
+check("SW-30 Node별 /24·Service IP로 클러스터 CIDR을 추측하지 않음",
+      "POD_CIDRS" not in missing_flags and "SERVICE_CIDRS" not in missing_flags)
+check("SW-31 서로 다른 실행 인자와 IPv6 CIDR을 자동 축약하지 않음",
+      wizard.pod_flag(cluster_pods + [component("kube-controller-manager", ["--cluster-cidr=10.44.0.0/16"])],
+                      "control", "kube-controller-manager", "--cluster-cidr") is None
+      and wizard.ipv4_list(["10.42.0.0/16", "fd00::/48"], networks=True) is None)
+check("SW-32 resolver 파일·외부망·복수 upstream·다중 zone·import는 수동 확인",
+      all(wizard.coredns_upstream(corefile, "10.20.30.0/24") is None for corefile in [
+          ".:53 {\n forward . /etc/resolv.conf\n}",
+          ".:53 {\n forward . 192.0.2.53\n}",
+          ".:53 {\n forward . 10.20.30.12 10.20.30.13\n}",
+          ".:53 {\n forward . 10.20.30.12\n}\ninternal:53 {\nforward . 10.20.30.13\n}",
+          ".:53 {\n import custom/*\n forward . 10.20.30.12\n}",
+      ]))
+public_nic = {"ifname": "spare0", "addr_info": [{"family": "inet6", "local": "2000::1"}]}
+check("SW-33 공인 IPv6 후보를 추가하되 기존 보호 목록 유지·역할 NIC 제외",
+      wizard.guarded_candidates(dict(network_values, GUARDED_INTERFACES="old0"),
+                                [public_nic, dict(public_nic, ifname="lan0"),
+                                 dict(public_nic, ifname="wan0"), dict(public_nic, ifname="cali123")]) == "old0,spare0")
+check("SW-34 후보가 없다고 기존 보호 목록을 빈 값으로 바꾸지 않음",
+      wizard.guarded_candidates(dict(network_values, GUARDED_INTERFACES="old0"), interfaces) is None)
+with patch.object(wizard, "cluster_network_candidates", return_value=discovered), \
+     patch.object(wizard, "local_interfaces", return_value=interfaces + [public_nic]), \
+     patch.object(wizard, "confirm", return_value=True), redirect_stdout(io.StringIO()):
+    accepted = dict(network_values)
+    accepted_keys = wizard.suggest_cluster_network(accepted)
+check("SW-35 한 번 수락하면 확인한 7개 질문을 생략하고 저장할 값 반영",
+      accepted_keys == set(discovered) | {"GUARDED_INTERFACES"}
+      and accepted["POD_CIDRS"] == "10.42.0.0/16" and accepted["GUARDED_INTERFACES"] == "spare0")
+with patch.object(wizard, "cluster_network_candidates", return_value=discovered), \
+     patch.object(wizard, "local_interfaces", return_value=interfaces), \
+     patch.object(wizard, "confirm", return_value=False), redirect_stdout(io.StringIO()):
+    rejected = dict(network_values)
+    rejected_keys = wizard.suggest_cluster_network(rejected)
+check("SW-36 조회값 거절 시 기존 값과 개별 질문 유지", not rejected_keys and rejected == network_values)
+with patch.object(wizard, "suggest_network", return_value=set()), \
+     patch.object(wizard, "cluster_network_candidates", return_value=discovered), \
+     patch.object(wizard, "local_interfaces", return_value=interfaces), \
+     patch.object(wizard, "confirm", side_effect=lambda prompt, **kw: not prompt.startswith("IP·CIDR")), \
+     patch.object(wizard, "answer", side_effect=lambda q, current: current) as remaining, \
+     redirect_stdout(io.StringIO()):
+    wizard.collect_answers(dict(network_values), advanced=False, detect=True)
+check("SW-37 실제 질문 루프에서도 수락한 클러스터 값을 다시 묻지 않음",
+      not set(discovered).intersection(call.args[0].key for call in remaining.call_args_list))
+with patch.object(wizard.pathlib.Path, "is_file", return_value=True), \
+     patch.object(wizard.subprocess, "run", return_value=subprocess.CompletedProcess([], 0, '{}')) as run:
+    wizard.read_cluster("nodes")
+check("SW-38 고정 RKE2 kubeconfig·읽기 전용 get·시간 제한 사용",
+      run.call_args.args[0] == ["/var/lib/rancher/rke2/bin/kubectl", "--kubeconfig",
+          "/etc/rancher/rke2/rke2.yaml", "--request-timeout=3s", "get", "nodes", "-o", "json"]
+      and run.call_args.kwargs["timeout"] == 5)
+with patch.object(wizard.pathlib.Path, "is_file", return_value=True), \
+     patch.object(wizard.subprocess, "run", side_effect=subprocess.TimeoutExpired("kubectl", 5)), \
+     redirect_stdout(io.StringIO()) as output:
+    timed_out = wizard.read_cluster("nodes")
+check("SW-39 조회 timeout은 원문 출력 없이 수동 입력으로 복귀", not timed_out and not output.getvalue())
+
+with patch.object(wizard, "suggest_network") as local_probe, \
+     patch.object(wizard, "suggest_cluster_network") as cluster_probe, \
+     patch("builtins.input", return_value=""), \
+     patch.object(wizard, "answer", side_effect=lambda q, current: current) as questions, \
+     redirect_stdout(io.StringIO()):
+    kept = dict(network_values)
+    wizard.collect_answers(kept, advanced=False, detect=True)
+asked_keys = {call.args[0].key for call in questions.call_args_list}
+check("SW-40 기본 IP 유지 선택은 개별 IP 질문·재탐지 없이 기존 값 보존",
+      all(kept[key] == value for key, value in network_values.items())
+      and not asked_keys.intersection(wizard.NETWORK_DEFAULTS)
+      and not local_probe.called and not cluster_probe.called)
+check("SW-41 IP 기본값을 유지해도 실제 노드·NIC·보호·공개·인증 선택은 확인",
+      {"CLUSTER_MODE", "CONTROL_PLANE_HOSTNAME", "WORKER_NODES", "INTERNAL_INTERFACE",
+       "EXTERNAL_INTERFACE", "GUARDED_INTERFACES", "PUBLIC_IP", "PUBLIC_EXPOSURE_MODE",
+       "OIDC_ISSUER", "TLS_SOURCE"} <= asked_keys)
+with patch("builtins.input", return_value=""), \
+     patch.object(wizard, "answer", side_effect=lambda q, current: current) as questions, \
+     redirect_stdout(io.StringIO()):
+    wizard.collect_answers(dict(network_values, CONTROL_PLANE_IP=""), advanced=False, detect=False)
+check("SW-42 필수 IP 기본값이 없으면 묶음 유지로 누락시키지 않고 질문",
+      "CONTROL_PLANE_IP" in {call.args[0].key for call in questions.call_args_list})
+with tempfile.TemporaryDirectory() as raw_directory:
+    output = pathlib.Path(raw_directory) / "site.env"
+    output.write_text(wizard.replace_values(template, {"CLUSTER_UPSTREAM_DNS": "10.20.30.11:1053"}))
+    result = subprocess.run(
+        ["bash", "./sadp", "--install", "--interactive", "--env-file", str(output)],
+        cwd=ROOT, input=answers({"SADP_PORTAL_FORGEJO_TOKEN_FILE": "/etc/sadp/secrets/portal-token"},
+                               quick=True) + "y\n", capture_output=True, text=True)
+    check("SW-43 재실행의 기본값은 template이 아닌 저장된 DNS 주소이며 검증 후 계획만 실행",
+          result.returncode == 0 and "[PLAN]" in result.stdout
+          and "CLUSTER_UPSTREAM_DNS=10.20.30.11:1053\n" in output.read_text())
+
+
+with tempfile.TemporaryDirectory() as raw_directory:
+    output = pathlib.Path(raw_directory) / "site.env"
+    bad_content = wizard.replace_values(template, {
+        "NODE_INTERNAL_CIDRS": "10.20.30.0/28",
+        "SADP_PORTAL_FORGEJO_TOKEN_FILE": "/etc/sadp/secrets/portal-token",
+    })
+    output.write_text(bad_content)
+    command = ["bash", "./sadp", "--install", "--interactive", "--repair", "--env-file", str(output)]
+    result = subprocess.run(command, cwd=ROOT, input="y\n\n10.20.30.0/24\n",
+                            capture_output=True, text=True)
+    repaired = wizard.parse_values(output.read_text())
+    original = wizard.parse_values(bad_content)
+    check("SW-44 worker 범위 오류는 CIDR만 수정하고 전체 재질문 없이 검증·계획 실행",
+          result.returncode == 0 and "outside NODE_INTERNAL_CIDRS" in result.stderr
+          and "[PLAN]" in result.stdout and "== 사이트 이름" not in result.stdout
+          and repaired["NODE_INTERNAL_CIDRS"] == "10.20.30.0/24"
+          and all(repaired[key] == value for key, value in original.items() if key != "NODE_INTERNAL_CIDRS")
+          and output.stat().st_mode & 0o777 == 0o600)
+    output.write_text(bad_content)
+    result = subprocess.run(command, cwd=ROOT, input="y\nq\n", capture_output=True, text=True)
+    check("SW-45 오류 수정 취소는 기존 파일·설치 상태 보존",
+          result.returncode == 1 and output.read_text() == bad_content and "[PLAN]" not in result.stdout
+          and not list(output.parent.glob(".site.env.*")))
+    result = subprocess.run(command, cwd=ROOT, input="y\n", capture_output=True, text=True)
+    check("SW-46 오류 수정 중 EOF도 기존 파일을 보존하고 traceback 없이 종료",
+          result.returncode == 1 and output.read_text() == bad_content and "Traceback" not in result.stderr)
+    multiple_errors = wizard.replace_values(bad_content, {"CLUSTER_DNS_IP": "invalid"})
+    output.write_text(multiple_errors)
+    result = subprocess.run(command, cwd=ROOT, input="y\n\n10.20.30.0/24\n\n10.53.0.10\n",
+                            capture_output=True, text=True)
+    check("SW-47 연속 오류는 앞서 고친 값을 유지하고 다음 오류만 다시 질문",
+          result.returncode == 0 and result.stdout.count("다른 답변은 유지합니다") == 2
+          and wizard.parse_values(output.read_text())["NODE_INTERNAL_CIDRS"] == "10.20.30.0/24"
+          and wizard.parse_values(output.read_text())["CLUSTER_DNS_IP"] == "10.53.0.10")
+    output.unlink()
+    result = subprocess.run(command, cwd=ROOT, input="", capture_output=True, text=True)
+    check("SW-48 저장 파일이 없으면 repair가 template으로 대체하거나 답변을 복원했다고 하지 않음",
+          result.returncode == 1 and "기존 --output 파일이 필요" in result.stderr and not output.exists())
+    result = subprocess.run(
+        ["bash", "./sadp", "--install", "--interactive", "--advanced", "--env-file", str(output)],
+        cwd=ROOT, input=answers({"NODE_INTERNAL_CIDRS": "10.20.30.0/28",
+                                "SADP_PORTAL_FORGEJO_TOKEN_FILE": "/etc/sadp/secrets/portal-token"})
+                                + "y\n\n10.20.30.0/24\n", capture_output=True, text=True)
+    check("SW-49 새로 답한 내용도 검증 실패 후 그 자리에서 수정·저장 가능",
+          result.returncode == 0 and output.exists() and "[PLAN]" in result.stdout
+          and result.stdout.count("== 사이트 이름") == 1)
+
+with patch("builtins.input", side_effect=["WORKER_NODES", "node-a=10.20.30.21"]), \
+     redirect_stdout(io.StringIO()):
+    repaired = dict(values)
+    completed = wizard.repair_answers("worker 10.90.0.21 is outside NODE_INTERNAL_CIDRS", repaired)
+check("SW-50 IP 오타는 worker만 수정하고 내부망 CIDR을 자동 확대하지 않음",
+      completed and repaired["WORKER_NODES"] == "node-a=10.20.30.21"
+      and repaired["NODE_INTERNAL_CIDRS"] == values["NODE_INTERNAL_CIDRS"])
+with patch("builtins.input", side_effect=["?", "UNKNOWN_KEY", "POD_CIDRS,SERVICE_CIDRS",
+                                         "10.42.0.0/16", "10.43.0.0/16"]), redirect_stdout(io.StringIO()):
+    repaired = dict(values)
+    completed = wizard.repair_answers("node CIDR overlaps pod CIDR", repaired)
+check("SW-51 key 목록·잘못된 선택 재입력·복수 항목 수정 지원",
+      completed and repaired["POD_CIDRS"] == "10.42.0.0/16" and repaired["SERVICE_CIDRS"] == "10.43.0.0/16")
+with tempfile.TemporaryDirectory() as raw_directory:
+    output = pathlib.Path(raw_directory) / "site.env"
+    content = wizard.replace_values(template, {"CERT_MANAGER_NODE_PLACEMENT": "invalid"})
+    current = wizard.parse_values(content)
+    with patch("builtins.input", side_effect=["", "control-plane"]), redirect_stdout(io.StringIO()):
+        saved = wizard.save_with_repair(output, content, current)
+    check("SW-52 기본 질문에 없는 유효한 설정 key도 오류 수정 결과 저장",
+          saved and wizard.parse_values(output.read_text())["CERT_MANAGER_NODE_PLACEMENT"] == "control-plane")
+
+with tempfile.TemporaryDirectory() as raw_directory:
+    output = pathlib.Path(raw_directory) / "site.env"
+    output.write_text("\n".join(line for line in template.splitlines()
+                                if not line.startswith(("SITE_NAME=", "WORKLOAD_NAMESPACE="))) + "\n")
+    result = subprocess.run(
+        ["bash", "./sadp", "--install-wizard", "--repair", "--output", str(output)],
+        cwd=ROOT, input="y\n\nrepair-site\n\nsadp-apps\n", capture_output=True, text=True)
+    repaired = wizard.parse_values(output.read_text())
+    check("SW-53 필수 key가 빠진 파일도 요약에서 중단하지 않고 누락 항목만 복원",
+          result.returncode == 0 and repaired.get("SITE_NAME") == "repair-site"
+          and repaired.get("WORKLOAD_NAMESPACE") == "sadp-apps" and "Traceback" not in result.stderr)
 
 print(f"통과 {passed} / 실패 {failed}")
 raise SystemExit(1 if failed else 0)

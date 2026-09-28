@@ -32,7 +32,8 @@ phase:
   --apply             실제 적용. all은 유지보수 중단을 포함해 자동 재시작함
   --interactive       질문으로 --env-file을 생성한 뒤 같은 phase 실행
   --advanced          --interactive의 기본값 묶음·로컬 탐지 없이 상세 질문
-  --no-detect         --interactive의 로컬 NIC·IPv4 후보 조회 생략
+  --no-detect         --interactive의 로컬 NIC·RKE2 클러스터 조회 생략
+  --repair            --interactive에서 기존 env를 검증하고 오류 항목만 수정
 
 안전한 기본 동작:
   --apply가 없으면 site.env와 실행 계획만 검사한다. 개별 node/cluster --apply는
@@ -49,7 +50,7 @@ while (($#)); do
     --allow-dirty) ALLOW_DIRTY=true ;;
     --apply) APPLY=true ;;
     --interactive) INTERACTIVE=true ;;
-    --advanced|--no-detect) WIZARD_OPTIONS+=("$1") ;;
+    --advanced|--no-detect|--repair) WIZARD_OPTIONS+=("$1") ;;
     -h|--help) usage; exit 0 ;;
     *) printf '[FAIL] 알 수 없는 인자: %s\n' "$1" >&2; usage >&2; exit 2 ;;
   esac
@@ -61,7 +62,7 @@ case "${PHASE}" in
   *) printf '[FAIL] --phase는 render|node|cluster|all 중 하나여야 함\n' >&2; exit 2 ;;
 esac
 if [[ ${INTERACTIVE} == false && ${#WIZARD_OPTIONS[@]} -gt 0 ]]; then
-  printf '[FAIL] --advanced/--no-detect는 --interactive와 함께 사용하십시오\n' >&2
+  printf '[FAIL] --advanced/--no-detect/--repair는 --interactive와 함께 사용하십시오\n' >&2
   exit 2
 fi
 if [[ ${INTERACTIVE} == true ]]; then

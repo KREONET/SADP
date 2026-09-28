@@ -132,13 +132,26 @@ SECTIONS: tuple[tuple[str, tuple[Question, ...]], ...] = (
 )
 
 
-# 사이트의 주소·인증 경계·이미지 식별자는 기본값이라는 이유로 생략하지 않는다.
+# 사이트의 인증 경계·이미지 식별자는 기본값이라는 이유로 생략하지 않는다.
 QUICK_DEFAULTS = frozenset({
     "SITE_NAME", "APP_ENVIRONMENT", "CLUSTER_NAME", "APP_PROJECT", "STORAGE_CLASS",
     "FORGEJO_REVISION", "OIDC_GROUPS_CLAIM", "OIDC_CLIENT_ID_CLAIM", "PORTAL_OIDC_CLIENT_ID",
     "SADP_INSTALL_GITOPS", "SADP_INSTALL_MONITORING", "SADP_BUILD_IMAGES",
     "SADP_BUILD_NODE", "SADP_DEPLOY_APPS", "SADP_RUN_VERIFY", "SADP_SSH_USER",
 })
+
+
+NETWORK_DEFAULTS = frozenset({
+    "CONTROL_PLANE_IP", "NODE_INTERNAL_CIDRS", "POD_CIDRS", "SERVICE_CIDRS",
+    "CLUSTER_DNS_IP", "CLUSTER_UPSTREAM_DNS", "KUBERNETES_API_ADDRESSES",
+    "RKE2_SERVER_ENDPOINT", "GATEWAY_VIP", "GATEWAY_ADDRESS_POOL",
+    "SQUID_INTERNAL_IP", "SQUID_CLIENT_CIDRS",
+})
+
+
+def network_default_questions(questions: tuple[Question, ...], values: dict[str, str]) -> list[Question]:
+    return [q for q in questions if q.key in NETWORK_DEFAULTS and should_ask(q, values)
+            and (values.get(q.key) or q.optional)]
 
 
 def default_questions(questions: tuple[Question, ...], values: dict[str, str]) -> list[Question]:
@@ -235,10 +248,217 @@ def suggest_network(values: dict[str, str]) -> set[str]:
     return set(candidate)
 
 
+def read_cluster(*arguments: str) -> dict:
+    # 사용자 셸의 다른 kubeconfig를 따라가면 엉뚱한 클러스터의 주소를 저장할 수 있다.
+    kubectl = pathlib.Path("/var/lib/rancher/rke2/bin/kubectl")
+    kubeconfig = pathlib.Path("/etc/rancher/rke2/rke2.yaml")
+    if not kubectl.is_file() or not kubeconfig.is_file():
+        return {}
+    try:
+        result = subprocess.run(
+            [str(kubectl), "--kubeconfig", str(kubeconfig), "--request-timeout=3s",
+             "get", *arguments, "-o", "json"],
+            capture_output=True, text=True, timeout=5, check=False,
+        )
+        data = json.loads(result.stdout) if result.returncode == 0 else {}
+        return data if isinstance(data, dict) else {}
+    except (OSError, ValueError, subprocess.TimeoutExpired):
+        # API 오류 원문에는 접속 정보가 섞일 수 있으므로 수동 입력 안내만 출력한다.
+        return {}
+
+
+def ipv4_list(raw: list[str], *, networks: bool = False) -> str | None:
+    try:
+        parsed = [ipaddress.ip_network(value, strict=True) if networks
+                  else ipaddress.ip_address(value) for value in raw]
+    except (ValueError, TypeError):
+        return None
+    if not parsed or any(value.version != 4 for value in parsed):
+        return None
+    return ",".join(dict.fromkeys(str(value) for value in parsed))
+
+
+def pod_flag(pods: list[dict], node: str, container_name: str, flag: str) -> str | None:
+    found = set()
+    for pod in pods:
+        spec = pod.get("spec", {})
+        if spec.get("nodeName") != node:
+            continue
+        if pod.get("status", {}).get("phase") != "Running" or pod.get("metadata", {}).get("deletionTimestamp"):
+            continue
+        for container in spec.get("containers", []):
+            if container.get("name") != container_name:
+                continue
+            command = container.get("command", []) + container.get("args", [])
+            for index, argument in enumerate(command):
+                if argument.startswith(flag + "="):
+                    found.add(argument.split("=", 1)[1])
+                elif argument == flag and index + 1 < len(command):
+                    found.add(command[index + 1])
+    # 생략된 실행 인자의 기본값이나 Node별 /24로 클러스터 전체 CIDR을 추측하지 않는다.
+    return found.pop() if len(found) == 1 else None
+
+
+def coredns_upstream(corefile: str, internal_cidrs: str) -> str | None:
+    # 여러 zone·import·복수 upstream을 단일 endpoint 계약으로 축약하면 DNS 의미가 달라진다.
+    lines = [line.split("#", 1)[0].strip() for line in corefile.splitlines()]
+    lines = [line for line in lines if line]
+    if not lines or not re.fullmatch(r"\.(?::53)?\s*\{", lines[0]):
+        return None
+    depth = 0
+    targets = []
+    for index, line in enumerate(lines):
+        if re.match(r"(?:import|proxy)\b", line):
+            return None
+        if line.startswith("forward "):
+            parts = line.removesuffix("{").split()
+            if depth != 1 or len(parts) != 3 or parts[:2] != ["forward", "."]:
+                return None
+            targets.append(parts[2])
+        depth += line.count("{") - line.count("}")
+        if depth < 0 or (depth == 0 and index != len(lines) - 1):
+            return None
+    if depth or len(targets) != 1:
+        return None
+    host, separator, port = targets[0].partition(":")
+    if not separator:
+        port = "53"
+    try:
+        address = ipaddress.IPv4Address(host)
+        networks = [ipaddress.IPv4Network(item) for item in internal_cidrs.split(",")]
+        if not 1 <= int(port) <= 65535 or address.is_loopback or address.is_link_local:
+            return None
+        if not any(address in network for network in networks):
+            return None
+    except ValueError:
+        return None
+    return f"{address}:{int(port)}"
+
+
+def guarded_candidates(values: dict[str, str], interfaces: list[dict]) -> str | None:
+    existing = [name for name in values.get("GUARDED_INTERFACES", "").split(",") if name]
+    roles = {values.get("INTERNAL_INTERFACE"), values.get("EXTERNAL_INTERFACE")}
+    if roles.intersection(existing):
+        return None
+    candidates = []
+    for interface in interfaces:
+        name = interface["ifname"]
+        # CNI·컨테이너 링크는 호스트의 예비 NIC 역할로 분류하지 않는다. VLAN·bond는 허용한다.
+        if name in roles or re.match(r"^(?:cali|veth|flannel|cni|docker|kube-ipvs)", name):
+            continue
+        for info in interface.get("addr_info", []):
+            try:
+                address = ipaddress.ip_address(info.get("local", ""))
+            except ValueError:
+                continue
+            if address.is_global and not address.is_multicast:
+                candidates.append(name)
+                break
+    # 새 후보가 없어도 기존 보호 목록을 지우지 않는다. worker의 NIC는 로컬 탐지로 검증할 수 없다.
+    return ",".join(dict.fromkeys(existing + candidates)) if candidates else None
+
+
+def cluster_network_candidates(values: dict[str, str]) -> dict[str, tuple[str, str]]:
+    candidates: dict[str, tuple[str, str]] = {}
+    nodes = read_cluster("nodes").get("items", [])
+    control_nodes = [node for node in nodes if any(
+        role in node.get("metadata", {}).get("labels", {}) for role in
+        ("node-role.kubernetes.io/control-plane", "node-role.kubernetes.io/master"))]
+    node_name = values.get("CONTROL_PLANE_HOSTNAME")
+    control_ip = values.get("CONTROL_PLANE_IP")
+    if len(control_nodes) != 1 or control_nodes[0].get("metadata", {}).get("name") != node_name:
+        return candidates
+    internal_ips = [a.get("address") for a in control_nodes[0].get("status", {}).get("addresses", [])
+                    if a.get("type") == "InternalIP"]
+    if control_ip not in internal_ips or not ipv4_list([control_ip]):
+        return candidates
+    candidates["RKE2_SERVER_ENDPOINT"] = (control_ip, "선택한 단일 control-plane Node의 InternalIP")
+    pods = read_cluster("pods", "-n", "kube-system").get("items", [])
+    for key, container, flag in (
+        ("POD_CIDRS", "kube-controller-manager", "--cluster-cidr"),
+        ("SERVICE_CIDRS", "kube-apiserver", "--service-cluster-ip-range"),
+    ):
+        raw = pod_flag(pods, node_name, container, flag)
+        parsed = ipv4_list(raw.split(","), networks=True) if raw else None
+        if parsed:
+            candidates[key] = (parsed, f"실행 중 {container}의 {flag}")
+    dns_services = read_cluster("services", "-n", "kube-system", "-l", "k8s-app=kube-dns").get("items", [])
+    dns_ips = {service.get("spec", {}).get("clusterIP") for service in dns_services}
+    if len(dns_ips) == 1:
+        dns_ip = ipv4_list(list(dns_ips))
+        if dns_ip:
+            candidates["CLUSTER_DNS_IP"] = (dns_ip, "실제 kube-dns Service clusterIP")
+    service = read_cluster("service", "kubernetes", "-n", "default")
+    slices = read_cluster("endpointslices", "-n", "default", "-l", "kubernetes.io/service-name=kubernetes")
+    api_ips = [service.get("spec", {}).get("clusterIP")]
+    for item in slices.get("items", []):
+        for endpoint in item.get("endpoints", []):
+            api_ips.extend(endpoint.get("addresses", []))
+    parsed = ipv4_list(api_ips)
+    if parsed and control_ip in api_ips:
+        candidates["KUBERNETES_API_ADDRESSES"] = (parsed, "kubernetes Service와 EndpointSlice 실제 주소")
+    configmaps = set()
+    for pod in pods:
+        if pod.get("metadata", {}).get("labels", {}).get("k8s-app") != "kube-dns":
+            continue
+        if pod.get("status", {}).get("phase") != "Running":
+            continue
+        for volume in pod.get("spec", {}).get("volumes", []):
+            name = volume.get("configMap", {}).get("name")
+            if name:
+                configmaps.add(name)
+    upstreams = set()
+    for name in sorted(configmaps):
+        cm = read_cluster("configmap", name, "-n", "kube-system")
+        corefile = cm.get("data", {}).get("Corefile")
+        if corefile is not None:
+            upstreams.add(coredns_upstream(corefile, values.get("NODE_INTERNAL_CIDRS", "")))
+    if len(upstreams) == 1 and None not in upstreams:
+        candidates["CLUSTER_UPSTREAM_DNS"] = (upstreams.pop(), "CoreDNS Pod이 참조하는 Corefile의 forward")
+    return candidates
+
+
+def suggest_cluster_network(values: dict[str, str]) -> set[str]:
+    print("  기존 RKE2 클러스터의 실행 인자·Service·DNS 설정을 읽고 있습니다.")
+    candidates = cluster_network_candidates(values)
+    interfaces = local_interfaces()
+    local_ips = {str(ipaddress.IPv4Interface(address).ip) for item in interfaces
+                 for address in interface_ipv4(item)}
+    guarded = (guarded_candidates(values, interfaces)
+               if values.get("CONTROL_PLANE_IP") in local_ips else None)
+    if guarded:
+        candidates["GUARDED_INTERFACES"] = (guarded, "기존 보호 목록 + 로컬 공인 IPv4/IPv6 NIC 후보")
+    if not candidates:
+        print("  확인 가능한 값이 없습니다. 예제 기본값을 실제 구성과 비교해 직접 입력하십시오.")
+        return set()
+    print("  확인된 값만 제안합니다. 조회되지 않은 값은 계속 직접 질문합니다:")
+    for key, (value, source) in candidates.items():
+        print(f"    {key}={value} ({source})")
+        if values.get(key) != value:
+            print(f"      기존/기본값: {values.get(key) or '비움'}")
+    print("  DNS resolver 파일·복수 upstream은 자동 축약하지 않습니다.")
+    if guarded:
+        print("  보호 NIC 후보의 역할과 worker별 NIC를 확인하십시오. 기존 보호 목록은 유지했습니다.")
+    if not confirm("위 값을 사용하고 해당 질문을 건너뛸까요?"):
+        return set()
+    values.update({key: value for key, (value, _) in candidates.items()})
+    return set(candidates)
+
+
 def collect_answers(values: dict[str, str], *, advanced: bool, detect: bool) -> None:
     for title, questions in SECTIONS:
         print(f"\n== {title} ==")
         skipped: set[str] = set()
+        keep_network = False
+        network_defaults = network_default_questions(questions, values) if not advanced else []
+        if network_defaults:
+            print("  IP·CIDR 기본/기존값 (기존 site.env가 있으면 저장된 값):")
+            for question in network_defaults:
+                print(f"    {question.label}: {values.get(question.key) or '비움'}")
+            keep_network = confirm("IP·CIDR은 위 값으로 유지하고 질문을 생략할까요?", default=True)
+            if keep_network:
+                skipped.update(q.key for q in network_defaults)
+            print("  노드 구성·NIC 역할·추가 보호 NIC·공인 IP·공개 방식은 별도로 확인합니다.")
         defaults = default_questions(questions, values) if not advanced else []
         if len(defaults) > 1:
             print("  다음 기본/기존 설정은 한 번에 유지할 수 있습니다:")
@@ -246,9 +466,11 @@ def collect_answers(values: dict[str, str], *, advanced: bool, detect: bool) -> 
                 print(f"    {question.label}: {values.get(question.key) or '자동 선택'}")
             if confirm("위 설정을 유지하고 개별 질문을 생략할까요?", default=True):
                 skipped.update(q.key for q in defaults)
-        if detect and any(q.key == "INTERNAL_INTERFACE" for q in questions):
+        if detect and not keep_network and any(q.key == "INTERNAL_INTERFACE" for q in questions):
             skipped.update(suggest_network(values))
         for question in questions:
+            if detect and not keep_network and question.key == "GUARDED_INTERFACES":
+                skipped.update(suggest_cluster_network(values))
             if question.key not in skipped and should_ask(question, values):
                 values[question.key] = answer(question, values.get(question.key, ""))
 
@@ -276,6 +498,7 @@ def replace_values(content: str, updates: dict[str, str]) -> str:
     missing = sorted(set(updates) - found)
     # 이전 env에 없던 질문 항목도 저장해야 설치 필수 입력이 조용히 누락되지 않는다.
     known = {question.key for _, questions in SECTIONS for question in questions}
+    known.update(parse_values(DEFAULT_TEMPLATE.read_text(encoding="utf-8")))
     if set(missing) - known:
         raise ValueError("template에 없는 key: " + ", ".join(missing))
     rendered.extend(f"{key}={updates[key]}" for key in missing)
@@ -359,6 +582,10 @@ def clear_inactive(values: dict[str, str]) -> None:
         values["SADP_REGISTRY_PUSH_DOCKERCONFIG"] = ""
 
 
+class ValidationError(RuntimeError):
+    """입력 검증 실패만 재질문하고 파일 접근·저장 오류는 기존처럼 중단한다."""
+
+
 def validate(candidate: pathlib.Path) -> None:
     command = [
         sys.executable,
@@ -367,9 +594,67 @@ def validate(candidate: pathlib.Path) -> None:
         str(candidate),
         "--check",
     ]
-    result = subprocess.run(command, cwd=ROOT, check=False)
+    result = subprocess.run(command, cwd=ROOT, check=False, capture_output=True, text=True)
     if result.returncode:
-        raise RuntimeError("site.env 검증 실패: 위 항목을 고친 뒤 다시 실행하십시오")
+        raise ValidationError(result.stderr.strip() or "site.env 검증 실패")
+    print(result.stdout, end="")
+
+
+def repair_answers(message: str, values: dict[str, str]) -> bool:
+    questions = {q.key: q for _, section in SECTIONS for q in section}
+    known = set(parse_values(DEFAULT_TEMPLATE.read_text(encoding="utf-8"))) | set(questions)
+    suggested = list(dict.fromkeys(key for key in re.findall(r"\b[A-Z][A-Z0-9_]+\b", message)
+                                   if key in known))
+    # 범위 오류는 CIDR뿐 아니라 노드 IP 오타일 수도 있으므로 어느 쪽을 고칠지 사용자가 고른다.
+    if "outside NODE_INTERNAL_CIDRS" in message:
+        related = "WORKER_NODES" if "worker " in message else "CONTROL_PLANE_IP"
+        suggested = list(dict.fromkeys(suggested + [related]))
+    if "CIDR" in message and "overlap" in message:
+        suggested = list(dict.fromkeys(suggested + ["NODE_INTERNAL_CIDRS", "POD_CIDRS", "SERVICE_CIDRS"]))
+    print("\n다른 답변은 유지합니다. 오류에 관련된 항목만 수정하십시오.")
+    for index, key in enumerate(suggested, 1):
+        label = questions[key].label if key in questions else key
+        print(f"  {index}. {key}: {label} [{values.get(key) or '비움'}]")
+    if "outside NODE_INTERNAL_CIDRS" in message:
+        print("  노드 IP 오타 또는 내부망 CIDR 불일치입니다. 실제 NIC의 주소·prefix를 확인하십시오.")
+        print("  CIDR을 수정하면 control-plane·worker·Squid 주소가 모두 포함되는지도 검증합니다.")
+    while True:
+        default = suggested[0] if suggested else "없음"
+        raw = input(f"수정할 번호/key (쉼표로 여러 개, Enter: {default}, ?: 목록, q: 취소): ").strip()
+        if raw.lower() == "q":
+            return False
+        if raw == "?":
+            print("  " + ", ".join(sorted(known)))
+            continue
+        selections = [part.strip() for part in raw.split(",")] if raw else suggested[:1]
+        keys = []
+        for selection in selections:
+            if selection.isdigit() and 1 <= int(selection) <= len(suggested):
+                selection = suggested[int(selection) - 1]
+            if selection not in known:
+                break
+            keys.append(selection)
+        else:
+            if keys:
+                for key in dict.fromkeys(keys):
+                    question = questions.get(key, Question(key, key, optional=True))
+                    values[key] = answer(question, values.get(key, ""))
+                clear_inactive(values)
+                return True
+        print("  표시된 번호 또는 유효한 설정 key를 입력하십시오.")
+
+
+def save_with_repair(output: pathlib.Path, content: str, values: dict[str, str]) -> bool:
+    while True:
+        # 검증 전 답변은 메모리에만 보관하고 성공했을 때만 기존 파일을 원자적으로 교체한다.
+        try:
+            write_candidate(output, replace_values(content, values))
+            return True
+        except ValidationError as error:
+            print(str(error), file=sys.stderr)
+            if not repair_answers(str(error), values):
+                print("[INFO] 수정 취소: 기존 파일을 보존하고 설치하지 않습니다.")
+                return False
 
 
 def write_candidate(output: pathlib.Path, content: str) -> None:
@@ -422,7 +707,8 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--yes", action="store_true", help="최종 저장 확인만 생략")
     parser.add_argument("--show-questions", action="store_true")
     parser.add_argument("--advanced", action="store_true", help="기본값 생략 없이 기존 상세 질문 사용")
-    parser.add_argument("--no-detect", action="store_true", help="로컬 NIC·IPv4 후보 조회 생략")
+    parser.add_argument("--no-detect", action="store_true", help="로컬 NIC와 RKE2 클러스터 네트워크 조회 생략")
+    parser.add_argument("--repair", action="store_true", help="기존 출력 env를 검증하고 오류 항목만 수정")
     return parser.parse_args()
 
 
@@ -438,6 +724,9 @@ def main() -> int:
                 print(f"  {question.key}: {question.label}")
         return 0
 
+    if args.repair and not args.output.is_file():
+        print("[FAIL] --repair에는 기존 --output 파일이 필요합니다. 이전에 저장되지 않은 답변은 복원할 수 없습니다.", file=sys.stderr)
+        return 1
     source = args.output if args.output.exists() else args.template
     if not source.is_file() or source.is_symlink():
         print(f"[FAIL] 입력 template/site.env를 읽을 수 없음: {source}", file=sys.stderr)
@@ -450,30 +739,26 @@ def main() -> int:
     print("SADP 대화형 설치 준비")
     print("- Enter: 현재값 유지, - 입력: 선택값 비우기")
     print("- password/token/private key 본문은 묻지 않고 root 전용 파일 경로만 받습니다.")
-    print("- 간편 모드: 기본 설정을 묶어 확인합니다. 모두 바꾸려면 --advanced를 사용합니다."
-          if not args.advanced else "- 상세 모드: 모든 활성 항목을 개별 질문합니다.")
+    if args.repair:
+        print("- 오류 수정 모드: 기존 파일을 검증하고 오류 항목만 다시 묻습니다.")
+    else:
+        print("- 간편 모드: 기본 설정을 묶어 확인합니다. 모두 바꾸려면 --advanced를 사용합니다."
+              if not args.advanced else "- 상세 모드: 모든 활성 항목을 개별 질문합니다.")
     if args.apply:
         print(f"- 저장 후 {args.phase} phase를 실제 적용합니다.")
         if args.phase == "all":
             print("- Git commit/push와 노드 순차 재시작에 따른 서비스 중단이 포함됩니다.")
-    collect_answers(values, advanced=args.advanced, detect=not (args.no_detect or args.advanced))
+    if not args.repair:
+        collect_answers(values, advanced=args.advanced, detect=not (args.no_detect or args.advanced))
     clear_inactive(values)
 
-    updates = {
-        question.key: values[question.key]
-        for _, questions in SECTIONS
-        for question in questions
-        if question.key in values
-    }
-    # 질문의 선택에 따라 자동으로 바뀌는 진행값도 실제 env에 함께 기록한다.
-    updates["EXISTING_GATEWAY_TLS_READY"] = values["EXISTING_GATEWAY_TLS_READY"]
-    rendered = replace_values(content, updates)
     print("\n저장 전 요약")
-    print(f"  site={values['SITE_NAME']} cluster={values['CLUSTER_NAME']}")
-    print(f"  domain={values['BASE_DOMAIN']} public={values['PUBLIC_EXPOSURE_MODE']}")
-    print(f"  control-plane={values['CONTROL_PLANE_HOSTNAME']} workers={values['WORKER_NODES']}")
-    print(f"  NIC: internal={values['INTERNAL_INTERFACE']} external={values['EXTERNAL_INTERFACE']}"
+    print(f"  site={values.get('SITE_NAME', '미입력')} cluster={values.get('CLUSTER_NAME', '미입력')}")
+    print(f"  domain={values.get('BASE_DOMAIN', '미입력')} public={values.get('PUBLIC_EXPOSURE_MODE', '미입력')}")
+    print(f"  control-plane={values.get('CONTROL_PLANE_HOSTNAME', '미입력')} workers={values.get('WORKER_NODES', '')}")
+    print(f"  NIC: internal={values.get('INTERNAL_INTERFACE', '미입력')} external={values.get('EXTERNAL_INTERFACE', '미입력')}"
           f" guarded={values.get('GUARDED_INTERFACES') or '없음'}")
+    print(f"  내부망 CIDR={values.get('NODE_INTERNAL_CIDRS', '미입력')} control-plane IP={values.get('CONTROL_PLANE_IP', '미입력')}")
     print(f"  output={args.output}")
     if not args.yes:
         confirmation = input("검증 후 저장할까요? [y/N]: ").strip().lower()
@@ -482,7 +767,8 @@ def main() -> int:
             return 0
 
     try:
-        write_candidate(args.output, rendered)
+        if not save_with_repair(args.output, content, values):
+            return 1
     except (OSError, RuntimeError, ValueError) as error:
         print(f"[FAIL] {error}", file=sys.stderr)
         return 1
