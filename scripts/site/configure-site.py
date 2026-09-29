@@ -189,7 +189,7 @@ KNOWN_KEYS = {
     "FORGEJO_REVISION", "OCI_REGISTRY", "OCI_PROJECT", "REGISTRY_PULL_SECRET",
     "TEST_APP_IMAGE_TAG", "PORTAL_IMAGE_TAG", "IMAGE_PULL_POLICY",
     "CONTROL_PLANE_HOSTNAME", "CONTROL_PLANE_IP", "WORKER_NODES", "CLUSTER_MODE",
-    "INTERNAL_INTERFACE", "EXTERNAL_INTERFACE", "GUARDED_INTERFACES",
+    "INTERNAL_INTERFACE", "EXTERNAL_INTERFACE", "GUARDED_INTERFACES", "WORKER_INTERNAL_ONLY",
     "NODE_INTERNAL_CIDRS",
     "POD_CIDRS", "SERVICE_CIDRS", "CLUSTER_DNS_IP",
     "KUBERNETES_API_ADDRESSES", "RKE2_SERVER_ENDPOINT",
@@ -1077,6 +1077,8 @@ def validate(values: dict[str, str]) -> dict:
             required(values, "PUBLIC_IP_NODE"), "PUBLIC_IP_NODE"
         )
         known_nodes = {control_hostname, *(name for name, _ in workers)}
+        if boolean(values, "WORKER_INTERNAL_ONLY") and public_ip_node != control_hostname:
+            raise ConfigError("WORKER_INTERNAL_ONLY=true requires PUBLIC_IP_NODE to be CONTROL_PLANE_HOSTNAME")
         if public_ip_node not in known_nodes:
             raise ConfigError("PUBLIC_IP_NODE must name CONTROL_PLANE_HOSTNAME or a WORKER_NODES host")
     elif public_ip_node:
@@ -1238,6 +1240,7 @@ def validate(values: dict[str, str]) -> dict:
             "internal": internal_interface,
             "external": external_interface,
             "guarded": guarded_interfaces,
+            **({"workersInternalOnly": True} if boolean(values, "WORKER_INTERNAL_ONLY") else {}),
         },
         "network": {
             "nodeCIDRs": [str(item) for item in node_networks],
@@ -2102,6 +2105,7 @@ def install_env(cfg: dict) -> str:
         "INTERNAL_INTERFACE": cfg["interfaces"]["internal"],
         "EXTERNAL_INTERFACE": cfg["interfaces"]["external"],
         "GUARDED_INTERFACES": ",".join(cfg["interfaces"].get("guarded") or []),
+        **({"WORKER_INTERNAL_ONLY": "true"} if cfg["interfaces"].get("workersInternalOnly") else {}),
         "CLUSTER_MODE": cfg["nodes"]["mode"],
         "CONTROL_PLANE_HOSTNAME": cfg["nodes"]["controlHostname"],
         "CONTROL_PLANE_IP": cfg["nodes"]["controlIP"],

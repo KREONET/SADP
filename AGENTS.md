@@ -228,7 +228,7 @@ evidence/       검수 산출물
 
 - **Portal은 활성 프로세스가 전체 배포에서 하나여야 한다.** `apiServer.appMu`의 그룹 소유권·누적 쿼터·삭제 중 유입 검사와 `store.mu`의 메모리 색인, 단일 Forgejo 큐 소비자가 정합성 경계다. PVC/RWO를 바꾸거나 상태 파일을 DB로 옮기는 것만으로 확장할 수 없다. `replicaCount`는 0(중지) 또는 1이고 롤아웃은 `Recreate`다. 별도 Deployment/수동 실행/강제 Pod 삭제로 프로세스를 겹치게 하지 마라. Chart 가드와 `scripts/tests/render-test.sh`를 유지해라. 상세 근거와 남아 있는 경쟁은 [동시성 감사](docs/portal-concurrency-audit.md)를 따른다.
 
-- **interface 이름이 클러스터 전체에 하나다.** `contracts/platform-production.yaml`의 `interfaces`는 control-plane과 worker에 같은 이름을 강제한다. NIC 구성이 다른 노드가 섞이면 이 스키마로 표현되지 않는다(§5 마지막 항목).
+- **interface 이름은 클러스터 공통이다.** 단, `WORKER_INTERNAL_ONLY=true` (`network.interfaces.workersInternalOnly`)이면 모든 worker에 외부 NIC가 없는 구성을 지원한다. control-plane의 external/guarded 보호는 유지하고, worker는 NIC 사전 검사 후 외부 guard 설치를 생략한다. 기존 guard 규칙은 자동 삭제하지 않는다. 노드마다 서로 다른 NIC 이름을 지정하는 기능은 없으며 이름 통일은 §5를 따른다.
 - **guard unit은 fail-open이다.** `sadp-rke2-interface-guard.service`는 `Before=rke2-server.service`로 순서만 잡고 의존은 만들지 않는다. 이 unit이 실패해도 rke2는 뜨고, 그때 관리 포트는 열려 있다. `verify-testbed.sh`가 unit active와 체인 규칙을 확인하지만 그건 사후 탐지일 뿐이다. **차단(의존성 추가)으로 바꾸면 guard 실패가 곧 클러스터 정지**이므로, 바꾸기 전에 가용성 트레이드오프를 사람에게 확인해라.
 - **호스트 수준 검사는 control-plane 노드 한 대만 본다** (§3).
 - **`egressMode: web`은 포트 정책이지 도메인 정책이 아니다.** 기본 Kubernetes NetworkPolicy는 FQDN을 볼 수 없다. `web`은 0.0.0.0/0에서 계약 `network.internalCIDRs`를 `ipBlock.except`로 뺀 뒤 TCP 80/443만 여는 것이다. "example.com만 허용" 같은 요구가 오면 Cilium 등 별도 CNI 기능이 필요하다고 답해라. 도메인 필터를 구현했다고 쓰지 마라.

@@ -88,6 +88,29 @@ class InstallAllTest(unittest.TestCase):
                 self.installer.run(["git", "private-argument-fixture"], capture=True)
             self.assertNotIn("private-", str(caught.exception))
 
+    def test_git_failure_classifies_without_echoing_credentials(self):
+        fixtures = (
+            ("could not read Username: terminal prompts disabled", "인증정보를 읽을 수 없음"),
+            ("Authentication failed", "Git 인증 거부"),
+            ("The requested URL returned error: 403", "쓰기 또는 branch 권한 거부"),
+            ("repository not found", "저장소 주소 또는 접근 권한"),
+            ("Could not resolve host", "DNS 조회 실패"),
+            ("SSL certificate problem", "TLS 인증서 검증 실패"),
+            ("Failed to connect", "Git 서버 연결 실패"),
+            ("non-fast-forward", "원격 branch가 앞서 있음"),
+            ("unrecognized failure", "Git 저장소·인증·네트워크 확인 필요"),
+        )
+        for detail, expected in fixtures:
+            result = subprocess.CompletedProcess([], 128, b"private-output-fixture", (detail + " private-token-fixture").encode())
+            with self.subTest(detail=detail), patch.object(self.installer, "run", return_value=result):
+                with self.assertRaises(mod.InstallError) as caught:
+                    self.installer.git("push", "--dry-run", "https://private-user:private-token-fixture@example.invalid/repo", "HEAD:refs/heads/site")
+                message = str(caught.exception)
+                self.assertIn(expected, message)
+                self.assertIn("push 사전 검사(dry-run)", message)
+                self.assertNotIn("private-", message)
+                self.assertIs(self.installer.git("diff", check=False), result)
+
     def test_default_plan_never_changes_host_or_env(self):
         result = subprocess.run(["bash", "./sadp", "--install", "--env-file", str(self.env)],
                                 cwd=ROOT, capture_output=True, text=True)
@@ -190,6 +213,53 @@ class InstallAllTest(unittest.TestCase):
         failed = subprocess.run(command[:-1] + ["false; echo should-not-run"], env=environment, capture_output=True)
         self.assertNotEqual(failed.returncode, 0)
         self.assertNotIn(b"should-not-run", failed.stdout)
+
+    def test_internal_only_never_disables_control_plane_external_check(self):
+        self.installer.cfg["interfaces"]["workersInternalOnly"] = True
+        self.assertIn("--internal-only", self.installer.interface_check_args("192.0.2.1", worker=True))
+        self.assertNotIn("--internal-only", self.installer.interface_check_args("192.0.2.1", worker=False))
+        with patch.object(self.installer, "ssh") as ssh:
+            self.installer.preflight_worker("worker-fixture", "192.0.2.1")
+        command = shlex.split(ssh.call_args.args[1])
+        self.assertIn("--internal-only", command)
+        self.assertEqual(command[:2], ["python3", "-c"])
+
+    def test_worker_preflight_identifies_failed_check_and_stops(self):
+        expected = "worker-fixture"
+        with patch.object(self.installer, "ssh") as ssh:
+            self.installer.preflight_worker(expected, "192.0.2.1")
+        script = ssh.call_args_list[0].args[1]
+        setup = r"""
+hostname() { if [[ $SCENARIO == hostname ]]; then echo other-worker; else echo worker-fixture; fi; }
+systemctl() { [[ $SCENARIO != agent ]]; }
+python3() { echo private-response-fixture >&2; [[ $SCENARIO != yaml ]]; }
+command() {
+  if [[ $SCENARIO == python && $2 == python3 || $SCENARIO == tar && $2 == tar ]]; then return 1; fi
+  builtin command "$@"
+}
+"""
+        for scenario, label in (("hostname", "hostname 일치"), ("agent", "rke2-agent 실행"),
+                                ("python", "Python3"), ("yaml", "PyYAML"), ("tar", "tar"), ("ok", "")):
+            with self.subTest(scenario=scenario):
+                result = subprocess.run(["bash", "--noprofile", "--norc", "-ceu", setup + script],
+                                        env=dict(os.environ, SCENARIO=scenario, BASH_ENV=""),
+                                        capture_output=True, text=True)
+                self.assertNotIn("private-response-fixture", result.stdout + result.stderr)
+                if label:
+                    self.assertNotEqual(result.returncode, 0)
+                    self.assertIn("worker " + expected + ": " + label + " 검사 실패", result.stderr)
+                    self.assertNotIn("[OK] worker " + expected + ": " + label, result.stdout)
+                else:
+                    self.assertEqual(result.returncode, 0, result.stderr)
+                    self.assertEqual(len(result.stdout.splitlines()), 5)
+
+    def test_ssh_failure_identifies_target_without_remote_script(self):
+        self.installer.cfg["installer"]["sshUser"] = "root"
+        with patch.object(self.installer, "run", side_effect=mod.InstallError("ssh 단계 실패(exit=1)")):
+            with self.assertRaises(mod.InstallError) as caught:
+                self.installer.ssh("192.0.2.1", "private-script-fixture")
+        self.assertIn("root@192.0.2.1", str(caught.exception))
+        self.assertNotIn("private-script-fixture", str(caught.exception))
 
     def test_parser_rejects_ssh_option_injection(self):
         values = mod.site.parse_env(self.env)

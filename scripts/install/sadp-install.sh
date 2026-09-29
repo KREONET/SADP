@@ -183,6 +183,14 @@ if [[ ${PHASE} == node || ${PHASE} == all ]]; then
     || die "현재 노드 '${NODE_NAME}'가 CONTROL_PLANE_HOSTNAME/WORKER_NODES에 없음(--node-name 사용 가능)"
   note "현재 노드: ${NODE_NAME} role=${NODE_ROLE} internal-ip=${NODE_IP}"
 
+  internal_only=false
+  [[ ${NODE_ROLE} != agent || ${WORKER_INTERNAL_ONLY:-false} != true ]] || internal_only=true
+  nic_check=(python3 scripts/lib/node-interface-preflight.py
+    --internal-interface "${INTERNAL_INTERFACE}" --external-interface "${EXTERNAL_INTERFACE}"
+    --internal-ip "${NODE_IP}" --guarded-interfaces "${GUARDED_INTERFACES}")
+  [[ ${internal_only} != true ]] || nic_check+=(--internal-only)
+  step "노드 설정 변경 전 NIC 확인" "${nic_check[@]}"
+
   # 이후 containerd/Helm/이미지 작업이 모두 계약 프록시를 전제로 한다. Squid 담당 노드에서는
   # 다른 node 설정보다 먼저 프록시를 올려야 원툴 설치 순서가 env 검증 → egress 준비 → 소비자
   # 설정이 된다. Squid 자체 package만 승인된 direct mirror 또는 기존 upstream proxy로 bootstrap한다.
@@ -195,8 +203,8 @@ if [[ ${PHASE} == node || ${PHASE} == all ]]; then
     --role "${NODE_ROLE}"
     --internal-ip "${NODE_IP}"
     --internal-interface "${INTERNAL_INTERFACE}"
-    --external-interface "${EXTERNAL_INTERFACE}"
     --service-cidr "${SERVICE_CIDR}")
+  [[ ${internal_only} == true ]] || identity+=(--external-interface "${EXTERNAL_INTERFACE}")
   [[ ${NODE_ROLE} != agent ]] \
     || identity+=(--server-url "https://${RKE2_SERVER_ENDPOINT}:9345")
 
@@ -219,7 +227,11 @@ if [[ ${PHASE} == node || ${PHASE} == all ]]; then
   fi
   step "RKE2 계약 소유 설정 병합" "${node_config[@]}"
   step "RKE2 내부망 identity 고정" "${identity[@]}"
-  step "외부/guarded interface 관리 포트 guard" "${guard[@]}"
+  if [[ ${internal_only} == true ]]; then
+    note "내부망 전용 worker: 외부 NIC identity/default route 검사와 외부/guarded guard 설치 생략"
+  else
+    step "외부/guarded interface 관리 포트 guard" "${guard[@]}"
+  fi
   step "RKE2 embedded containerd proxy" "${containerd_proxy[@]}"
   if [[ ${NODE_ROLE} == server ]]; then
     step "monitoring image pull용 Docker daemon proxy" "${docker_proxy[@]}"

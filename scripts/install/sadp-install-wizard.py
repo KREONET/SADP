@@ -61,7 +61,8 @@ SECTIONS: tuple[tuple[str, tuple[Question, ...]], ...] = (
             Question("CONTROL_PLANE_IP", "control-plane 내부 IPv4"),
             Question("WORKER_NODES", "worker 목록(host=IPv4,host=IPv4)"),
             Question("INTERNAL_INTERFACE", "모든 노드의 내부 NIC 이름"),
-            Question("EXTERNAL_INTERFACE", "모든 노드의 외부 NIC 이름"),
+            Question("EXTERNAL_INTERFACE", "외부 NIC 이름 (control-plane 필수)"),
+            Question("WORKER_INTERNAL_ONLY", "worker가 외부 NIC 없는 내부망 전용인지", ("true", "false")),
             Question("GUARDED_INTERFACES", "추가 보호 NIC 목록(CSV, 없으면 -)", optional=True),
             Question("NODE_INTERNAL_CIDRS", "노드 내부 CIDR 목록"),
             Question("POD_CIDRS", "Pod CIDR 목록"),
@@ -574,6 +575,8 @@ def should_ask(question: Question, values: dict[str, str]) -> bool:
         return not values.get("OIDC_SHARED_CLIENT_ID")
     if question.key == "WORKER_NODES":
         return values.get("CLUSTER_MODE", "multi") != "single"
+    if question.key == "WORKER_INTERNAL_ONLY":
+        return values.get("CLUSTER_MODE", "multi") != "single"
     if question.key == "SADP_SSH_USER":
         return values.get("CLUSTER_MODE", "multi") != "single"
     if question.key == "PUBLIC_IP_NODE":
@@ -783,6 +786,7 @@ def main() -> int:
     values = parse_values(content)
     values.setdefault("CLUSTER_MODE", "multi")
     values.setdefault("SADP_SSH_USER", "root")
+    values.setdefault("WORKER_INTERNAL_ONLY", "false")
 
     print("SADP 대화형 설치 준비")
     print("- Enter: 현재값 유지, - 입력: 선택값 비우기")

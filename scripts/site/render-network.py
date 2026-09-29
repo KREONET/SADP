@@ -129,6 +129,8 @@ def settings(spec: dict) -> dict:
                 )
 
     interfaces = net.get("interfaces") or {}
+    if not isinstance(interfaces.get("workersInternalOnly", False), bool):
+        raise ValueError("network.interfaces.workersInternalOnly must be boolean")
     internal_interface = str(interfaces.get("internal") or "").strip()
     external_interface = str(interfaces.get("external") or "").strip()
     if not internal_interface or not INTERFACE.fullmatch(internal_interface):

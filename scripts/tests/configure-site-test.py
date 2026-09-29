@@ -1283,5 +1283,17 @@ case("SC-56 공통 OIDC ID 대소문자 보존·Portal·Envoy 동기화 및 앱�
      VALID + "OIDC_SHARED_CLIENT_ID=Authentik.Shared-Client_123\n", True, check_shared_oidc, write=True)
 case("SC-57 공통 OIDC ID 공백 거부", VALID + "OIDC_SHARED_CLIENT_ID=invalid client\n", False)
 
+def check_internal_workers(workspace, result):
+    contract = yaml.safe_load((workspace / "contracts/platform-production.yaml").read_text())["spec"]
+    assert contract["network"]["interfaces"]["workersInternalOnly"] is True
+    install_env = (workspace / "platform/network/site-install.env").read_text()
+    assert "WORKER_INTERNAL_ONLY=true" in install_env
+    assert "EXTERNAL_INTERFACE=" + contract["network"]["interfaces"]["external"] in install_env
+
+
+case("SC-58 내부망 전용 worker 계약과 설치 env 전달", VALID + "WORKER_INTERNAL_ONLY=true\n",
+     True, check_internal_workers, write=True)
+case("SC-59 내부망 전용 worker 잘못된 boolean 거부", VALID + "WORKER_INTERNAL_ONLY=maybe\n", False)
+
 print(f"통과 {PASSED} / 실패 {FAILED}")
 raise SystemExit(FAILED != 0)

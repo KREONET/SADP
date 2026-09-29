@@ -189,7 +189,40 @@ class Installer:
         return result
 
     def git(self, *args, check=True):
-        return self.run(["git", *args], capture=True, check=check)
+        result = self.run(["git", *args], capture=True, check=False)
+        if not check or not result.returncode:
+            return result
+        # Git 오류에는 URL에 담긴 자격증명이나 서버 응답이 섞일 수 있어 분류 결과만 표시한다.
+        output = ((result.stderr or b"") + (result.stdout or b"")).decode("utf-8", errors="replace").lower()
+        categories = (
+            (("could not read username", "could not read password", "terminal prompts disabled"),
+             "Git 인증정보를 읽을 수 없음. SADP_GIT_PUSH_TOKEN_FILE 또는 root 계정의 credential helper를 확인하십시오"),
+            (("authentication failed", "invalid username or password", "http basic: access denied", "error: 401"),
+             "Git 인증 거부. 토큰 유효기간과 SADP_ARGO_REPO_USERNAME을 확인하십시오"),
+            (("protected branch", "protected-branch", "error: 403", "not allowed to push", "write access to repository not granted"),
+             "저장소 쓰기 또는 branch 권한 거부. 토큰의 저장소 쓰기 권한과 branch 보호 설정을 확인하십시오"),
+            (("repository not found", "does not appear to be a git repository"),
+             "저장소 주소 또는 접근 권한 확인 필요. FORGEJO_REPO_URL과 토큰의 대상 저장소를 확인하십시오"),
+            (("could not resolve host", "could not resolve proxy"),
+             "Git 서버 또는 프록시 DNS 조회 실패. control-plane의 DNS와 프록시 설정을 확인하십시오"),
+            (("ssl certificate problem", "certificate verify failed", "server certificate verification failed"),
+             "Git 서버 TLS 인증서 검증 실패. 서버 인증서와 신뢰 CA를 확인하십시오"),
+            (("failed to connect", "connection timed out", "connection refused", "no route to host"),
+             "Git 서버 연결 실패. control-plane의 네트워크와 Git 서버 상태를 확인하십시오"),
+            (("non-fast-forward", "fetch first"),
+             "원격 branch가 앞서 있음. 원격 변경을 확인하고 통합한 뒤 재실행하십시오(force push하지 않음)"),
+        )
+        reason = "Git 저장소·인증·네트워크 확인 필요. 서버 오류 원문은 자격증명 보호를 위해 출력하지 않습니다"
+        for patterns, message in categories:
+            if any(pattern in output for pattern in patterns):
+                reason = message
+                break
+        operation = args[0] if args and args[0] in {
+            "push", "status", "branch", "check-ref-format", "rev-parse", "archive", "add", "diff", "commit"
+        } else "작업"
+        if operation == "push" and "--dry-run" in args:
+            operation = "push 사전 검사(dry-run)"
+        raise InstallError(f"Git {operation} 실패(exit={result.returncode}): {reason}; 후속 단계 중단")
 
     def kctl(self, *args, **kwargs):
         return self.run([*self.kubectl, *args], **kwargs)
@@ -256,6 +289,8 @@ class Installer:
             private_file(Path(c["installer"]["pushTokenFile"]))
         self.run(["systemctl", "is-active", "--quiet", "rke2-server"])
         self.run(["systemctl", "is-active", "--quiet", "docker"])
+        self.run(["python3", "scripts/lib/node-interface-preflight.py",
+                  *self.interface_check_args(c["nodes"]["controlIP"], worker=False)])
         nodes = json.loads(self.kctl("get", "nodes", "-o", "json", capture=True).stdout)["items"]
         expected = {c["nodes"]["controlHostname"]: c["nodes"]["controlIP"], **dict(c["nodes"]["workers"])}
         if {n["metadata"]["name"] for n in nodes} != set(expected):
@@ -299,9 +334,42 @@ class Installer:
         remote = (["sudo", "-n"] if user != "root" else []) + [
             "env", "-u", "BASH_ENV", "-u", "ENV", "bash", "--noprofile", "--norc", "-ceu", script,
         ]
-        return self.run(["ssh", "-o", "BatchMode=yes", "-o", "StrictHostKeyChecking=yes",
-                         "-o", "ConnectTimeout=10", f"{user}@{address}", shlex.join(remote)],
-                        input=input, capture=capture)
+        try:
+            return self.run(["ssh", "-o", "BatchMode=yes", "-o", "StrictHostKeyChecking=yes",
+                             "-o", "ConnectTimeout=10", f"{user}@{address}", shlex.join(remote)],
+                            input=input, capture=capture)
+        except InstallError as error:
+            raise InstallError(f"SSH 대상={user}@{address}: {error}") from error
+
+    def interface_check_args(self, address, *, worker):
+        interfaces = self.cfg["interfaces"]
+        args = ["--internal-interface", interfaces["internal"], "--external-interface", interfaces["external"],
+                "--internal-ip", address, "--guarded-interfaces", ",".join(interfaces.get("guarded") or [])]
+        if worker and interfaces.get("workersInternalOnly"):
+            args.append("--internal-only")
+        return args
+
+    def preflight_worker(self, name, address):
+        # -e로 조용히 끝나는 원격 복합 명령 대신 실패한 선행 조건만 값 비노출로 식별한다.
+        checks = [
+            ("hostname 일치", f'test "$(hostname -s)" = {shlex.quote(name)}',
+             "hostname -s 결과와 WORKER_NODES의 이름을 확인하십시오"),
+            ("rke2-agent 실행", "systemctl is-active --quiet rke2-agent",
+             "systemctl show rke2-agent -p LoadState -p ActiveState -p SubState로 확인하십시오"),
+            ("Python3", "command -v python3", "worker에 Python3가 필요합니다"),
+            ("PyYAML", 'python3 -c "import yaml"', "worker의 Python3에 PyYAML이 필요합니다"),
+            ("tar", "command -v tar", "worker에 tar가 필요합니다"),
+        ]
+        lines = []
+        for label, command, guidance in checks:
+            failure = shlex.quote(f"[FAIL] worker {name}: {label} 검사 실패. {guidance}")
+            success = shlex.quote(f"[OK] worker {name}: {label}")
+            lines.append(f"if ! {command} >/dev/null 2>&1; then printf '%s\\n' {failure} >&2; exit 1; fi")
+            lines.append(f"printf '%s\\n' {success}")
+        print(f"[INFO] worker 사전 검사: {name} ({address})", flush=True)
+        self.ssh(address, "\n".join(lines))
+        source = (ROOT / "scripts/lib/node-interface-preflight.py").read_text()
+        self.ssh(address, shlex.join(["python3", "-c", source, *self.interface_check_args(address, worker=True)]))
 
     def prepare_workers(self):
         revision = self.git("rev-parse", "HEAD").stdout.decode().strip()
@@ -362,9 +430,9 @@ else:
                                         GIT_CONFIG_COUNT="1", GIT_CONFIG_KEY_0="credential.helper", GIT_CONFIG_VALUE_0="")
             self.preflight()
             for name, address in self.cfg["nodes"]["workers"]:
-                self.ssh(address, f'test "$(hostname -s)" = {shlex.quote(name)}; '
-                                  'systemctl is-active --quiet rke2-agent; python3 -c "import yaml"; command -v tar >/dev/null')
+                self.preflight_worker(name, address)
             # push 실패를 노드 변경보다 먼저 발견한다. force push와 원격 branch 강제 전환은 없다.
+            print("[INFO] Git push 권한·연결 사전 검사(dry-run)", flush=True)
             self.git("push", "--dry-run", self.cfg["forgejo"]["repoURL"],
                      f"HEAD:refs/heads/{self.cfg['forgejo']['revision']}")
             self.run([os.environ.get("SADP_RKE2_BIN", "/usr/local/bin/rke2"),

@@ -59,6 +59,18 @@ sudo bash ./sadp --install --interactive --apply
   제공 인증서를 쓰면 기존 `PROVIDED_CERTIFICATE_PATH`/`PROVIDED_PRIVATE_KEY_PATH` 또는
   Gateway의 기존 TLS Secret을 준비합니다.
 
+control-plane만 외부 NIC가 있고 worker는 내부망에만 연결됐다면 기존 `site.env`에 다음을 지정합니다.
+
+```dotenv
+WORKER_INTERNAL_ONLY=true
+```
+
+`EXTERNAL_INTERFACE`는 control-plane의 외부 NIC 이름으로 유지합니다. worker에서는 내부 NIC·IP를
+검사하고 외부 NIC 설정과 외부/guarded interface guard 설치를 생략합니다. 외부/guarded NIC가
+실제로 존재하거나 예상하지 않은 공인 주소·외부 default route가 발견되면 보호를 생략하지 않고 중단합니다.
+`all`은 이 검사를 drain·설정 변경 전에 수행합니다. 기존에 설치된 guard 규칙은 자동 삭제하지 않습니다.
+기본값 `false`는 모든 노드에 계약의 외부 NIC를 요구하는 기존 동작입니다.
+
 **control-plane에는 실행 중인 Docker Engine 서비스도 필요합니다.** RKE2에 포함된 containerd와
 별개이며, 통합 설치기의 사전 검사와 모니터링 이미지 동기화에서 사용합니다. `docker` CLI만
 있거나 `docker.service`가 `not-found`인 상태로는 설치를 진행할 수 없습니다.

@@ -82,7 +82,7 @@ pull/push Docker config 경로와 권한은 분리합니다.
 | Git/Registry | Forgejo GitOps URL/revision, OCI host/project, immutable 초기 tag |
 | 노드 | control-plane 1대, worker N대(single은 0대)의 hostname과 내부 IPv4 |
 | 클러스터 | 기존 RKE2 Pod/Service CIDR, cluster DNS, API 주소 |
-| NIC | 모든 노드에서 통일된 internal/external interface 이름 |
+| NIC | 내부 NIC 이름은 모든 노드에서 통일. 외부 NIC 없는 worker는 `WORKER_INTERNAL_ONLY=true` |
 | 공개 경로 | public IP 소유, `nat`/`direct`, Gateway VIP/pool |
 | egress | Squid host/port/client CIDR, upstream DNS |
 | TLS | ACME mode, RFC2136 endpoint/key metadata, 진행 상태 |
