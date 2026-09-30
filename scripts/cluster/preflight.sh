@@ -144,6 +144,11 @@ if ! kctl rollout status -n "${preflight_namespace}" daemonset/cri-image-pull --
   ' | awk 'BEGIN {print "NODE\tPOD\tPHASE\tWAITING_REASON\tWAITING_MESSAGE"} {print}' >&2 || true
   cat >&2 <<'EOF'
 [NEXT] sudo bash ./sadp --manage-containerd-proxy
+[NEXT] Forbidden/403이면 Squid 호스트 access.log의 TCP_DENIED와 redirect 호스트 allowlist를 먼저 확인한다.
+[NEXT] Squid 호스트에서 sudo bash ./sadp --discover-registry-egress로 동적 후보를 확인하고 --apply로 반영한다.
+[NEXT] allowlist 누락이면 site.env/계약 수정·재렌더 후 Squid 호스트에서 sudo bash ./sadp --install-squid --skip-package-install
+[NEXT] Squid allowlist만 바뀌면 RKE2 재시작 없이 --preflight --image-pull-only로 재검사한다.
+[NEXT] 아래 apply/순차 재시작은 containerd proxy 설정 변경이 필요한 경우에만 수행한다.
 [NEXT] sudo bash ./sadp --manage-containerd-proxy --apply
 [NEXT] 위 plan이 출력한 worker 한 대씩 → server 마지막 순서로 RKE2를 수동 재시작한다.
 [NEXT] sudo bash ./sadp --manage-containerd-proxy --check

@@ -246,11 +246,100 @@ printf 'registry challenge HTTP=%s\n' "${code}"
 | --- | --- | --- |
 | `Downloaded` | Devtron 설치 진행 중 | 최종 `Applied`와 workload Ready를 기다림 |
 | `ImagePullBackOff` + `lookup registry ... on 127.0.0.53` | containerd proxy 미적용 또는 적용 후 RKE2 미재시작 | 중앙 plan/apply → 순차 재시작 → 중앙 check → image-pull-only |
+| `RKE2 embedded containerd 프로세스가 정확히 하나가 아님` | RKE2 실행 파일 기준 탐지 개수 확인 | `ps -C containerd -o pid,ppid,comm`과 `/proc/<PID>/exe` 확인 후 `--install-containerd-proxy --check` 재검사 |
 | Registry HTTP 5xx/timeout | pull 단계의 일시적 upstream 장애 | `--sync-images`의 제한 재시도 결과 확인; archive 손상으로 분류하지 않음 |
 | `ctr: content digest sha256:<DIGEST>: not found` | export archive에서 manifest가 참조한 blob 누락 | 기존 tar 반복 import 금지; `sudo bash ./sadp --sync-images --image-list platform/monitoring/images.txt`로 새 pull/export/검증 |
 | `/v2/`가 `401` | Registry challenge 도달만 성공 | 실제 CRI pull 결과 확인 |
 | Squid `TCP_DENIED` | registry 또는 redirect/CDN allowlist 누락 | `site.env`/계약 package domain과 renderer 수정 후 재렌더 |
 | `Accepted=True`, `ResolvedRefs=False: BackendNotFound` | Route/Namespace 순서는 정상, backend Service 미기동 | 해당 선택 Application/Service Ready 진단 |
+
+일반 `/usr/bin/containerd`와 RKE2 embedded containerd는 함께 실행될 수 있습니다.
+proxy 검사는 명령행의 `containerd` 이름이 아니라 `/proc/<PID>/exe`의 RKE2 실행 파일 경로로
+대상을 구분합니다. RKE2 프로세스만 정확히 하나여야 하며, 실제 중복이나 실행 파일을 읽을 수 없는
+경우에는 중단합니다. 구버전의 명령행 경로 판별은 짧은 `argv[0]`를 놓칠 수 있으므로 수정된
+스크립트로 재검사합니다. 이 판별 수정은 RKE2 재시작이나 환경 검사 우회를 요구하지 않습니다.
+
+CRI pull의 redirect 요청에서 `Forbidden`/`403`이 나면 Squid 호스트의
+`/var/log/squid/access.log`에서 해당 목적지의 `TCP_DENIED`를 먼저 확인합니다.
+확인된 목적지가 빠졌으면 `site.env`가 있는 환경에서는 `EXTRA_PACKAGE_DOMAINS`에 추가하고
+재생성합니다. 없는 환경에서는 계약의 `network.squid.packageDomains`를 수정하고
+`python3 scripts/site/render-network.py`로 재렌더합니다. 기존 목록은 유지합니다.
+Squid 호스트에서 아래 명령으로 적용하고, control-plane에서 실제 CRI pull을 재검사합니다.
+
+```bash
+# Squid 호스트: 실행 중인 서비스는 설정을 reload합니다.
+sudo bash ./sadp --install-squid --skip-package-install
+sudo bash ./sadp --install-squid --check
+# control-plane
+sudo bash ./sadp --preflight --image-pull-only
+```
+
+Squid allowlist만 바뀌었다면 RKE2 재시작은 필요하지 않습니다.
+`TCP_DENIED`가 없으면 상위 proxy 또는 registry 응답을 추가로 확인합니다.
+지역 redirect 목적지는 바뀔 수 있으므로 하나의 호스트 추가가 모든 향후 pull을 보장하지는 않습니다.
+
+### 고정 이미지의 redirect 자동 탐지
+
+지역별 목적지가 바뀌는 경우 Squid 호스트에서 아래 명령으로 후보를 확인합니다.
+기본 모드는 HTTPS 검사만 수행하며 설정과 Kubernetes 리소스를 변경하지 않습니다.
+검사 요청은 Squid access.log에 기록됩니다.
+
+```bash
+sudo bash ./sadp --discover-registry-egress
+# 출력된 후보를 검토한 뒤 적용
+sudo bash ./sadp --discover-registry-egress --apply
+```
+
+**탐지 단계 전체 제한은 기본 90초이며 진행 단계·호스트·경과 시간을 표시합니다.**
+개별 네트워크 대기는 10초로 줄였고, `--timeout 180`처럼 전체 탐지 제한을 조정할 수 있습니다.
+시간 초과 시 부분 후보를 적용하지 않습니다. `--apply`도 같은 제한으로 다시 탐지하며,
+그 뒤의 Squid 적용과 CRI 검사는 별도입니다. 로컬 control-plane의 CRI 검사는 최대 180초의
+DaemonSet rollout 대기를 포함합니다. 기본 탐지는 설정을 변경하지 않아 `Ctrl+C`로 중단할 수 있습니다.
+
+control-plane에서는 Linux 노드의 아키텍처를 조회해 필요한 이미지만 검사합니다. 별도 Squid
+호스트에서는 로컬 아키텍처를 사용하며, 혼합 클러스터이거나 로컬과 다른 아키텍처라면
+`--architectures amd64,arm64`처럼 검사할 Linux 아키텍처를 plan/apply 양쪽에 지정합니다.
+노드 API 조회가 실패하거나 고정 이미지에 요청 아키텍처가 없으면 중단합니다.
+
+명령은 preflight와 같은 digest 고정 pause 이미지 중 선택한 Linux manifest와 config/layer
+경로를 Squid 호스트의 직접 HTTPS 연결로 탐지합니다. 환경의 proxy 변수는 이 탐지에 사용하지
+않습니다. manifest 내용은 digest로 확인하고 레이어는 Range GET으로 경로만 확인합니다.
+HTTPS 443의 알려진 Kubernetes 배포 호스트 형식만 따라가며, 임의 호스트·인증정보가 포함된
+URL·HTTP downgrade는 거부합니다. 지원 범위 밖 redirect는 수동 검토가 필요합니다.
+
+실제로 관측된 호스트 중 계약에서 허용하지 않은 목적지에 proxy HEAD 요청을 보냅니다.
+그 요청의 CONNECT 403과 새 `TCP_DENIED/403` 로그가 함께 확인된 호스트만 후보로 인정합니다.
+상위 서버의 403이나 과거 로그만으로는 추가하지 않습니다. 로그가 회전하면 다시 실행합니다.
+탐지 단계의 URL query와 응답 본문은 진단 출력에 넣지 않습니다.
+
+`--apply`는 탐지를 다시 수행하고 다음을 실행합니다.
+
+1. `environments/site.env`가 있으면 `EXTRA_PACKAGE_DOMAINS`를 보존하며 추가합니다.
+   다른 위치의 입력은 `--env-file <SITE_ENV_PATH>`를 plan/apply 양쪽에 전달합니다.
+   `site.env`와 계약이 다르면 기존 설정부터 동기화하도록 중단합니다.
+   입력이 없으면 계약의 `network.squid.packageDomains`만 확장합니다.
+2. 네트워크 렌더러로 생성하고 Squid 문법 검사 후 설정을 반영·reload합니다.
+   기존 허용 항목은 삭제하지 않습니다. 문법 검사/reload 실패 시 변경 파일을 복원합니다.
+3. 관측 호스트의 proxy CONNECT를 재검사합니다. 로컬에 RKE2 server kubeconfig와 kubectl이
+   있으면 `--preflight --image-pull-only`로 모든 Linux 노드의 실제 pull을 확인합니다.
+   별도 Squid 호스트라면 출력된 명령을 control-plane에서 실행해야 검증이 완료됩니다.
+
+`네트워크 생성물 불일치`는 Git 변경 여부가 아니라 현재 계약을 렌더한 결과와 저장소 파일이
+다르다는 뜻입니다. 출력된 파일 목록과 `bash ./sadp --render-network --check` 결과를 확인합니다.
+`site.env`가 있다면 계약과 같은 사이트 설정인지 먼저 확인하고, 현재 계약이 의도한 설정이면
+`bash ./sadp --render-network`로 생성물을 갱신한 뒤 탐지를 다시 실행합니다.
+이 명령은 저장소 파일만 갱신하며 실행 중인 서비스에는 적용하지 않습니다.
+설치된 Squid 설정과 저장소 생성물이 다르면 먼저 `--install-squid`로 동기화합니다.
+worktree 변경이 있으면 검토 후 `--allow-dirty`를 명시해야 적용됩니다. RKE2는 재시작하지 않습니다.
+적용 뒤 proxy 검사는 호스트, CONNECT 상태, 대상 HTTP 상태, curl 종료 코드를 표시합니다.
+reload 직후 CONNECT 403은 1초 간격으로 최대 3회 검사하고, 시간 초과·TLS 오류는 바로 진단합니다.
+`CONNECT=200`이어도 대상 HTTP 응답이나 실제 image pull 성공을 보장하지 않습니다.
+control-plane에서는 이 보조 검사가 실패해도 경고를 남기고 실제 CRI pull을 실행합니다.
+모든 Linux 노드의 CRI pull이 성공하면 최종 통과하며, 보조 검사 경고는 별도로 확인합니다.
+CRI pull 실패 또는 별도 Squid 호스트의 proxy 검사 실패는 실패로 반환합니다.
+어느 경우에도 적용한 허용 목록은 유지합니다. 이미 적용을 마쳤다면 긴 탐지를 반복하기 전에
+control-plane에서 `sudo bash ./sadp --preflight --image-pull-only`로 실제 결과부터 확인합니다.
+탐지는 Squid 호스트의 현재 경로에 한정되며 다른 이미지와 향후 지역 변경까지 보장하지 않습니다.
 
 Devtron 1.5.0/operator chart 0.22.92의 실제 render image 목록은
 `platform/devtron/images.txt`에 고정합니다. 현재 `quay.io`, `public.ecr.aws`와 Quay blob redirect

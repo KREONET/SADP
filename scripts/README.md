@@ -96,6 +96,15 @@ daemon의 proxy 환경도 계약과 같은지 확인하며, 셸 환경변수만 
 
 ## cluster — control-plane에서 실행
 
+Squid redirect allowlist 진단은 Squid 호스트에서 `sudo bash ./sadp --discover-registry-egress`로
+실행합니다. 기본은 후보 출력이며 `--apply`로 상류 입력·계약·생성물을 반영하고 Squid만 reload합니다.
+별도 입력은 `--env-file <SITE_ENV_PATH>`, 검토한 기존 변경은 `--allow-dirty`로 지정합니다.
+control-plane에서는 Linux 노드의 아키텍처만 탐지하고 적용 후 실제 CRI pull도 확인합니다.
+탐지 단계는 기본 90초 제한(`--timeout`으로 조정)이며 진행 상태를 표시합니다. 별도 Squid는
+로컬 아키텍처가 기본이므로 필요하면 `--architectures amd64,arm64`로 검사 범위를 지정합니다.
+`--apply`도 다시 탐지하며 그 뒤의 적용·CRI 검사 시간은 별도입니다. 상세 절차는
+[네트워크 문서](../docs/network-egress.md#고정-이미지의-redirect-자동-탐지)를 따릅니다.
+
 | 명령 | 역할 |
 | --- | --- |
 | `--preflight` | 계약의 1+N 노드/StorageClass와 모든 Linux node CRI pull 검사(`--image-pull-only` 지원) |

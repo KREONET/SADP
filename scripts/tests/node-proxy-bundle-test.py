@@ -43,6 +43,7 @@ def run(*args: str) -> subprocess.CompletedProcess[str]:
 def process(root: pathlib.Path, pid: int, argv: list[str], environ: list[str]) -> None:
     directory = root / "proc" / str(pid)
     directory.mkdir(parents=True)
+    (directory / "exe").symlink_to(argv[0])
     (directory / "cmdline").write_bytes(b"\0".join(item.encode() for item in argv) + b"\0")
     (directory / "environ").write_bytes(
         b"\0".join(item.encode() for item in environ) + b"\0"
@@ -120,6 +121,35 @@ with tempfile.TemporaryDirectory(prefix="sadp-containerd-proxy-test-") as tempor
         result.returncode == 0 and "값 비출력" in result.stdout,
         "NUL environ의 빈 항목과 '=' 없는 항목을 건너뛰고 shim을 오인하지 않음",
     )
+
+    for cmdline in (b"containerd\0-c\0/fixture\0", b"containerd -c /fixture\0"):
+        (root / "proc/102/cmdline").write_bytes(cmdline)
+        result = run(*common, "--check")
+        check(result.returncode == 0, "짧은 argv/process title이어도 실제 RKE2 실행 파일로 판별")
+
+    process(root, 104, ["/usr/bin/containerd"], [])
+    process(root, 105, ["/var/lib/rancher/rke2/data/fixture/bin/containerd"], [])
+    (root / "proc/105/exe").unlink()
+    (root / "proc/105/exe").symlink_to("/usr/bin/containerd")
+    result = run(*common, "--check")
+    check(result.returncode == 0, "Docker containerd와 RKE2 경로를 흉내 낸 argv를 실제 실행 파일로 제외")
+
+    process(root, 106, ["/var/lib/rancher/rke2/bin/containerd"], containerd_environment)
+    result = run(*common, "--check")
+    check(result.returncode != 0 and "count=2" in result.stderr
+          and "102 106" in result.stderr, "실제 embedded containerd 중복은 PID/개수를 알리고 중단")
+    shutil.rmtree(root / "proc/106")
+
+    (root / "proc/102/exe").unlink()
+    result = run(*common, "--check")
+    check(result.returncode != 0 and "count=0" in result.stderr
+          and "192.0.2.10" not in result.stdout + result.stderr,
+          "실행 파일을 확인할 수 없으면 Docker로 대체하지 않고 값 비출력으로 실패")
+    (root / "proc/102/exe").symlink_to("/var/lib/rancher/rke2/data/fixture/bin/containerd (deleted)")
+    result = run(*common, "--check")
+    check(result.returncode == 0, "교체된 실행 파일의 deleted 표식은 기존 프로세스 환경 검사를 방해하지 않음")
+    (root / "proc/102/exe").unlink()
+    (root / "proc/102/exe").symlink_to("/var/lib/rancher/rke2/data/fixture/bin/containerd")
 
     (root / "proc/101/cmdline").write_bytes(b"/usr/local/bin/rke2 server\0")
     result = run(*common, "--check")

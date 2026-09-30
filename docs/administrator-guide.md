@@ -122,7 +122,7 @@ Secret 본문은 Git, `site.env`, 명령 인자, 인수인계 문서에 넣지 �
 | HTTPS 또는 Certificate 실패 | Issuer, Order, Challenge, wildcard Secret | [DNS-01](letsencrypt-dns01.md) |
 | 로그인 반복·SAML 오류 | OIDC issuer/callback, 외부 broker와 상위 IdP | [외부 인증](identity-provider.md) |
 | Worker만 image/DNS 실패 | containerd proxy, CoreDNS, Squid | [네트워크](network-egress.md) |
-| `ImagePullBackOff` | immutable tag, pull credential, Registry 권한 | Pod event |
+| `ImagePullBackOff` | immutable tag, pull credential, Registry 권한, containerd proxy/Squid redirect 차단 | Pod event와 [redirect 탐지](network-egress.md#고정-이미지의-redirect-자동-탐지) |
 | ExternalSecret timeout | OpenBao sealed/active endpoint, 자동 판별된 Store Ready condition | [복구](recovery.md#7-openbao-sealexternalsecret-timeout-복구) |
 | Portal 배포 API 503 | Forgejo 연결과 bot 권한 | [Portal API](portal-api.md) |
 | 데이터 손상 | 추가 쓰기 중단, 마지막 검증 백업 | [복구](recovery.md) |

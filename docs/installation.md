@@ -11,10 +11,10 @@
 flowchart TD
     Ready["1–2. 사전 준비"] --> Render["3. 렌더·테스트<br/>commit/push"]
     Render --> Nodes["4–5. 노드 적용<br/>Squid 노드부터"]
-    Nodes --> Restart["노드별 수동 재시작<br/>Ready 확인"]
-    Restart --> Cluster["6. cluster phase<br/>GitOps 준비"]
-    Cluster --> TLS["7–8. TLS 전환<br/>서비스·앱 배포"]
-    TLS --> Verify["9. acceptance<br/>인수인계"]
+    Nodes --> Restart["6. 노드별 수동 재시작<br/>Ready 확인"]
+    Restart --> Cluster["7. cluster phase<br/>GitOps 준비"]
+    Cluster --> TLS["8–9. TLS 전환<br/>서비스·앱 배포"]
+    TLS --> Verify["10. acceptance<br/>인수인계"]
 ```
 
 Squid 노드 적용 후 egress를 검증합니다. cluster phase에서는 Squid 재검증, 모니터링 이미지
@@ -650,6 +650,49 @@ cluster phase는 다음 순서를 강제합니다.
 
 다른 Devtron 버전이나 불완전한 기존 설치는 자동 덮어쓰지 않고 중단합니다.
 
+### CRI pull이 지역별 registry redirect에서 차단될 때
+
+preflight에서 `ImagePullBackOff`와 `Forbidden`/`403`이 함께 나오면
+Squid 호스트에서 고정 이미지의 redirect 경로와 새 차단 로그를 대조합니다.
+설치에 사용한 상류 env 경로를 plan/apply 양쪽에 전달합니다.
+
+```bash
+sudo bash ./sadp --discover-registry-egress --env-file /etc/sadp/site.env
+# 출력된 후보를 검토한 뒤 적용
+sudo bash ./sadp --discover-registry-egress --env-file /etc/sadp/site.env --apply
+```
+
+**탐지 단계는 기본 90초로 제한하며 조회 단계·호스트·경과 시간을 표시합니다.**
+control-plane에서는 Linux 노드의 아키텍처를 조회하고 해당 manifest와 config/layer만 검사합니다.
+개별 네트워크 대기는 10초이며 DNS 조회나 연속 응답으로 탐지가 길어져도 전체 탐지 제한에 도달하면
+실패로 끝납니다. 제한을 늘려야 하면 plan/apply 양쪽에 `--timeout 180`처럼 초 단위로 지정합니다.
+시간 초과까지의 부분 결과로 허용 목록을 바꾸지 않습니다.
+
+Squid가 별도 호스트이면 기본값은 그 호스트의 로컬 아키텍처입니다. 클러스터의 노드와 다르거나
+여러 아키텍처를 쓰면 `--architectures amd64,arm64`처럼 실제 Linux 노드의 아키텍처를 모두 지정합니다.
+API 조회에 실패하면 로컬 값으로 조용히 대체하지 않고 중단합니다.
+`--apply`도 탐지를 처음부터 다시 수행하며 Squid 적용과 실제 CRI 검사는 90초 탐지 제한과 별도입니다.
+로컬 control-plane의 CRI 검사는 최대 180초의 DaemonSet rollout 대기를 포함합니다.
+`--apply` 없는 탐지는 설정을 변경하지 않으므로 필요하면 `Ctrl+C`로 중단할 수 있습니다.
+
+생성물 불일치가 나오면 `bash ./sadp --render-network --check`로 파일 목록을 확인하고
+상류 env·계약·생성물을 동기화합니다. 설치된 Squid 설정 불일치는 Squid 적용이 별도로 필요합니다.
+기존 worktree 변경을 검토한 경우에만 적용 명령에 `--allow-dirty`를 추가합니다.
+추가된 env·계약·생성물도 사이트 설정 변경으로 보관하고, Git 관리 파일은 검토 후 사이트 branch에
+commit/push합니다. 이 명령은 자동 commit/push나 RKE2 재시작을 하지 않습니다.
+
+Squid가 별도 호스트라면 적용 후 control-plane에서 다음 명령을 실행해야 검증이 완료됩니다.
+
+```bash
+sudo bash ./sadp --preflight --image-pull-only
+```
+
+허용 후보의 범위와 동기화·실패 복구 절차는
+[redirect 자동 탐지](network-egress.md#고정-이미지의-redirect-자동-탐지)를 따릅니다.
+Squid reload 완료 뒤 보조 proxy 검사가 실패해도 control-plane에서는 실제 CRI 검사를 이어갑니다.
+모든 Linux 노드의 pull이 성공하면 최종 통과합니다. 이미 허용 목록 적용을 마친 상태라면
+탐지부터 반복하지 말고 위 `--preflight --image-pull-only`로 실제 pull을 먼저 확인합니다.
+
 ### 외부 image archive를 다시 동기화할 때
 
 cluster phase가 사용하는 운영 목록과 단일 진입점은 다음과 같습니다. `docker pull`, `docker save`,
@@ -897,6 +940,9 @@ Secret 본문은 인수인계 문서에 복사하지 않습니다. 설치 뒤 �
 | 생성물이 env와 다름 | render 결과 미반영 | 3단계 diff와 commit/push |
 | hostname을 찾지 못함 | 노드 이름 불일치 | `hostname -s`, `WORKER_NODES` |
 | Squid 허용 주소 실패 | bootstrap/allowlist/daemon 문제 | [네트워크](network-egress.md) |
+| `RKE2 embedded containerd 프로세스가 정확히 하나가 아님` | embedded 프로세스 판별 실패 | 일반 containerd와 구분해 `/proc/<PID>/exe` 확인; 수정본의 `--install-containerd-proxy --check` 통과 후 중단된 단계 재실행 |
+| CRI pull의 redirect 요청이 `Forbidden`/`403` | Squid 또는 상위 경로의 차단 가능성 | [지역별 registry redirect 진단](#cri-pull이-지역별-registry-redirect에서-차단될-때) |
+| `--discover-registry-egress`가 오래 걸림 | 마지막 진행 단계의 연결 지연 가능성 | 기본 탐지는 90초 제한. 조회 호스트·단계를 확인하고 필요 시 `--timeout` 조정; 기본 탐지는 `Ctrl+C`로 중단 가능 |
 | `ctr: content digest sha256:<DIGEST>: not found` | archive manifest가 참조한 config/layer blob 누락 | 손상 archive 반복 import를 중단하고 위 `--sync-images --image-list platform/monitoring/images.txt`로 새 pull/export부터 재실행 |
 | `timed out waiting for ... externalsecrets` | ExternalSecret `Ready=True` 실패; OpenBao sealed/Store 503 가능 | 9단계의 `--unseal-openbao` plan과 [복구 Runbook](recovery.md#7-openbao-sealexternalsecret-timeout-복구) |
 | TLS 준비 단계에서 종료 | 정상 staged install | 8단계 |

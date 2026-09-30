@@ -329,6 +329,8 @@ def verify_generated(workspace: pathlib.Path) -> str:
         return "RFC2136 must not create a Squid DNS provider ACL"
     if "d5l0dvt14r5h8.cloudfront.net" not in squid:
         return "ECR Public layer CDN missing"
+    if "asia-east1-docker.pkg.dev" not in squid.split():
+        return "Kubernetes regional manifest redirect missing"
     if "packages.company.kr" not in squid:
         return "extra package hostname missing"
     policies = (workspace / "platform/network/egress-policies.yaml").read_text(encoding="utf-8")

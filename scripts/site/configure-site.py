@@ -114,6 +114,8 @@ DEFAULT_PACKAGE_DOMAINS = (
     "registry.k8s.io",
     ".gcr.io",
     "storage.googleapis.com",
+    # 지역 redirect가 달라져도 확인된 manifest 저장소로의 CONNECT가 차단되지 않게 합니다.
+    "asia-east1-docker.pkg.dev",
     "asia-northeast2-docker.pkg.dev",
     "prod-registry-k8s-io-ap-northeast-1.s3.dualstack.ap-northeast-1.amazonaws.com",
 )

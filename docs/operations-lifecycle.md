@@ -13,7 +13,8 @@
 | 전체 기동 | server → worker N대(single은 server만) | API/etcd가 준비된 뒤 agent가 재가입 |
 | RKE2 업그레이드 | server → worker 1대씩 | kubelet이 API server보다 앞선 minor가 되지 않게 유지 |
 
-모든 변경 명령은 `--apply`가 없으면 계획만 출력합니다. 스크립트는 OS의 물리 전원을 직접 끄거나
+`--power`, `--update-sadp`, `--upgrade-rke2`는 `--apply`가 없으면 계획만 출력합니다.
+스크립트는 OS의 물리 전원을 직접 끄거나
 원격으로 켜지 않습니다. RKE2 서비스가 안전하게 멈춘 뒤 OS 종료는 관리자가 수행하고, 기동은
 BMC/가상화 플랫폼/현장 전원으로 먼저 호스트를 켠 뒤 이어갑니다.
 

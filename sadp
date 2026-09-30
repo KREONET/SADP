@@ -68,6 +68,7 @@ verify-portal-auth|bash|scripts/verify/verify-portal-auth.sh|Auth.js -> 외부 O
 verify-squid|bash|scripts/verify/verify-squid-egress.sh|렌더된 allowlist 검증(host 변경 없음)
 verify-backups|bash|scripts/verify/verify-backups.sh|백업 checksum/포맷과 복원 시험
 GROUP:ops — 운영
+discover-registry-egress|python3|scripts/ops/discover-registry-egress.py|Squid 호스트에서 고정 이미지 redirect 탐지, --apply로 허용 목록 반영
 backup|bash|scripts/ops/backup-testbed.sh|etcd, OpenBao Raft
 toggle-portal|bash|scripts/ops/toggle-portal.sh|Portal 테스트 페이지 on/off/status
 quarantine-app|bash|scripts/ops/quarantine-app.sh|침해 의심 앱의 Argo reconcile/외부 Route/Pod 즉시 격리

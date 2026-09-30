@@ -91,6 +91,10 @@ def default_outputs(root: pathlib.Path) -> str:
         return "ECR Public 레이어 CDN allowlist 누락"
     if ".cloudfront.net" in squid.split():
         return "CloudFront 전체 suffix가 허용됨"
+    if "asia-east1-docker.pkg.dev" not in squid.split():
+        return "Kubernetes 지역 manifest redirect allowlist 누락"
+    if ".pkg.dev" in squid.split():
+        return "Artifact Registry 전체 suffix가 허용됨"
     if "registry.npmjs.org" not in squid:
         return "package allowlist 누락"
     if "acl idp_domains dstdomain idp.example.invalid" not in squid:

@@ -225,14 +225,16 @@ read_process_environment() {
 }
 
 embedded_containerd_pids() {
-  local process_dir first
-  local -a argv=()
+  local process_dir executable
   for process_dir in "${ROOT_PREFIX}"/proc/[0-9]*; do
     [[ -d ${process_dir} ]] || continue
-    read_cmdline "${process_dir}/cmdline" argv || continue
-    first=${argv[0]}
-    if [[ ${first} == /var/lib/rancher/rke2/*/bin/containerd \
-        || ${first} =~ ^/var/lib/rancher/rke2/.*/bin/containerd([[:space:]]|$) ]]; then
+    # argv[0]은 PATH 실행이나 process title 변경으로 짧아질 수 있다. 실제 실행 파일을
+    # 확인해야 Docker containerd/shim과 구분하면서 RKE2의 짧은 argv도 놓치지 않는다.
+    executable=$(readlink "${process_dir}/exe" 2>/dev/null) || continue
+    # 실행 중 바이너리가 교체되어도 기존 프로세스의 proxy 환경 검사는 계속 필요하다.
+    executable=${executable% (deleted)}
+    if [[ ${executable} == /var/lib/rancher/rke2/bin/containerd \
+        || ${executable} == /var/lib/rancher/rke2/*/bin/containerd ]]; then
       printf '%s\n' "${process_dir##*/}"
     fi
   done
@@ -274,7 +276,11 @@ if [[ ${MODE} == check ]]; then
 
   mapfile -t containerd_processes < <(embedded_containerd_pids)
   ((${#containerd_processes[@]} == 1)) || {
-    printf '[FAIL] RKE2 embedded containerd 프로세스가 정확히 하나가 아님\n' >&2
+    printf '[FAIL] RKE2 embedded containerd 프로세스가 정확히 하나가 아님(count=%s)\n' "${#containerd_processes[@]}" >&2
+    if ((${#containerd_processes[@]})); then
+      printf '[INFO] 확인된 embedded containerd PID: %s\n' "${containerd_processes[*]}" >&2
+    fi
+    printf '[NEXT] ps -C containerd -o pid,ppid,comm으로 실제 개수를 확인하세요. 검사를 우회하거나 자동 재시작하지 않습니다.\n' >&2
     exit 1
   }
   declare -A containerd_environment=()

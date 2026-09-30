@@ -154,6 +154,7 @@ spec:
       - registry.k8s.io
       - .gcr.io
       - storage.googleapis.com
+      - asia-east1-docker.pkg.dev
       - asia-northeast2-docker.pkg.dev
       - prod-registry-k8s-io-ap-northeast-1.s3.dualstack.ap-northeast-1.amazonaws.com
       identityProviderDomains:
