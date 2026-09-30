@@ -15,6 +15,7 @@ spec:
       releaseName: openbao
       valueFiles:
       - $values/platform/openbao/values-beta.yaml
+      - $values/platform/openbao/proxy-values.yaml
   - repoURL: https://forgejo.example.invalid/example/sadp.git
     targetRevision: main
     ref: values

@@ -2250,6 +2250,7 @@ GENERATED_PATHS = (
     ROOT / "platform/network/squid/squid.conf",
     ROOT / "platform/network/squid/dns-provider-domains.txt",
     ROOT / "platform/network/proxy.env",
+    ROOT / "platform/openbao/proxy-values.yaml",
     ROOT / "platform/network/firewall.env",
     ROOT / "platform/network/egress-policies.yaml",
     ROOT / "platform/dns/rke2-coredns-config.yaml",

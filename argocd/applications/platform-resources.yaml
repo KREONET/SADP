@@ -13,7 +13,7 @@ spec:
     path: platform
     directory:
       recurse: true
-      exclude: '{external-secrets/values-beta.yaml,openbao/values-beta.yaml,reloader/values-beta.yaml}'
+      exclude: '{external-secrets/values-beta.yaml,openbao/values-beta.yaml,openbao/proxy-values.yaml,reloader/values-beta.yaml}'
   destination:
     namespace: sadp-platform
     server: https://kubernetes.default.svc

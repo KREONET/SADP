@@ -844,6 +844,23 @@ preflight의 원인별 조치는 다음과 같습니다.
 
 상세 복구 순서는 [복구 Runbook](recovery.md#9-openbao-oidc-discovery-오류-복구)을 따릅니다.
 
+OpenBao의 외부 OIDC 통신은 계약의 Squid를 사용합니다. `render-network.py`가
+`platform/openbao/proxy-values.yaml`에 프록시 환경과 내부 통신용 `NO_PROXY`를 생성하며,
+Argo의 OpenBao Application이 기본 values 뒤에 병합합니다. 같은 Pod의 `oidc-preflight`
+curl 컨테이너가 동일한 프록시로 discovery HTTPS/JSON/issuer를 검사합니다. BusyBox wget은
+HTTPS CONNECT 검사에 사용하지 않습니다. curl 컨테이너는 OpenBao 데이터·TLS Secret 볼륨을
+마운트하지 않으며, 자체 시스템 CA로 외부 IdP를 검증합니다.
+
+기존 설치에 이 변경을 반영할 때는 사이트 env로 재렌더한 생성물을 **Argo가 참조하는 Git
+브랜치에 반영**하고 OpenBao Application이 동기화됐는지 먼저 확인합니다. curl 이미지 버전은
+`versions.lock.yaml`의 `platform.oidcProbeCurl`로 고정됩니다. 폐쇄망에서는 `--sync-images
+--image <LOCKED_CURL_IMAGE>`로 먼저 모든 노드에 공급할 수 있습니다.
+OpenBao Chart의 StatefulSet은 `OnDelete`이므로 Git 동기화만으로 기존 Pod가 교체되지 않습니다.
+유지보수 중 복구 재료가 준비된 상태에서 새 StatefulSet 템플릿의 `oidc-preflight`와 프록시 설정을
+확인한 뒤 기존 `openbao-0`을 정상 삭제하여 재생성하고, 아래 명시적 unseal을 수행합니다.
+PVC나 초기화 파일은 삭제하지 않습니다. 재생성 직후 sealed이면 Ready가 되지 않으므로
+Ready를 기다리기 전에 unseal합니다. RKE2 재시작은 필요하지 않습니다.
+
 OpenBao가 최초 initialized된 직후 또는 재기동 뒤 sealed이면 cluster phase는 ExternalSecret을
 기다리지 않고 의도적으로 중단합니다. control-plane에서 복구 재료를 사용하지 않는 plan을 먼저
 확인하고, sealed일 때만 명시적으로 적용합니다.

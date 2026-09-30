@@ -345,6 +345,27 @@ case(
     False,
 )
 
+def verify_openbao_proxy(root: pathlib.Path) -> str:
+    spec = contract(root)
+    server = yaml.safe_load((root / "platform/openbao/proxy-values.yaml").read_text())["server"]
+    env = server["extraEnvironmentVars"]
+    sidecar = server["extraContainers"][0]
+    sidecar_env = {item["name"]: item["value"] for item in sidecar["env"]}
+    if env != sidecar_env or env["HTTP_PROXY"] != env["HTTPS_PROXY"]:
+        return "OpenBao와 검사 컨테이너의 프록시 경로 불일치"
+    if ".svc" not in env["NO_PROXY"].split(",") or any(
+        cidr not in env["NO_PROXY"].split(",")
+        for key in ("nodeInternalCIDRs", "podCIDRs", "serviceCIDRs")
+        for cidr in spec["network"][key]
+    ):
+        return "내부 통신 프록시 제외 누락"
+    if sidecar.get("volumeMounts") or sidecar["securityContext"]["allowPrivilegeEscalation"]:
+        return "검사 컨테이너에 OpenBao 볼륨 또는 권한 상승 허용"
+    return ""
+
+
+case("OpenBao와 같은 Pod의 curl이 같은 프록시와 내부망 제외 사용", lambda spec: None, True, verify_openbao_proxy)
+
 # 실제 검사 함수를 실행해 제공 인증서는 외부 요청 없이 통과하고 ACME 장애는 계속 차단합니다.
 squid_script = (ROOT / 'scripts/node/install-squid-egress.sh').read_text()
 acme_check = 'check_acme_egress() {' + squid_script.split('check_acme_egress() {', 1)[1].split('\n}\n', 1)[0] + '\n}\n'

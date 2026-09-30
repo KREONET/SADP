@@ -17,7 +17,7 @@ oidc_print_discovery_checks() {
   cat >&2 <<EOF
 [ACTION] 값 비노출 확인 명령:
   kubectl -n ${OIDC_OPENBAO_NAMESPACE} exec ${OIDC_OPENBAO_POD} -- sh -c 'nslookup "\$1" >/dev/null' sh ${OIDC_ISSUER_HOST}
-  kubectl -n ${OIDC_OPENBAO_NAMESPACE} exec ${OIDC_OPENBAO_POD} -- sh -c 'wget -T 15 -S -O /dev/null "\$1"' sh '${OIDC_DISCOVERY_URL}'
+  kubectl -n ${OIDC_OPENBAO_NAMESPACE} exec ${OIDC_OPENBAO_POD} -c oidc-preflight -- sh -c 'curl -q --connect-timeout 5 --max-time 15 --silent --show-error --output /dev/null "\$1"' sh '${OIDC_DISCOVERY_URL}'
   kubectl -n ${OIDC_GATEWAY_NAMESPACE} get gateway ${OIDC_GATEWAY_NAME} -o jsonpath='{.status.listeners}{"\n"}'
 EOF
 }
@@ -191,38 +191,14 @@ oidc_discovery_preflight() {
   : >"${errors}"
   chmod 0600 "${response}" "${errors}"
 
-  if ! kctl exec -n "${OIDC_OPENBAO_NAMESPACE}" "${OIDC_OPENBAO_POD}" -- \
+  if ! kctl exec -n "${OIDC_OPENBAO_NAMESPACE}" "${OIDC_OPENBAO_POD}" -c oidc-preflight -- \
       sh -ceu '
         if command -v curl >/dev/null 2>&1; then
           set +e
-          curl --silent --show-error --proto "=https" --tlsv1.2 \
+          curl -q --silent --show-error --proto "=https" --tlsv1.2 \
             --connect-timeout 5 --max-time 15 --output - \
             --write-out "\n__SADP_HTTP_STATUS__:%{http_code}\n" "$1"
           result=$?
-          printf "__SADP_CURL_EXIT__:%s\n" "${result}"
-          exit 0
-        fi
-        if command -v wget >/dev/null 2>&1; then
-          diagnostic=$(mktemp)
-          trap '\''rm -f "${diagnostic}"'\'' EXIT
-          set +e
-          wget -T 15 -S -O - "$1" 2>"${diagnostic}"
-          result=$?
-          set -e
-          status=$(sed -n '\''s/.*HTTP\/[0-9.]* \([0-9][0-9][0-9]\).*/\1/p'\'' "${diagnostic}" | tail -n1)
-          if grep -qiE '\''bad address|name or service not known|temporary failure in name resolution'\'' "${diagnostic}"; then
-            result=6
-          elif grep -qiE '\''connection refused|refused'\'' "${diagnostic}"; then
-            result=7
-          elif grep -qiE '\''timed? out|timeout'\'' "${diagnostic}"; then
-            result=28
-          elif grep -qiE '\''certificate|tls|ssl|not trusted'\'' "${diagnostic}"; then
-            result=60
-          elif [[ -n ${status} ]]; then
-            # HTTP 오류도 transport 자체는 성공이다. host가 본문을 버리고 status만 분류한다.
-            result=0
-          fi
-          printf "\n__SADP_HTTP_STATUS__:%s\n" "${status:-000}"
           printf "__SADP_CURL_EXIT__:%s\n" "${result}"
           exit 0
         fi
@@ -230,7 +206,7 @@ oidc_discovery_preflight() {
       ' sh "${OIDC_DISCOVERY_URL}" >"${response}" 2>"${errors}"; then
     rm -rf "${run_dir}"
     oidc_preflight_failure "OpenBao Pod exec 실패" \
-      "OpenBao Pod Running/Ready와 kubectl exec 권한을 확인하라." discovery
+      "OpenBao Pod의 oidc-preflight 컨테이너 반영 상태와 kubectl exec 권한을 확인하라." discovery
     return 1
   fi
 
@@ -261,7 +237,7 @@ oidc_discovery_preflight() {
       ;;
     35|51|53|58|59|60|66|77|80|82|83|90|91)
       if [[ ${curl_exit} == 90 ]]; then
-        action="OpenBao image에 curl 또는 HTTPS wget이 필요하다. image/버전을 저장소 계약으로 보강한 뒤 재배포하라."
+        action="OpenBao Pod의 oidc-preflight 컨테이너와 curl 이미지 반영 상태를 확인하라."
       else
         action="wildcard 인증서 SAN/신뢰 체인/만료와 OpenBao Pod의 CA trust를 복구하라."
       fi

@@ -58,7 +58,7 @@ kctl() {
     "get service -n gateway-system -l gateway.envoyproxy.io/owning-gateway-name=gateway -o json")
       printf '%s\n' '{"items":[{"spec":{"ports":[{"port":443}]}}]}'
       ;;
-    exec\ -n\ openbao\ openbao-0\ --*)
+    exec\ -n\ openbao\ openbao-0\ -c\ oidc-preflight\ --*)
       case "${OIDC_TEST_SCENARIO}" in
         timeout)
           printf '%s\n' '__SADP_HTTP_STATUS__:000' '__SADP_CURL_EXIT__:28'

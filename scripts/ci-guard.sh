@@ -795,6 +795,7 @@ platform_excludes = str(platform_directory.get("exclude") or "")
 required_value_excludes = {
     "external-secrets/values-beta.yaml",
     "openbao/values-beta.yaml",
+    "openbao/proxy-values.yaml",
     "reloader/values-beta.yaml",
 }
 excluded_paths = {
