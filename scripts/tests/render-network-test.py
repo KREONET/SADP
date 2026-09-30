@@ -93,6 +93,8 @@ def default_outputs(root: pathlib.Path) -> str:
         return "CloudFront 전체 suffix가 허용됨"
     if "asia-east1-docker.pkg.dev" not in squid.split():
         return "Kubernetes 지역 manifest redirect allowlist 누락"
+    if "cdn.registry.k8s.io" not in squid.split():
+        return "Kubernetes 이미지 CDN allowlist 누락"
     if ".pkg.dev" in squid.split():
         return "Artifact Registry 전체 suffix가 허용됨"
     if "registry.npmjs.org" not in squid:

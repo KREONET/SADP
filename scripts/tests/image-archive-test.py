@@ -44,9 +44,10 @@ def make_archive(
     duplicate: bool = False,
     malformed_digest: bool = False,
     empty_manifest: bool = False,
+    architecture: str = "amd64",
 ) -> None:
-    config = json_bytes({"architecture": "amd64", "os": "linux"})
-    layer = b"fixture-layer-content"
+    config = json_bytes({"architecture": architecture, "os": "linux"})
+    layer = f"fixture-layer-content-{architecture}".encode()
     config_digest, config_path = digest_path(config)
     layer_digest, layer_path = digest_path(layer)
     manifest_document = {
@@ -101,10 +102,46 @@ def make_archive(
             add_bytes(tar, "blobs/sha256/not-a-digest", b"bad")
 
 
+def make_multi_archive(path: Path, *, available: tuple[str, ...] = ("amd64", "arm64"),
+                       advertised: tuple[str, ...] = ("amd64", "arm64", "ppc64le"),
+                       omit_layer: bool = False, wrong_platform: bool = False) -> None:
+    # ctr export와 같이 원본 multi-platform index와 선택한 platform의 blob만 담는다.
+    members = {}
+    children = []
+    docker_entries = []
+    with tempfile.TemporaryDirectory() as temporary:
+        for architecture in advertised:
+            child_archive = Path(temporary) / f"{architecture}.tar"
+            make_archive(child_archive, architecture=architecture)
+            with tarfile.open(child_archive) as tar:
+                payloads = {member.name: tar.extractfile(member).read() for member in tar.getmembers()}
+            child = json.loads(payloads["index.json"])["manifests"][0]
+            child.pop("annotations")
+            child["platform"] = {"os": "linux", "architecture": "arm64" if wrong_platform and architecture == "amd64" else architecture}
+            children.append(child)
+            if architecture in available:
+                members.update({name: data for name, data in payloads.items() if name.startswith("blobs/")})
+                docker_entries.extend(json.loads(payloads["manifest.json"]))
+    index_blob = json_bytes({"schemaVersion": 2, "manifests": children})
+    index_digest, index_path = digest_path(index_blob)
+    members[index_path] = index_blob
+    members["oci-layout"] = json_bytes({"imageLayoutVersion": "1.0.0"})
+    members["index.json"] = json_bytes({"schemaVersion": 2, "manifests": [{
+        "mediaType": "application/vnd.oci.image.index.v1+json", "digest": "sha256:" + index_digest,
+        "size": len(index_blob), "annotations": {"io.containerd.image.name": EXPECTED}}]})
+    members["manifest.json"] = json_bytes(docker_entries[:1])
+    if omit_layer:
+        members.pop(docker_entries[-1]["Layers"][0])
+    with tarfile.open(path, "w") as tar:
+        for name, payload in members.items():
+            add_bytes(tar, name, payload)
+
+
 class ImageArchiveTest(unittest.TestCase):
-    def run_verify(self, archive: Path, expected: str = EXPECTED) -> subprocess.CompletedProcess[str]:
+    def run_verify(self, archive: Path, expected: str = EXPECTED, platforms: tuple[str, ...] = ()) -> subprocess.CompletedProcess[str]:
+        platform_args = [value for platform in platforms for value in ("--platform", platform)]
         return subprocess.run(
-            ["python3", str(VERIFIER), "--archive", str(archive), "--expected-ref", expected],
+            ["python3", str(VERIFIER), "--archive", str(archive), "--expected-ref", expected, *platform_args],
             cwd=ROOT,
             text=True,
             stdout=subprocess.PIPE,
@@ -124,6 +161,69 @@ class ImageArchiveTest(unittest.TestCase):
             result = self.run_verify(archive)
         self.assertEqual(result.returncode, 0, result.stderr)
         self.assertIn("blob=3", result.stdout)
+
+    def test_platform_export(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary:
+            archive = Path(temporary) / "image.tar"
+            make_multi_archive(archive)
+            result = self.run_verify(archive, platforms=("linux/amd64", "linux/arm64"))
+            self.assertEqual(result.returncode, 0, result.stderr)
+            strict = self.run_verify(archive)
+            self.assertNotEqual(strict.returncode, 0)
+            self.assertIn("member 누락", strict.stderr)
+
+    def test_selected_manifest_missing(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary:
+            archive = Path(temporary) / "image.tar"
+            make_multi_archive(archive, available=("amd64",))
+            self.assertEqual(self.run_verify(archive, platforms=("linux/amd64",)).returncode, 0)
+            result = self.run_verify(archive, platforms=("linux/amd64", "linux/arm64"))
+            self.assertNotEqual(result.returncode, 0)
+            self.assertIn("member 누락", result.stderr)
+
+    def test_selected_layer_missing(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary:
+            archive = Path(temporary) / "image.tar"
+            make_multi_archive(archive, omit_layer=True)
+            result = self.run_verify(archive, platforms=("linux/amd64", "linux/arm64"))
+            self.assertNotEqual(result.returncode, 0)
+            self.assertIn("member 누락", result.stderr)
+
+    def test_platform_coverage_is_per_image(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary:
+            archive = Path(temporary) / "image.tar"
+            make_multi_archive(archive)
+            with tarfile.open(archive) as tar:
+                members = {member.name: tar.extractfile(member).read() for member in tar.getmembers()}
+            root = json.loads(members["index.json"])
+            index_path = "blobs/sha256/" + root["manifests"][0]["digest"].split(":")[1]
+            other = json.loads(members[index_path])["manifests"][0]
+            other_ref = "registry.example.invalid/acme/other:1.2.3"
+            other["annotations"] = {"io.containerd.image.name": other_ref}
+            root["manifests"].append(other)
+            members["index.json"] = json_bytes(root)
+            with tarfile.open(archive, "w") as tar:
+                for name, payload in members.items():
+                    add_bytes(tar, name, payload)
+            result = self.run_verify(archive, expected=other_ref, platforms=("linux/amd64", "linux/arm64"))
+            self.assertNotEqual(result.returncode, 0)
+            self.assertIn("platform 누락", result.stderr)
+
+    def test_platform_absent_from_index(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary:
+            archive = Path(temporary) / "image.tar"
+            make_multi_archive(archive, advertised=("amd64",))
+            result = self.run_verify(archive, platforms=("linux/amd64", "linux/arm64"))
+            self.assertNotEqual(result.returncode, 0)
+            self.assertIn("platform 누락", result.stderr)
+
+    def test_descriptor_config_platform_mismatch(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary:
+            archive = Path(temporary) / "image.tar"
+            make_multi_archive(archive, wrong_platform=True)
+            result = self.run_verify(archive, platforms=("linux/arm64",))
+            self.assertNotEqual(result.returncode, 0)
+            self.assertIn("platform 불일치", result.stderr)
 
     def test_missing_config_is_rejected(self) -> None:
         temporary, archive = self.fixture(omit="config")

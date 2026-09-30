@@ -247,8 +247,10 @@ printf 'registry challenge HTTP=%s\n' "${code}"
 | `Downloaded` | Devtron 설치 진행 중 | 최종 `Applied`와 workload Ready를 기다림 |
 | `ImagePullBackOff` + `lookup registry ... on 127.0.0.53` | containerd proxy 미적용 또는 적용 후 RKE2 미재시작 | 중앙 plan/apply → 순차 재시작 → 중앙 check → image-pull-only |
 | `RKE2 embedded containerd 프로세스가 정확히 하나가 아님` | RKE2 실행 파일 기준 탐지 개수 확인 | `ps -C containerd -o pid,ppid,comm`과 `/proc/<PID>/exe` 확인 후 `--install-containerd-proxy --check` 재검사 |
-| Registry HTTP 5xx/timeout | pull 단계의 일시적 upstream 장애 | `--sync-images`의 제한 재시도 결과 확인; archive 손상으로 분류하지 않음 |
+| Registry HTTP 5xx/timeout | pull 단계의 proxy/upstream 응답 또는 연결 지연 | `--sync-images`의 `reason`·`exit`·시도 횟수 확인; archive 손상으로 분류하지 않음 |
 | `ctr: content digest sha256:<DIGEST>: not found` | export archive에서 manifest가 참조한 blob 누락 | 기존 tar 반복 import 금지; `sudo bash ./sadp --sync-images --image-list platform/monitoring/images.txt`로 새 pull/export/검증 |
+| `stage=export` + `failed to get reader: content digest ... not found` | export할 원본 blob 부재; unpack snapshot 재사용 시 images pull 성공만으로는 content 완전성을 보장하지 못함 | 원본 `content fetch`를 사용하는 수정본으로 `--sync-images`만 재실행; RKE2 재시작 불필요 |
+| `archive 검증 실패: ...manifests[...]가 참조한 member 누락` | 필요한 manifest 누락 또는 구버전 검증기가 미선택 platform까지 요구함 | node platform을 전달하는 수정본으로 image sync 재실행; 필요한 config/layer와 모든 저장 blob digest 검증은 유지 |
 | `/v2/`가 `401` | Registry challenge 도달만 성공 | 실제 CRI pull 결과 확인 |
 | Squid `TCP_DENIED` | registry 또는 redirect/CDN allowlist 누락 | `site.env`/계약 package domain과 renderer 수정 후 재렌더 |
 | `Accepted=True`, `ResolvedRefs=False: BackendNotFound` | Route/Namespace 순서는 정상, backend Service 미기동 | 해당 선택 Application/Service Ready 진단 |
@@ -275,6 +277,10 @@ sudo bash ./sadp --preflight --image-pull-only
 ```
 
 Squid allowlist만 바뀌었다면 RKE2 재시작은 필요하지 않습니다.
+`cdn.registry.k8s.io`는 기본 package allowlist에 포함됩니다. 과거 설정에서 이 호스트의
+`TCP_DENIED/403`이 보이면 상류 계약과 생성물을 갱신하고 Squid에 적용합니다.
+고정 pause 이미지 성공만으로 다른 이미지의 CDN 경로까지 검증된 것은 아니므로,
+실패했던 이미지를 `--sync-images --image '<FAILED_IMAGE_REF>'`로 다시 확인합니다.
 `TCP_DENIED`가 없으면 상위 proxy 또는 registry 응답을 추가로 확인합니다.
 지역 redirect 목적지는 바뀔 수 있으므로 하나의 호스트 추가가 모든 향후 pull을 보장하지는 않습니다.
 

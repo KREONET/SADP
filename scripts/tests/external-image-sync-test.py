@@ -30,6 +30,34 @@ def check(condition: bool, message: str) -> None:
         print(f"[FAIL] {message}")
 
 
+
+with tempfile.TemporaryDirectory(prefix="sadp-pull-classify-") as temporary:
+    error_file = pathlib.Path(temporary) / "error"
+    helpers = SOURCE[SOURCE.index("classify_pull_error() {"):SOURCE.index("pull_image_platform() {")]
+    for raw, status, expected in (
+        ('Head "https://registry.example.invalid/v2/blob/abc503def?token=do-not-print": 403 Forbidden', 1, 'http-403'),
+        ('unexpected status from HEAD request to "https://registry.example.invalid/v2/blob/abc403def": 503 Service Unavailable', 1, 'http-503'),
+        ('HTTP/2 502 Bad Gateway', 1, 'http-502'),
+        ('HTTP status code: 401', 1, 'http-401'),
+        ('HTTP status code: 404', 1, 'http-404'),
+        ('HTTP status code: 429', 1, 'http-429'),
+        ('TLS handshake timeout', 1, 'tls-timeout'),
+        ('dial tcp: i/o timeout', 1, 'network-timeout'),
+        ('context deadline exceeded', 1, 'network-timeout'),
+        ('lookup registry.example.invalid: no such host', 1, 'dns'),
+        ('temporary failure in name resolution', 1, 'temporary-failure'),
+        ('x509: certificate signed by unknown authority', 1, 'tls-certificate'),
+        ('connection reset by peer', 1, 'connection-reset'),
+        ('https://registry.example.invalid/503?token=timeout', 1, 'unknown'),
+        ('do-not-print', 124, 'pull-timeout'),
+    ):
+        error_file.write_text(raw)
+        result = subprocess.run(["bash", "-c", helpers + '\nclassify_pull_error "$1" "$2"',
+                                 "bash", str(status), str(error_file)], text=True, capture_output=True)
+        check(result.returncode == 0 and result.stdout.strip() == expected and not result.stderr,
+              f"안전한 pull 오류 분류: {expected}")
+
+
 help_result = subprocess.run(
     ["bash", "./sadp", "--sync-images", "--help"],
     cwd=ROOT,
@@ -49,9 +77,9 @@ check(
     re.search(r"^\s*docker\s+(pull|save)\b", SOURCE, re.MULTILINE) is None
     and "source platform/network/proxy.env" not in SOURCE
     and "proxy_values" in SOURCE
-    and '--namespace "${TRANSFER_NAMESPACE}" images pull --platform "${platform}"' in SOURCE
+    and '--namespace "${TRANSFER_NAMESPACE}" content fetch --skip-metadata --platform "${platform}"' in SOURCE
     and '--namespace "${TRANSFER_NAMESPACE}" images export "${platform_args[@]}"' in SOURCE,
-    "기존 Docker metadata 대신 전용 containerd Namespace에서 node platform별 pull/export",
+    "unpack 캐시 대신 전용 Namespace에서 node platform별 원본 content fetch/export",
 )
 
 platform_position = SOURCE.find("nodeInfo")
@@ -79,7 +107,8 @@ check(
         for marker in (
             "PULL_ATTEMPTS",
             "retryable_pull_error",
-            "status code: 5",
+            "classify_pull_error",
+            "http-5[0-9][0-9]",
             "deadline exceeded",
             "attempt < PULL_ATTEMPTS",
             "sleep $((attempt * 2))",
@@ -191,7 +220,7 @@ with tempfile.TemporaryDirectory(prefix="sadp-image-sync-test-") as raw_temporar
     manifest_capture = temporary / "loader.yaml"
     archive_fixture = temporary / "valid.tar"
     corrupt_fixture = temporary / "corrupt.tar"
-    fixture_module.make_archive(archive_fixture)
+    fixture_module.make_multi_archive(archive_fixture)
     fixture_module.make_archive(corrupt_fixture, corrupt_blob=True)
 
     nodes = {
@@ -237,13 +266,16 @@ exec /usr/bin/id "$@"
 set -euo pipefail
 printf 'ctr:%s\n' "$*" >>"${FAKE_LOG}"
 args=" $* "
-if [[ ${args} == *" images pull "* ]]; then
+if [[ ${args} == *" content fetch "* ]]; then
   count=0
   [[ ! -f ${FAKE_PULL_COUNT} ]] || count=$(<"${FAKE_PULL_COUNT}")
   count=$((count + 1))
   printf '%s\n' "${count}" >"${FAKE_PULL_COUNT}"
   case ${FAKE_MODE:-success} in
     pull-fail) printf 'HTTP status code: 503\n' >&2; exit 1 ;;
+    pull-forbidden) printf 'Head "https://registry.example.invalid/v2/blobs/sha256:abc503def?token=do-not-print": 403 Forbidden\n' >&2; exit 1 ;;
+    pull-timeout) exit 124 ;;
+    pull-tls) printf 'x509: certificate signed by unknown authority for do-not-print\n' >&2; exit 1 ;;
     pull-retry) [[ ${count} -ne 1 ]] || { printf 'HTTP status code: 503\n' >&2; exit 1; } ;;
   esac
   exit 0
@@ -352,7 +384,7 @@ exit 0
     success_log = log.read_text(encoding="utf-8")
     check(
         result.returncode == 0
-        and success_log.count("images pull --platform") == 3
+        and success_log.count("content fetch --skip-metadata --platform") == 3
         and "--platform linux/amd64" in success_log
         and "--platform linux/arm64" in success_log
         and success_log.count("images check --quiet") == 2
@@ -360,6 +392,23 @@ exit 0
         and "namespaces remove" in success_log,
         "platform별 pull, 503 제한 재시도, 전 node complete와 성공 cleanup을 실행",
     )
+
+    for mode, reason, attempts in (("pull-forbidden", "http-403", 1),
+                                   ("pull-timeout", "pull-timeout", 2),
+                                   ("pull-tls", "tls-certificate", 1)):
+        log.write_text("", encoding="utf-8")
+        pull_count.unlink(missing_ok=True)
+        result = subprocess.run(command, cwd=ROOT, env=base_env | {"FAKE_MODE": mode},
+                                text=True, capture_output=True, check=False)
+        output = result.stdout + result.stderr
+        failure_log = log.read_text(encoding="utf-8")
+        check(result.returncode != 0 and f"reason={reason}" in output
+              and f"attempt={attempts}/2" in output
+              and int(pull_count.read_text()) == attempts
+              and "do-not-print" not in output and "abc503def" not in output
+              and " images export " not in failure_log and "kube:apply -f -" not in failure_log
+              and "namespaces remove" in failure_log,
+              f"{mode}: 상태 분류·정확한 재시도 횟수·원문 비노출·pull 실패 정리")
 
     log.write_text("", encoding="utf-8")
     pull_count.unlink(missing_ok=True)
@@ -418,7 +467,7 @@ exit 0
     pull_failure_log = log.read_text(encoding="utf-8")
     check(
         result.returncode != 0
-        and pull_failure_log.count("images pull --platform") == 2
+        and pull_failure_log.count("content fetch --skip-metadata --platform") == 2
         and "images export" not in pull_failure_log
         and "kube:apply -f -" not in pull_failure_log
         and "namespaces remove" in pull_failure_log,

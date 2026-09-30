@@ -152,6 +152,7 @@ spec:
       - ghcr.io
       - pkg-containers.githubusercontent.com
       - registry.k8s.io
+      - cdn.registry.k8s.io
       - .gcr.io
       - storage.googleapis.com
       - asia-east1-docker.pkg.dev

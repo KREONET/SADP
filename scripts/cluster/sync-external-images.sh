@@ -2,7 +2,7 @@
 # 서드파티 이미지를 새로 받아 검증한 한 archive만 모든 Linux RKE2 노드에 배포한다.
 #
 # Docker image metadata와 `docker save` 성공은 blob 완전성을 보장하지 않는다. 그래서 이 경로는
-# RKE2 containerd의 작업 전용 Namespace에서 node platform별 content를 pull하고 OCI archive를
+# RKE2 containerd의 작업 전용 Namespace에서 node platform별 content를 fetch하고 OCI archive를
 # export한 뒤, manifest 참조와 모든 blob digest를 독립 검증하기 전에는 loader를 만들지 않는다.
 set -euo pipefail
 source "$(dirname "$0")/../lib/testbed-common.sh"
@@ -31,7 +31,7 @@ usage: sudo bash ./sadp --sync-images --image <ref> [--image ...]
        sudo bash ./sadp --sync-images --image-list <file> [--keep-archive]
 
 모든 Linux node platform을 확인한 뒤 RKE2 containerd의 전용 임시 Namespace에서 새로
-pull/export한다. archive의 manifest 참조와 blob digest가 완전할 때만 임시 loader로 보내며,
+content fetch/export한다. unpack 없이 원본 blob을 확보하고 archive 검증 후 임시 loader로 보내며,
 각 노드에서 `ctr images check --quiet`가 complete를 반환해야 성공한다.
 
 --image-list 는 한 줄에 이미지 참조 하나를 적은 파일이다. # 주석과 빈 줄은 무시한다.
@@ -230,32 +230,87 @@ namespace_created=true
 pull_error_file=${IMAGE_DIR}/.${LOADER}.pull-error
 install -m 0600 /dev/null "${pull_error_file}"
 
+classify_pull_error() {
+  # URL의 digest/서명 숫자가 HTTP 상태 코드로 오인되지 않도록 원문은 내부에서만 읽는다.
+  python3 - "$1" "$2" <<'PYCLASSIFY'
+import pathlib
+import re
+import sys
+
+status = int(sys.argv[1])
+try:
+    with pathlib.Path(sys.argv[2]).open("rb") as stream:
+        stream.seek(0, 2)
+        stream.seek(max(0, stream.tell() - 65536))
+        text = stream.read().decode("utf-8", errors="replace")
+except OSError:
+    text = ""
+text = re.sub(r'https?://[^\s"<>]+', '<url>', text, flags=re.I)
+patterns = re.compile(
+    r'\bHTTP(?:/[0-9.]+| error)?[ \t]+([45][0-9]{2})\b'
+    r'|\bstatus(?:[ \t]*code)?[ \t:=]+([45][0-9]{2})\b'
+    r'|\b([45][0-9]{2})[ \t]+(?:Forbidden|Unauthorized|Not Found|Too Many Requests|'
+    r'Internal Server Error|Bad Gateway|Service Unavailable|Gateway Timeout)\b', re.I
+)
+codes = [next(value for value in match.groups() if value) for match in patterns.finditer(text)]
+if status == 124:
+    reason = "pull-timeout"
+elif codes:
+    reason = "http-" + codes[-1]
+elif re.search(r'\bforbidden\b|access denied|insufficient_scope', text, re.I):
+    reason = "access-denied"
+elif re.search(r'\bunauthorized\b|authentication required', text, re.I):
+    reason = "authentication"
+elif re.search(r'x509:|certificate verify failed|certificate verification failed', text, re.I):
+    reason = "tls-certificate"
+elif re.search(r'TLS handshake timeout', text, re.I):
+    reason = "tls-timeout"
+elif re.search(r'timeout|timed out|deadline exceeded', text, re.I):
+    reason = "network-timeout"
+elif re.search(r'temporary failure', text, re.I):
+    reason = "temporary-failure"
+elif re.search(r'no such host|server misbehaving|name resolution', text, re.I):
+    reason = "dns"
+elif re.search(r'connection reset', text, re.I):
+    reason = "connection-reset"
+elif re.search(r'connection refused|no route to host|network is unreachable', text, re.I):
+    reason = "connect"
+elif re.search(r'not found', text, re.I):
+    reason = "not-found"
+else:
+    reason = "unknown"
+print(reason)
+PYCLASSIFY
+}
+
 retryable_pull_error() {
-  local status=$1 file=$2
-  [[ ${status} -eq 124 ]] && return 0
-  grep -Eiq \
-    '(HTTP[^[:cntrl:]]*5[0-9]{2}|status code: 5[0-9]{2}|timeout|timed out|deadline exceeded|connection reset|temporary failure|TLS handshake timeout)' \
-    "${file}"
+  case "$1" in
+    http-5[0-9][0-9]|pull-timeout|network-timeout|tls-timeout|connection-reset|temporary-failure) return 0 ;;
+    *) return 1 ;;
+  esac
 }
 
 pull_image_platform() {
-  local image=$1 platform=$2 attempt status=0
+  local image=$1 platform=$2 attempt status=0 reason
+  # 이미 unpack된 snapshot이 있으면 images pull은 원본 layer fetch를 생략할 수 있다.
+  # export에는 압축 blob이 필요하므로 unpack하지 않는 content fetch로 확보한다.
   for ((attempt = 1; attempt <= PULL_ATTEMPTS; attempt++)); do
     : >"${pull_error_file}"
     if timeout "${PULL_TIMEOUT}" "${CTR_BIN}" --address "${CTR_ADDRESS}" \
-      --namespace "${TRANSFER_NAMESPACE}" images pull --platform "${platform}" "${image}" \
+      --namespace "${TRANSFER_NAMESPACE}" content fetch --skip-metadata --platform "${platform}" "${image}" \
       >/dev/null 2>"${pull_error_file}"; then
       ok "stage=pull image=${image} platform=${platform}"
       return 0
     else
       status=$?
     fi
-    if ((attempt < PULL_ATTEMPTS)) && retryable_pull_error "${status}" "${pull_error_file}"; then
-      note "stage=pull image=${image} platform=${platform} 일시 오류; 재시도 ${attempt}/${PULL_ATTEMPTS}"
+    reason=$(classify_pull_error "${status}" "${pull_error_file}")
+    if ((attempt < PULL_ATTEMPTS)) && retryable_pull_error "${reason}"; then
+      note "stage=pull image=${image} platform=${platform} reason=${reason} exit=${status}; 재시도 ${attempt}/${PULL_ATTEMPTS} (시도별 제한 ${PULL_TIMEOUT}s)"
       sleep $((attempt * 2))
       continue
     fi
-    die "stage=pull image=${image} platform=${platform} 실패(credential 및 원문 응답은 출력하지 않음)"
+    die "stage=pull image=${image} platform=${platform} reason=${reason} exit=${status} attempt=${attempt}/${PULL_ATTEMPTS} timeout=${PULL_TIMEOUT}s 실패(credential 및 원문 응답은 출력하지 않음)"
   done
 }
 
@@ -303,6 +358,7 @@ fi
 chmod 0600 "${partial_archive}"
 
 verify_args=(--archive "${partial_archive}")
+for platform in "${platforms[@]}"; do verify_args+=(--platform "${platform}"); done
 for image in "${archive_images[@]}"; do verify_args+=(--expected-ref "${image}"); done
 if ! python3 scripts/cluster/verify-image-archive.py "${verify_args[@]}"; then
   quarantined_archive=${IMAGE_DIR}/quarantine/$(basename "${archive}").invalid

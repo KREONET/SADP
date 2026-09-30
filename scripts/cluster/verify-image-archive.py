@@ -84,7 +84,10 @@ def descriptor_blob_path(descriptor: Any, *, source: str) -> str:
     return f"blobs/sha256/{hex_digest}"
 
 
-def verify_archive(archive: Path, expected_refs: list[str]) -> tuple[int, int, int]:
+def verify_archive(archive: Path, expected_refs: list[str], expected_platforms: list[str] | None = None) -> tuple[int, int, int]:
+    platforms = set(expected_platforms or [])
+    if any(not re.fullmatch(r"linux/[a-z0-9_]+", value) for value in platforms):
+        raise ArchiveError("platform은 Linux node의 linux/<architecture> 형식이어야 함")
     try:
         tar = tarfile.open(archive, mode="r:*")
     except (OSError, tarfile.TarError) as exc:
@@ -152,11 +155,23 @@ def verify_archive(archive: Path, expected_refs: list[str]) -> tuple[int, int, i
 
         # index descriptor와 하위 manifest의 config/layer descriptor도 실제 blob을 가리키는지
         # 확인한다. Docker manifest 검사만으로는 OCI 전용 annotation 경로를 놓칠 수 있다.
-        pending = [(descriptor, f"index.json.manifests[{index}]") for index, descriptor in enumerate(descriptors)]
-        visited_json_blobs: set[str] = set()
-        while pending:
-            descriptor, source = pending.pop()
+        # platform export는 원본 index digest를 보존하므로 다른 아키텍처 descriptor가 남는다.
+        # 명시한 node platform만 따라가되 각 ref마다 필요한 platform 전체의 완전성을 증명한다.
+        coverage_by_name: dict[str, set[str]] = {}
+        visiting: set[str] = set()
+
+        def walk(descriptor: Any, source: str, depth: int = 0) -> set[str]:
+            if depth > 64:
+                raise ArchiveError("OCI index 중첩 제한 초과")
             path = descriptor_blob_path(descriptor, source=source)
+            declared = descriptor.get("platform")
+            if declared is not None and not isinstance(declared, dict):
+                raise ArchiveError(f"{source} platform 형식 오류")
+            declared_platform = None
+            if declared and declared.get("os") and declared.get("architecture"):
+                declared_platform = f'{declared["os"]}/{declared["architecture"]}'
+                if platforms and declared_platform not in platforms:
+                    return set()
             require_regular_member(members, path, source=source)
             annotations = descriptor.get("annotations") or {}
             if not isinstance(annotations, dict):
@@ -172,17 +187,21 @@ def verify_archive(archive: Path, expected_refs: list[str]) -> tuple[int, int, i
             is_index = (
                 ".index." in media_type or ".manifest.list." in media_type
             ) and media_type.endswith("+json")
-            if path in visited_json_blobs or not (is_manifest or is_index):
-                continue
-            visited_json_blobs.add(path)
+            if not (is_manifest or is_index):
+                raise ArchiveError(f"지원하지 않는 OCI manifest mediaType: {path}")
+            if path in visiting:
+                raise ArchiveError(f"OCI index 순환 참조: {path}")
+            visiting.add(path)
             document = load_json(tar, members, path)
             if not isinstance(document, dict):
                 raise ArchiveError(f"descriptor JSON 형식 오류: {path}")
-            if isinstance(document.get("manifests"), list):
-                pending.extend(
-                    (child, f"{path}.manifests[{index}]")
-                    for index, child in enumerate(document["manifests"])
-                )
+            covered: set[str] = set()
+            if is_index:
+                children = document.get("manifests")
+                if not isinstance(children, list) or not children:
+                    raise ArchiveError(f"OCI index manifests 누락: {path}")
+                for index, child in enumerate(children):
+                    covered.update(walk(child, f"{path}.manifests[{index}]", depth + 1))
             else:
                 config = document.get("config")
                 layers = document.get("layers")
@@ -193,6 +212,14 @@ def verify_archive(archive: Path, expected_refs: list[str]) -> tuple[int, int, i
                     descriptor_blob_path(config, source=f"{path}.config"),
                     source=f"{path}.config",
                 )
+                if platforms:
+                    config_document = load_json(tar, members, descriptor_blob_path(config, source=f"{path}.config"))
+                    if not isinstance(config_document, dict):
+                        raise ArchiveError(f"OCI config 형식 오류: {path}")
+                    actual_platform = f'{config_document.get("os", "")}/{config_document.get("architecture", "")}'
+                    if actual_platform not in platforms or (declared_platform and actual_platform != declared_platform):
+                        raise ArchiveError(f"OCI config platform 불일치: {path}")
+                    covered.add(actual_platform)
                 for index, layer in enumerate(layers):
                     layer_source = f"{path}.layers[{index}]"
                     require_regular_member(
@@ -200,11 +227,22 @@ def verify_archive(archive: Path, expected_refs: list[str]) -> tuple[int, int, i
                         descriptor_blob_path(layer, source=layer_source),
                         source=layer_source,
                     )
+            visiting.remove(path)
+            if image_name is not None:
+                coverage_by_name.setdefault(normalize_image_ref(image_name), set()).update(covered)
+            return covered
+
+        for index, descriptor in enumerate(descriptors):
+            walk(descriptor, f"index.json.manifests[{index}]")
 
         normalized_expected = {normalize_image_ref(ref) for ref in expected_refs}
         missing = sorted(normalized_expected - discovered_names)
         if missing:
             raise ArchiveError("예상 image 이름 누락: " + ", ".join(missing))
+        for ref in sorted(normalized_expected):
+            missing_platforms = platforms - coverage_by_name.get(ref, set())
+            if missing_platforms:
+                raise ArchiveError(f"예상 image platform 누락: {ref}: {', '.join(sorted(missing_platforms))}")
 
     return len(docker_manifest), blob_count, len(normalized_expected)
 
@@ -213,6 +251,7 @@ def parse_args() -> argparse.Namespace:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--archive", required=True, type=Path)
     parser.add_argument("--expected-ref", action="append", default=[])
+    parser.add_argument("--platform", action="append", default=[], help="검증할 Linux node platform; 생략하면 전체 descriptor 검사")
     return parser.parse_args()
 
 
@@ -222,7 +261,7 @@ def main() -> int:
         print("[FAIL] --expected-ref가 하나 이상 필요함", file=sys.stderr)
         return 2
     try:
-        manifests, blobs, names = verify_archive(args.archive, args.expected_ref)
+        manifests, blobs, names = verify_archive(args.archive, args.expected_ref, args.platform)
     except ArchiveError as exc:
         print(f"[FAIL] archive 검증 실패: {exc}", file=sys.stderr)
         return 1

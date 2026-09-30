@@ -121,7 +121,7 @@ control-plane에서는 Linux 노드의 아키텍처만 탐지하고 적용 후 �
 | `--bootstrap-services` | 외부 OIDC client secret을 받아 OpenBao auth/KV 소비 설정 초기화 |
 | `--deploy-apps` | hello, secure-demo, portal-lite 배포와 rollout |
 | `--install-portal-backend` | Portal backend 개별 설치 |
-| `--sync-images` | node platform별 새 pull/export, archive blob 검증 후 모든 Linux node complete 확인 |
+| `--sync-images` | node platform별 원본 content fetch/export, archive blob 검증 후 모든 Linux node complete 확인 |
 | `--bootstrap` | 예전 직접 bootstrap 진입점. 신규 설치에는 사용하지 않음 |
 
 `--bootstrap`은 통합 설치기의 `site.env` 검증·phase 안전 경계를 거치지 않는 레거시 진단

@@ -704,10 +704,40 @@ sudo bash ./sadp --sync-images \
 ```
 
 정상 순서는 모든 Kubernetes Linux node의 `operatingSystem/architecture` 확인 → RKE2 containerd의
-전용 임시 Namespace에서 각 image/platform 새 pull → OCI export → `manifest.json`의 Config/Layers와
+전용 임시 Namespace에서 각 image/platform의 원본 content fetch → OCI export → `manifest.json`의 Config/Layers와
 모든 `blobs/sha256/*` 재계산 → 모든 Linux node에 동일 archive 전송 → 해당 node platform import →
 각 예상 ref의 `ctr images check --quiet` complete 확인 → loader/Namespace 정리입니다. archive 검증이
 끝나기 전에는 DaemonSet을 만들거나 node로 한 바이트도 보내지 않습니다.
+
+`stage=pull`은 `ctr content fetch --skip-metadata --platform`으로 원본 content를 확보하는 단계입니다.
+`ctr images pull`은 기존 unpack snapshot을 재사용하면서 원본 압축 layer 다운로드를 생략할 수 있어,
+성공 직후에도 export에서 `content digest ... not found`가 발생할 수 있습니다. 전송용 content는
+unpack 없이 fetch하며 node에서 import한 뒤 complete를 확인합니다. 이 문제를 수정한 뒤에는 위
+이미지 동기화 명령만 재실행하면 됩니다. `--install --phase all --apply`를 반복하면 노드 drain과
+RKE2 재시작까지 다시 수행하므로 이미지 단계 재검증에 사용하지 않습니다.
+
+platform을 지정한 containerd export에도 원본 multi-platform index는 남습니다.
+archive 검증은 각 이미지마다 모든 Linux node architecture의 manifest·config·layer가 있는지
+확인하며, index에만 남은 미선택 architecture의 manifest blob은 요구하지 않습니다.
+archive에 실제로 담긴 모든 blob의 digest는 platform과 무관하게 검사합니다.
+구버전에서 미선택 manifest 누락으로 격리했다면 수정본으로 `--sync-images --image`를 다시
+실행합니다. 격리 archive를 직접 import하거나 검증을 생략하지 않습니다.
+
+`stage=pull` 실패에는 원문 응답 대신 `reason`, `exit`, `attempt`, `timeout`이 표시됩니다.
+기본은 image/platform별 시도당 300초, 최대 3회입니다. 원인을 좁힐 때는 control-plane에서
+실패한 고정 이미지 하나만 1회·60초로 검사할 수 있습니다. 성공하면 해당 이미지의 검증·전송까지
+수행하는 명령이므로 검사 전용 명령은 아닙니다.
+
+```bash
+sudo env SADP_IMAGE_PULL_ATTEMPTS=1 SADP_IMAGE_PULL_TIMEOUT=60 \
+  bash ./sadp --sync-images --image '<FAILED_IMAGE_REF>'
+```
+
+`access-denied`/`http-403`은 Squid의 해당 요청 `TCP_DENIED`와 registry 권한을, `http-5xx`는 proxy/upstream
+응답을 확인합니다. `pull-timeout`은 설정한 시도 시간 초과, `network-timeout`/`tls-timeout`은
+연결 지연, `dns`는 이름 해석, `tls-certificate`는 인증서 검증 문제입니다. URL의 digest 숫자는
+상태 코드로 세지 않습니다. 고정 pause 이미지의 CRI 성공만으로 다른 이미지 경로까지 검증되지는
+않습니다. 오류 원문·환경값·서명 query는 공유하지 않습니다.
 
 임시 loader는 이미 모든 node에서 Ready인 RKE2 Canal image를 `IfNotPresent`로 재사용하고 Linux
 selector, 모든 taint toleration, service account token 차단을 적용합니다. privileged와 RKE2 bin 및

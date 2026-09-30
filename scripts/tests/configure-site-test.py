@@ -331,6 +331,8 @@ def verify_generated(workspace: pathlib.Path) -> str:
         return "ECR Public layer CDN missing"
     if "asia-east1-docker.pkg.dev" not in squid.split():
         return "Kubernetes regional manifest redirect missing"
+    if "cdn.registry.k8s.io" not in squid.split():
+        return "Kubernetes image CDN missing"
     if "packages.company.kr" not in squid:
         return "extra package hostname missing"
     policies = (workspace / "platform/network/egress-policies.yaml").read_text(encoding="utf-8")

@@ -112,6 +112,8 @@ DEFAULT_PACKAGE_DOMAINS = (
     "ghcr.io",
     "pkg-containers.githubusercontent.com",
     "registry.k8s.io",
+    # pause 검사가 성공해도 다른 이미지의 CDN 경로는 별도로 차단될 수 있습니다.
+    "cdn.registry.k8s.io",
     ".gcr.io",
     "storage.googleapis.com",
     # 지역 redirect가 달라져도 확인된 manifest 저장소로의 CONNECT가 차단되지 않게 합니다.
