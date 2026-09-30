@@ -87,6 +87,7 @@ DEFAULT_PACKAGE_DOMAINS = (
     "openbao.github.io",
     "charts.jetstack.io",
     "grafana.github.io",
+    "grafana-community.github.io",
     "prometheus-community.github.io",
     "metallb.github.io",
     "releases.rancher.com",
