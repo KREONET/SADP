@@ -190,6 +190,68 @@ with tempfile.TemporaryDirectory(prefix="diagnose-route-") as raw:
           result.stderr)
 
 
+# --- inotify / CrashLoop 연쇄 ------------------------------------------------------
+
+crash = {
+    "pods": {"items": [{"metadata": {"name": "devtron-nats-0"}, "spec": {"nodeName": "sadp-worker-1"}},
+                       {"metadata": {"name": "kubelink-7d9"}, "spec": {"nodeName": "sadp-worker-1"}}]},
+    "logs": {
+        "devtron-nats-0/reloader": "Error: too many open files",
+        "kubelink-7d9/kubelink": "panic: dial tcp: lookup devtron-nats.devtroncd on 10.53.0.10:53: no such host",
+    },
+}
+result = classify("crashloop-logs", crash)
+check("DG-16 NATS reloader too many open files를 첫 원인(노드 inotify)으로, DNS 실패는 결과로 분류",
+      result.returncode == 1 and "노드 sadp-worker-1 inotify 한도 부족" in result.stderr
+      and "devtron-nats-0/reloader" in result.stderr and "결과" in result.stderr
+      and "--install-node-sysctl" in result.stderr and "10.53.0.10" not in result.stderr, result.stderr)
+only_lookup = {"pods": crash["pods"], "logs": {"kubelink-7d9/kubelink": crash["logs"]["kubelink-7d9/kubelink"]}}
+result = classify("crashloop-logs", only_lookup)
+check("DG-17 DNS 조회 실패만 있으면 대상 Service의 Pod 상태 확인을 안내",
+      result.returncode == 1 and "devtron-nats" in result.stderr and "endpoints" in result.stderr
+      and "inotify" not in result.stderr, result.stderr)
+result = classify("crashloop-logs", {"pods": crash["pods"], "logs": {"kubelink-7d9/kubelink": "started"}})
+check("DG-18 원인 패턴이 없는 CrashLoop 로그는 출력하지 않음", result.returncode == 0 and not result.stderr,
+      result.stderr)
+result = classify("node-inotify", {"nodes": {
+    "sadp-control-plane-1": {"fs.inotify.max_user_instances": "8192", "fs.inotify.max_user_watches": "524288"},
+    "sadp-worker-1": {"fs.inotify.max_user_instances": "128", "fs.inotify.max_user_watches": "133056"},
+}})
+check("DG-19 하한 미만 노드만 이름·값과 node phase 명령으로 보고",
+      result.returncode == 1 and "sadp-worker-1: fs.inotify.max_user_instances=128 < 8192" in result.stderr
+      and "sadp-control-plane-1" not in result.stderr and "--install-node-sysctl" in result.stderr, result.stderr)
+
+with tempfile.TemporaryDirectory(prefix="node-sysctl-") as raw:
+    work = pathlib.Path(raw)
+    proc = work / "proc"
+    (proc / "fs/inotify").mkdir(parents=True)
+    target = work / "sysctl.d/90-sadp-inotify.conf"
+
+    def sysctl_run(instances: str, watches: str, *arguments: str) -> subprocess.CompletedProcess:
+        (proc / "fs/inotify/max_user_instances").write_text(instances + "\n")
+        (proc / "fs/inotify/max_user_watches").write_text(watches + "\n")
+        env = dict(os.environ, SADP_PROC_SYS=str(proc), SADP_SYSCTL_FILE=str(target))
+        return subprocess.run(["bash", "./sadp", "--install-node-sysctl", *arguments], cwd=ROOT, env=env,
+                              capture_output=True, text=True, check=False)
+
+    result = sysctl_run("128", "133056")
+    output = result.stdout + result.stderr
+    check("NS-01 기본 실행은 계획만 출력하고 파일을 쓰지 않음",
+          result.returncode == 0 and "[PLAN]" in output and "fs.inotify.max_user_instances = 8192" in output
+          and not target.exists(), output)
+    result = sysctl_run("128", "133056", "--check")
+    check("NS-02 하한 미만이면 --check가 [FAIL]과 [NEXT]",
+          result.returncode == 1 and "[NEXT]" in result.stderr and "--apply" in result.stderr, result.stderr)
+    result = sysctl_run("8192", "1048576")
+    output = result.stdout + result.stderr
+    check("NS-03 기존 값이 더 크면 낮추지 않음(목표=현재값)",
+          "fs.inotify.max_user_watches = 1048576" in output and "fs.inotify.max_user_instances = 8192" in output,
+          output)
+    result = sysctl_run("8192", "524288", "--check")
+    check("NS-04 하한 이상이면 --check 통과", result.returncode == 0 and "[OK]" in result.stdout,
+          result.stdout + result.stderr)
+
+
 # --- doctor ------------------------------------------------------------------------
 
 FAKE_KUBECTL = r'''#!/usr/bin/env python3
@@ -207,6 +269,14 @@ def node(name, address, server=False):
     return {"metadata": {"name": name, "labels": labels},
             "status": {"conditions": [{"type": "Ready", "status": "True"}],
                        "addresses": [{"type": "InternalIP", "address": address}]}}
+if line.startswith("get daemonset -n kube-system rke2-canal"):
+    out({"spec": {"selector": {"matchLabels": {"k8s-app": "canal"}}}})
+if line.startswith("get pods -n kube-system -l k8s-app=canal"):
+    out({"items": [{"metadata": {"name": f"canal-{i}"}, "spec": {"nodeName": node}, "status": {"phase": "Running"}}
+                   for i, node in enumerate(["sadp-control-plane-1", "sadp-worker-1", "sadp-worker-2"])]})
+if line.startswith("exec -n kube-system canal-"):
+    low = scenario == "inotify-low" and line.startswith("exec -n kube-system canal-1 ")
+    print(("128" if low else "8192") if line.endswith("max_user_instances") else "524288"); sys.exit(0)
 if line.startswith("get nodes -o name"):
     print("node/sadp-control-plane-1"); sys.exit(0)
 if line.startswith("get nodes -o json"):
@@ -318,6 +388,18 @@ with tempfile.TemporaryDirectory(prefix="doctor-test-") as raw:
     check("DR-07 Portal fetch 실패는 8단계에서 relay 안내, 로그 원문 비노출",
           result.returncode == 1 and "처음 막힌 단계: 8/8" in output and "fetch-failed" in output
           and not leaked(output), output)
+    result, _ = doctor("inotify-low", *env_args)
+    output = result.stdout + result.stderr
+    check("DR-09 worker inotify 한도 부족은 4단계에서 노드 이름과 node phase 명령",
+          result.returncode == 1 and "처음 막힌 단계: 4/8" in output
+          and "sadp-worker-1: fs.inotify.max_user_instances=128" in output
+          and "--install-node-sysctl" in output, output)
+    healthy_err = doctor("healthy", *env_args)[0].stderr
+    check("DR-10 정상 클러스터에서 노드 inotify 값을 모두 읽어 inotify [WARN]이 없음",
+          not any("[WARN]" in line and "inotify" in line for line in healthy_err.splitlines()), healthy_err)
+    check("DR-11 IdP 이름을 해석하지 못하면 route를 확인했다고 말하지 않음",
+          "route 판정을 생략함" in healthy_err + doctor("healthy", *env_args)[0].stdout
+          and "외부 IdP route 확인" not in doctor("healthy", *env_args)[0].stdout)
     result, calls = doctor("healthy")
     output = result.stdout + result.stderr
     check("DR-08 --env-file이 없으면 1단계에서 두 후보 경로를 안내하고 클러스터를 묻지 않음",

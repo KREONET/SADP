@@ -38,6 +38,12 @@ if [[ ${IMAGE_PULL_ONLY} != true ]]; then
   kctl get nodes -o wide
   check_cluster_topology
 
+  echo "== 노드 inotify 한도 =="
+  # Devtron/NATS 같은 sidecar가 한 노드에 몰리면 Ubuntu 기본 128 인스턴스가 바닥난다.
+  source "${TESTBED_ROOT}/scripts/lib/diagnose.sh"
+  diag_node_inotify || die "노드 inotify 한도 부족: 위 [NEXT]대로 각 노드에 적용한 뒤 다시 실행하라"
+  ok "모든 노드 inotify 한도가 SADP 하한 이상"
+
   echo "== StorageClass(기본값 1개 필수) =="
   kctl get storageclass
   default_storage_classes=$(kctl get storageclass -o json | jq '[.items[] | select(

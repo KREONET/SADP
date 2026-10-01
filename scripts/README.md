@@ -81,6 +81,7 @@ bash ./sadp --render-all
 | `--install-containerd-proxy` | RKE2/embedded containerd proxy 관리 블록 | 자동 role 계획, `--apply` 쓰기, 재시작 뒤 `--check` |
 | `--node-bundle` | 고정 allowlist의 Secret 없는 node bundle/checksum 생성 | `--output-dir`에 mode 0600으로 생성 |
 | `--install-docker-proxy` | control-plane Docker daemon pull을 Squid로 고정 | 계획, `--apply` 시 쓰기, `--check` 검증 |
+| `--install-node-sysctl` | 노드 inotify 한도 sysctl(재시작 없음, 기존 값이 크면 유지) | 기본 plan, `--apply` 적용, `--check` 검사 |
 | `--install-squid` | 렌더된 allowlist Squid 설치 | 실행 시 설치, `--check`는 검사 |
 | `--upgrade-rke2` | lock에 고정된 버전으로 기존 RKE2 업데이트 | 계획, `--apply` 시 package/binary 설치 후 수동 재시작 |
 

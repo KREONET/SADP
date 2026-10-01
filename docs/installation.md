@@ -11,7 +11,7 @@
 
 | # | 할 일 | 성공 확인 | 실패하면 |
 | --- | --- | --- | --- |
-| 1 | RKE2 노드와 도구 확인 | `sudo /var/lib/rancher/rke2/bin/kubectl --kubeconfig /etc/rancher/rke2/rke2.yaml get nodes` 모두 `Ready` | [1. 선행 조건](#1-선행-조건-확인) |
+| 1 | RKE2 노드와 도구 확인 | `sudo /var/lib/rancher/rke2/bin/kubectl --kubeconfig /etc/rancher/rke2/rke2.yaml get nodes` 모두 `Ready`, 각 노드 `sudo bash ./sadp --install-node-sysctl --check` | [1. 선행 조건](#1-선행-조건-확인) |
 | 2 | `/etc/sadp/site.env` 작성 | `python3 scripts/site/configure-site.py --env-file /etc/sadp/site.env --check`가 `[OK]` | [2. site.env](#2-sitenv와-root-전용-secret-파일-준비), [사이트 설정](site-configuration.md) |
 | 3 | 외부 IdP 값 대조 | `bash ./sadp --verify-idp --env-file /etc/sadp/site.env`가 `[OK]` | [외부 인증 연결](site-configuration.md#외부-인증-연결) |
 | 4 | 렌더·시험·commit/push | `bash ./sadp --test` 종료 코드 0 | [3. render](#3-render-계획--생성--테스트--commitpush) |
@@ -340,6 +340,17 @@ helm version --short
 - Pod CIDR, Service CIDR, Cluster DNS IP가 확정됨
 - control-plane에서 RKE2 kubeconfig와 kubectl 사용 가능
 - 기본 StorageClass가 정확히 하나 있음
+- 모든 노드의 inotify 한도가 SADP 하한 이상(`fs.inotify.max_user_instances` ≥ 8192,
+  `fs.inotify.max_user_watches` ≥ 524288). Ubuntu 기본 128 인스턴스는 다른 worker가 cordon되어
+  Pod가 한 노드에 몰리면 바닥나 Devtron NATS 같은 sidecar가 `too many open files`로 죽습니다.
+  node phase가 `/etc/sysctl.d/90-sadp-inotify.conf`로 적용하며(재시작 없음, 기존 값이 크면 유지)
+  각 노드에서 먼저 확인할 수 있습니다.
+
+```bash
+sudo bash ./sadp --install-node-sysctl            # 계획(현재값·목표값)
+sudo bash ./sadp --install-node-sysctl --apply    # 적용(sysctl -p, 재시작 없음)
+sudo bash ./sadp --install-node-sysctl --check
+```
 
 ```bash
 sudo /var/lib/rancher/rke2/bin/kubectl \
@@ -1059,6 +1070,7 @@ sudo bash ./sadp --verify-testbed
 | Portal 503 / `deployment-requests -> 503` | ExternalSecret에 `FORGEJO_BOT_TOKEN`이 없음 | `sudo bash scripts/cluster/install-portal-backend.sh --token-only --forgejo-token-file <SADP_PORTAL_FORGEJO_TOKEN_FILE>` |
 | `Portal 외부 OIDC 인증 흐름` FAIL, `[CAUSE] ... fetch-failed` | Portal Node fetch가 proxy를 쓰지 않아 IdP에 못 닿음 | `IDP_RELAY_ENABLED=true` 후 render → relay 설치 → `--deploy-apps`(Portal NetworkPolicy에 relay:443 추가) |
 | `rollout이 멈춤` + `taint node-role.kubernetes.io/control-plane` | 새 Pod가 control-plane taint로 Pending, 옛 Pod가 트래픽을 받아 겉으로 정상 | direct 모드 Envoy는 `render-exposure.py` 재렌더(toleration 포함) 후 노출 리소스 동기화 |
+| `Devtron Helm release가 있지만 ... Ready가 아님` + `노드 ... inotify 한도 부족` | NATS reloader가 `too many open files`로 죽어 Service DNS가 비고 나머지가 CrashLoop | [inotify 복구](recovery.md#11-devtronnats-reloader-too-many-open-files) |
 | `이 노드에 외부 IdP로 가는 route가 없는데 IDP_RELAY_ENABLED=false` | 내부망 전용 worker | site.env `IDP_RELAY_ENABLED=true` → render → node phase 재실행 |
 | `IdP discovery 불일치 필드: <FIELD>` | site.env IdP 값이 실제 discovery와 다름(끝 `/` 포함) | discovery 문서에서 해당 필드를 그대로 복사해 site.env를 고친 뒤 `bash ./sadp --verify-idp --env-file <SITE_ENV>` |
 | `host differs from the OIDC_ISSUER host` / `contains the ..._CLIENT_ID value` | endpoint 붙여넣기 오류(오프라인 검출) | 해당 변수를 discovery 문서에서 다시 복사; 실제 다른 IdP 호스트면 `OIDC_ENDPOINT_HOSTS` |

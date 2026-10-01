@@ -9,7 +9,8 @@
 값 비노출: Secret 값, 로그 원문, URL, IP, hostname은 출력하지 않는다. 리소스 이름, key 이름,
 Kubernetes가 정한 reason 식별자와 분류만 출력한다. 원문 요약이 필요한 곳은 mask()를 거친다.
 
-종료 코드: 0 정상(아무것도 출력하지 않음), 1 문제 발견(원인과 다음 행동 출력), 2 입력 오류.
+종료 코드: 0 정상(아무것도 출력하지 않음), 1 문제 발견(원인과 다음 행동 출력), 2 입력 오류,
+3 판정 불가(node-idp-route에서 이름 해석 실패. 막지 않되 확인했다고 말하지 않는다).
 """
 
 from __future__ import annotations
@@ -52,6 +53,16 @@ SECRET_KEY_STEPS = {
         "root-only OIDC client Secret 파일을 확인한 뒤 sudo bash ./sadp --bootstrap-services",
     ),
 }
+
+
+# 노드 inotify 하한. Ubuntu 기본 max_user_instances=128은 한 노드에 Pod가 몰리면(다른 worker
+# cordon 등) 바로 바닥나 NATS reloader 같은 sidecar가 "too many open files"로 죽는다. 실제 사이트
+# 재설치에서 Devtron 전체가 Ready가 되지 않았다. 설치 스크립트와 검사가 이 값 하나를 공유한다.
+NODE_SYSCTL_MINIMUMS = {
+    "fs.inotify.max_user_instances": 8192,
+    "fs.inotify.max_user_watches": 524288,
+}
+NODE_SYSCTL_NEXT = "그 노드에서 sudo bash ./sadp --install-node-sysctl (계획) → --apply (재시작 불필요)"
 
 
 def cause(text: str) -> None:
@@ -374,7 +385,8 @@ def node_idp_route(args: argparse.Namespace) -> int:
     except OSError:
         print("[WARN] 이 노드에서 IdP 이름을 해석하지 못해 route를 판정하지 않음"
               "(CoreDNS로만 해석되는 구성이면 정상일 수 있음)", file=sys.stderr)
-        return 0
+        # 판정 불가는 통과(0)와 구분한다. 호출자가 "확인함"이라고 잘못 말하지 않게 한다.
+        return 3
     internal = [ipaddress.ip_network(str(item)) for item in network.get("nodeInternalCIDRs") or []]
     for address in addresses:
         if any(ipaddress.ip_address(address) in network for network in internal):
@@ -389,6 +401,75 @@ def node_idp_route(args: argparse.Namespace) -> int:
     return 1
 
 
+# --- 노드 inotify / CrashLoop 로그 --------------------------------------------
+
+
+def node_limits(_args: argparse.Namespace) -> int:
+    for key, value in NODE_SYSCTL_MINIMUMS.items():
+        print(f"{key}={value}")
+    return 0
+
+
+def node_inotify(_args: argparse.Namespace) -> int:
+    """{"nodes": {name: {"fs.inotify.max_user_instances": n|null, ...}}}를 하한과 비교한다."""
+    document = load_json()
+    nodes = (document or {}).get("nodes") or {}
+    low = False
+    for name, values in sorted(nodes.items()):
+        for key, minimum in NODE_SYSCTL_MINIMUMS.items():
+            raw = (values or {}).get(key)
+            if raw is None or not str(raw).isdigit():
+                print(f"[WARN] node {identifier(name)}: {key} 값을 읽지 못함"
+                      "(그 노드에서 sudo bash ./sadp --install-node-sysctl --check)", file=sys.stderr)
+                continue
+            if int(raw) < minimum:
+                low = True
+                cause(f"node {identifier(name)}: {key}={int(raw)} < {minimum}"
+                      "(Pod가 몰리면 inotify가 바닥나 sidecar가 too many open files로 죽음)")
+    if low:
+        next_step(NODE_SYSCTL_NEXT)
+    return 1 if low else 0
+
+
+LOOKUP_FAILURE = re.compile(r"lookup ([a-z0-9-]+)(?:\.[a-z0-9-]+)*\S* on \S+: no such host")
+
+
+def crashloop_logs(_args: argparse.Namespace) -> int:
+    """CrashLoop 컨테이너의 직전 로그(패턴만 본다)와 Pod 위치로 연쇄 장애의 첫 원인을 고른다.
+
+    inotify가 바닥나면 한 sidecar만 죽어도 그 Pod가 Ready가 아니어서 Service endpoint가 비고,
+    의존 Pod들이 "lookup <svc> ... no such host"로 줄줄이 죽는다. 뒤의 것은 결과일 뿐이므로
+    too many open files를 먼저 원인으로 보고한다.
+    """
+    document = load_json()
+    pods = {identifier((pod.get("metadata") or {}).get("name")): pod
+            for pod in ((document or {}).get("pods") or {}).get("items") or []}
+    logs = (document or {}).get("logs") or {}
+    exhausted: dict[str, set[str]] = {}
+    lookups: set[str] = set()
+    for key, text in logs.items():
+        pod_name = identifier(str(key).split("/", 1)[0])
+        if re.search(r"too many open files", str(text), re.IGNORECASE):
+            node = identifier((pods.get(pod_name, {}).get("spec") or {}).get("nodeName") or "unknown")
+            exhausted.setdefault(node, set()).add(identifier(key))
+        for match in LOOKUP_FAILURE.finditer(str(text)):
+            lookups.add(identifier(match.group(1)))
+    if not exhausted and not lookups:
+        return 0
+    for node, containers in sorted(exhausted.items()):
+        cause(f"노드 {node} inotify 한도 부족: {', '.join(sorted(containers))}가 too many open files로 종료")
+        next_step(NODE_SYSCTL_NEXT.replace("그 노드", f"노드 {node}"))
+    if lookups:
+        service_list = ", ".join(sorted(lookups))
+        if exhausted:
+            cause(f"Service DNS 조회 실패({service_list})는 위 Pod가 Ready가 아니라 endpoint가 없어서 생긴 결과")
+        else:
+            cause(f"Service DNS 조회 실패({service_list}): 대상 Service의 Pod가 Ready가 아님")
+            next_step("kubectl get endpoints <SERVICE> 와 대상 Pod 상태를 먼저 확인하라"
+                      "(sudo bash ./sadp --doctor --env-file <SITE_ENV>)")
+    return 1
+
+
 def main() -> int:
     parser = argparse.ArgumentParser(description=__doc__)
     sub = parser.add_subparsers(dest="command", required=True)
@@ -398,6 +479,9 @@ def main() -> int:
         command.set_defaults(handler=handler)
     for name, handler in (("external-secret", external_secret), ("deployment", deployment)):
         sub.add_parser(name).set_defaults(handler=handler)
+    sub.add_parser("node-limits").set_defaults(handler=node_limits)
+    sub.add_parser("node-inotify").set_defaults(handler=node_inotify)
+    sub.add_parser("crashloop-logs").set_defaults(handler=crashloop_logs)
     route = sub.add_parser("node-idp-route")
     route.add_argument("--contract", default="contracts/platform-production.yaml")
     route.set_defaults(handler=node_idp_route)

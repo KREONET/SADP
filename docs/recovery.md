@@ -394,3 +394,43 @@ sudo bash ./sadp --verify-testbed
 - 백업 이후 Git commit과 cluster 상태 차이 검토
 
 복원 중 만든 임시 dump/snapshot/token 복사본을 제거하고, 복원 결과와 다음 백업 시각을 기록합니다.
+
+## 11. Devtron/NATS reloader too many open files
+
+대표 증상은 cluster phase의 다음 출력입니다.
+
+```text
+[FAIL] 승인 버전/설정의 Devtron Helm release가 있지만 Installer/Devtron/Argo CD가 Ready가 아님
+```
+
+`devtroncd`에서 Argo CD·PostgreSQL·dashboard는 Ready인데 `devtron-nats-0`이 2/3이고, `devtron`,
+`kubelink`, `git-sensor`, `kubewatch`, `lens`가 CrashLoopBackOff입니다. 실제 원인은 하나입니다.
+
+1. 노드의 `fs.inotify.max_user_instances`가 Ubuntu 기본값 128이라, Pod가 한 노드에 몰리면 바닥납니다.
+   다른 worker가 cordon된 상태(유지보수, 재설치 중)에서 특히 잘 납니다.
+2. NATS의 reloader sidecar가 `too many open files`로 죽어 `devtron-nats-0`이 Ready가 되지 않습니다.
+3. Ready Pod가 없으니 `devtron-nats` Service endpoint가 비고, 의존 Pod가 `lookup devtron-nats... no such host`로
+   줄줄이 죽습니다. 뒤의 증상들은 결과일 뿐입니다.
+
+설치기는 이 연쇄를 분류해 `[CAUSE] 노드 <NODE> inotify 한도 부족`과 `[NEXT]`를 출력합니다. 같은 판정을
+언제든 읽기 전용으로 볼 수 있습니다.
+
+```bash
+sudo bash ./sadp --doctor --env-file /etc/sadp/site.env    # 4단계에서 노드별 값 확인
+```
+
+복구는 해당 노드(모든 노드 권장)에서 sysctl만 올리면 되며 노드나 서비스를 재시작하지 않습니다.
+
+```bash
+sudo bash ./sadp --install-node-sysctl            # 계획
+sudo bash ./sadp --install-node-sysctl --apply    # /etc/sysctl.d/90-sadp-inotify.conf + sysctl -p
+sudo bash ./sadp --install-node-sysctl --check
+```
+
+CrashLoop 중인 Pod는 backoff가 끝나면 스스로 다시 시작합니다. 빨리 확인하려면 해당 Pod만 지워 다시
+만들게 할 수 있습니다(Deployment/StatefulSet이 다시 만든다). 그 뒤 cluster phase를 다시 실행합니다.
+
+```bash
+kubectl -n devtroncd get pods
+sudo bash ./sadp --install --env-file /etc/sadp/site.env --phase cluster    # 계획 확인 후 --apply
+```

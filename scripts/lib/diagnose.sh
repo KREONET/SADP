@@ -78,3 +78,46 @@ diag_portal_logs() {
 diag_next() {
   printf '[NEXT] %s\n' "$*" >&2
 }
+
+# 각 노드의 inotify 한도를 그 노드에 이미 떠 있는 rke2-canal Pod로 읽는다(읽기 전용 exec).
+# 원격 노드에 SSH하지 않고도 모든 노드를 볼 수 있고, /proc/sys/fs/inotify는 노드 값이다.
+diag_node_inotify() {
+  local daemonset selector pods name node payload instances watches
+  daemonset=$(kctl get daemonset -n kube-system rke2-canal -o json 2>/dev/null) || {
+    printf '[WARN] rke2-canal DaemonSet이 없어 노드 inotify 한도를 원격으로 읽지 못함(각 노드에서 --install-node-sysctl --check)\n' >&2
+    return 0
+  }
+  selector=$(jq -r '.spec.selector.matchLabels // {} | to_entries | map("\(.key)=\(.value)") | join(",")' \
+    <<<"${daemonset}")
+  pods=$(kctl get pods -n kube-system -l "${selector}" -o json 2>/dev/null || echo '{"items":[]}')
+  payload='{}'
+  while read -r name node; do
+    [[ -n ${name} && -n ${node} ]] || continue
+    instances=$(kctl exec -n kube-system "${name}" -c calico-node -- \
+      cat /proc/sys/fs/inotify/max_user_instances 2>/dev/null | tr -d '[:space:]' || true)
+    watches=$(kctl exec -n kube-system "${name}" -c calico-node -- \
+      cat /proc/sys/fs/inotify/max_user_watches 2>/dev/null | tr -d '[:space:]' || true)
+    payload=$(jq --arg node "${node}" --arg i "${instances}" --arg w "${watches}" \
+      '.[$node] = {"fs.inotify.max_user_instances": (if $i == "" then null else $i end),
+                   "fs.inotify.max_user_watches": (if $w == "" then null else $w end)}' <<<"${payload}")
+  done < <(jq -r '.items[] | select(.status.phase == "Running") | "\(.metadata.name) \(.spec.nodeName)"' \
+    <<<"${pods}")
+  jq -n --argjson nodes "${payload}" '{nodes: $nodes}' | python3 "${SADP_DIAGNOSE}" node-inotify
+}
+
+# Namespace의 CrashLoop 컨테이너 직전 로그를 모아 연쇄 장애의 첫 원인을 고른다. 로그 원문은
+# 분류기 입력으로만 쓰고 출력하지 않는다.
+diag_namespace_crashloops() {
+  local namespace=$1 pods logs pod container text
+  pods=$(kctl get pods -n "${namespace}" -o json 2>/dev/null) || return 0
+  logs='{}'
+  while read -r pod container; do
+    [[ -n ${pod} && -n ${container} ]] || continue
+    text=$(kctl logs -n "${namespace}" "${pod}" -c "${container}" --previous --tail=50 2>/dev/null || true)
+    logs=$(jq --arg key "${pod}/${container}" --arg text "${text}" '.[$key] = $text' <<<"${logs}")
+  done < <(jq -r '.items[] | .metadata.name as $pod | .status.containerStatuses[]?
+      | select(.state.waiting.reason == "CrashLoopBackOff" or .lastState.terminated != null)
+      | "\($pod) \(.name)"' <<<"${pods}")
+  jq -n --argjson pods "${pods}" --argjson logs "${logs}" '{pods: $pods, logs: $logs}' \
+    | python3 "${SADP_DIAGNOSE}" crashloop-logs
+}

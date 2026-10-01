@@ -5,6 +5,7 @@
 set -euo pipefail
 
 source "$(dirname "$0")/../lib/testbed-common.sh"
+source "$(dirname "$0")/../lib/diagnose.sh"
 
 APPLY=false
 DEVTRON_NAMESPACE=devtroncd
@@ -171,6 +172,11 @@ if [[ ${release_status} != failed ]] && delivery_ready; then
 fi
 
 if [[ ${release_exists} == true && ${release_status} != failed ]]; then
+  # 실제 사이트에서는 NATS reloader가 inotify 고갈로 죽어 나머지가 줄줄이 CrashLoop였다.
+  # 증상 목록 대신 첫 원인을 분류해 보여 준다(로그 원문은 출력하지 않음).
+  diag_namespace_crashloops "${DEVTRON_NAMESPACE}" \
+    && diag_node_inotify \
+    && diag_next "kubectl -n ${DEVTRON_NAMESPACE} get pods 로 Ready가 아닌 Pod를 보고 sudo bash ./sadp --doctor --env-file <SITE_ENV>"
   die "승인 버전/설정의 Devtron Helm release가 있지만 Installer/Devtron/Argo CD가 Ready가 아님; 자동 재적용하지 않으므로 devtroncd 상태를 확인하라"
 fi
 

@@ -209,11 +209,18 @@ if [[ ${PHASE} == node || ${PHASE} == all ]]; then
     --internal-ip "${NODE_IP}" --guarded-interfaces "${GUARDED_INTERFACES}")
   [[ ${internal_only} != true ]] || nic_check+=(--internal-only)
   step "노드 설정 변경 전 NIC 확인" "${nic_check[@]}"
+  # Pod가 한 노드에 몰려도 sidecar가 too many open files로 죽지 않게 inotify 하한을 먼저 둔다.
+  node_sysctl=(bash scripts/node/install-node-sysctl.sh)
+  [[ ${APPLY} != true ]] || node_sysctl+=(--apply)
+  step "노드 inotify 한도(sysctl, 재시작 없음)" "${node_sysctl[@]}"
   # Envoy Gateway·Portal은 HTTPS_PROXY를 쓰지 않는다. 이 노드에 IdP로 가는 route가 없는데 relay도
   # 꺼져 있으면 설치가 끝난 뒤 SecurityPolicy 미수락으로만 드러난다. 노드 설정 전에 멈춘다.
   # 읽기 전용(route 조회)이라 계획 모드에서도 실행한다.
   note "외부 IdP 경로 확인(relay 꺼짐일 때 이 노드의 route)"
-  python3 scripts/lib/diagnose.py node-idp-route \
+  route_rc=0
+  python3 scripts/lib/diagnose.py node-idp-route || route_rc=$?
+  # 3은 이름 해석 실패로 판정 불가다. 막지 않고 위 [WARN]만 남긴다.
+  ((route_rc == 0 || route_rc == 3)) \
     || die "IdP 경로 없음. 위 [NEXT]대로 relay를 켜거나 이 노드에 IdP route를 만든 뒤 재실행"
 
   # 이후 containerd/Helm/이미지 작업이 모두 계약 프록시를 전제로 한다. Squid 담당 노드에서는

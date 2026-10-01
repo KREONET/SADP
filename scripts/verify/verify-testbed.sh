@@ -133,6 +133,12 @@ ip -4 route show default | grep -Eq "(^| )dev ${external_interface}( |$)" \
   || { printf '[FAIL] default route가 %s에 없음\n' "${external_interface}" >&2
        diag_next "ip -4 route 로 default route NIC을 확인하고 site.env EXTERNAL_INTERFACE를 실제 값으로 맞춰라"; fail=1; }
 
+# 호스트 검사는 이 control-plane만 본다(AGENTS §3). worker 값은 doctor/preflight가 Pod로 읽는다.
+bash scripts/node/install-node-sysctl.sh --check >/dev/null 2>&1 \
+  && ok "control-plane inotify 한도가 SADP 하한 이상" \
+  || { echo '[FAIL] control-plane inotify 한도가 SADP 하한 미만' >&2
+       diag_next "sudo bash ./sadp --install-node-sysctl 계획 → --apply (재시작 불필요). worker는 sudo bash ./sadp --doctor 로 확인"; fail=1; }
+
 # guard unit은 fail-open이다. Before= 는 순서만 잡고 의존은 만들지 않아, 이 unit이
 # 실패해도 rke2는 그대로 뜨고 그때 관리 포트는 열려 있다. 그래서 unit 상태와 실제
 # iptables 규칙을 여기서 함께 확인한다.

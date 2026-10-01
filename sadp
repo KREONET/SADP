@@ -41,6 +41,7 @@ install-containerd-proxy|bash|scripts/node/install-rke2-containerd-proxy.sh|cont
 node-bundle|python3|scripts/ops/build-node-bundle.py|Secret 없는 node proxy bundle과 portable checksum 생성
 install-docker-proxy|bash|scripts/node/install-docker-proxy.sh|control-plane Docker image pull을 Squid 경유
 install-squid|bash|scripts/node/install-squid-egress.sh|allowlist Squid proxy 설치
+install-node-sysctl|bash|scripts/node/install-node-sysctl.sh|노드 inotify 한도 sysctl 계획/--apply/--check(재시작 없음)
 install-idp-relay|bash|scripts/node/install-idp-relay.sh|Envoy Gateway용 외부 IdP SNI relay(HAProxy) plan/--apply/--check
 upgrade-rke2|bash|scripts/node/upgrade-rke2.sh|versions.lock의 고정 버전으로 기존 RKE2 노드 업데이트
 GROUP:cluster — control-plane에서 root. 클러스터 전체

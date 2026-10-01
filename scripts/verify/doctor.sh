@@ -95,10 +95,16 @@ if grep -Fq " ${squid_ip}/" <<<"$(ip -4 addr show 2>/dev/null || true)"; then
 else
   note "이 호스트는 Squid egress 호스트가 아님. 그 호스트에서 sudo bash ./sadp --install-squid --check 를 따로 확인하라"
 fi
-python3 scripts/lib/diagnose.py node-idp-route || stop ""
-# relay를 쓰면 판정 자체를 하지 않는다. 같은 [OK]로 찍으면 route를 확인한 것으로 오해한다.
-if [[ ${relay_enabled} == true ]]; then
+route_rc=0
+python3 scripts/lib/diagnose.py node-idp-route || route_rc=$?
+# relay를 쓰거나 이름을 해석하지 못하면 판정 자체를 하지 않는다. 같은 [OK]로 찍으면 route를
+# 확인한 것으로 오해한다.
+if ((route_rc == 1 || route_rc == 2)); then
+  stop ""
+elif [[ ${relay_enabled} == true ]]; then
   ok "IdP relay 사용 중이라 이 노드의 IdP route 판정 생략"
+elif ((route_rc == 3)); then
+  note "이 노드에서 IdP 이름을 해석하지 못해 route 판정을 생략함"
 else
   ok "이 노드의 외부 IdP route 확인"
 fi
@@ -110,6 +116,7 @@ kctl get nodes -o name >/dev/null 2>&1 \
   || stop "Kubernetes API에 접속하지 못함: sudo systemctl status rke2-server 와 kubeconfig를 확인하라"
 check_cluster_topology >/dev/null 2>&1 \
   || stop "계약의 노드 목록과 실제 Ready 노드가 다름: kubectl get nodes 와 site.env WORKER_NODES를 맞춰라"
+diag_node_inotify || stop ""
 ok "Kubernetes API와 노드 구성 확인"
 
 # --- 5. OpenBao -------------------------------------------------------------------
