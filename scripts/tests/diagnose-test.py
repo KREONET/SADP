@@ -392,7 +392,8 @@ with tempfile.TemporaryDirectory(prefix="doctor-test-") as raw:
     output = result.stdout + result.stderr
     check("DR-01 정상 클러스터에서 거짓 경보 없이 8단계 통과",
           result.returncode == 0 and "모든 단계 정상" in output and "[FAIL]" not in output
-          and "[NEXT]" not in output and "[STAGE 8/8]" in output, output)
+          and "[NEXT]" not in output and "[STAGE 8/8]" in output
+          and "노드 3대 inotify 한도 하한 이상" in output, output)
     check("DR-02 doctor는 읽기 전용 kubectl 호출만 사용",
           not any(line.split()[0] in {"apply", "delete", "annotate", "patch", "rollout", "create", "scale"}
                   for line in calls.splitlines() if line), calls)

@@ -117,6 +117,8 @@ kctl get nodes -o name >/dev/null 2>&1 \
 check_cluster_topology >/dev/null 2>&1 \
   || stop "계약의 노드 목록과 실제 Ready 노드가 다름: kubectl get nodes 와 site.env WORKER_NODES를 맞춰라"
 diag_node_inotify || stop ""
+# 통과 시 침묵하면 검사했는지 알 수 없다. 읽은 노드 수와 함께 남긴다.
+((DIAG_INOTIFY_NODE_COUNT == 0)) || ok "노드 ${DIAG_INOTIFY_NODE_COUNT}대 inotify 한도 하한 이상"
 ok "Kubernetes API와 노드 구성 확인"
 
 # --- 5. OpenBao -------------------------------------------------------------------

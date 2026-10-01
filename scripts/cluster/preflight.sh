@@ -42,7 +42,7 @@ if [[ ${IMAGE_PULL_ONLY} != true ]]; then
   # Devtron/NATS 같은 sidecar가 한 노드에 몰리면 Ubuntu 기본 128 인스턴스가 바닥난다.
   source "${TESTBED_ROOT}/scripts/lib/diagnose.sh"
   diag_node_inotify || die "노드 inotify 한도 부족: 위 [NEXT]대로 각 노드에 적용한 뒤 다시 실행하라"
-  ok "모든 노드 inotify 한도가 SADP 하한 이상"
+  ((DIAG_INOTIFY_NODE_COUNT == 0)) || ok "노드 ${DIAG_INOTIFY_NODE_COUNT}대 inotify 한도가 SADP 하한 이상"
 
   # Portal을 루트 도메인에 두면 인증서 SAN에 apex가 있어야 한다(Secret data는 읽지 않음).
   diag_portal_apex_tls || die "Portal 루트 도메인 인증서 조건 불충족: 위 [NEXT] 참고"

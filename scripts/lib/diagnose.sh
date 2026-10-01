@@ -83,6 +83,8 @@ diag_next() {
 # 원격 노드에 SSH하지 않고도 모든 노드를 볼 수 있고, /proc/sys/fs/inotify는 노드 값이다.
 diag_node_inotify() {
   local daemonset selector pods name node payload instances watches
+  # 통과해도 "몇 대를 읽었는지"를 호출자가 알릴 수 있게 남긴다(못 읽은 노드는 세지 않는다).
+  DIAG_INOTIFY_NODE_COUNT=0
   daemonset=$(kctl get daemonset -n kube-system rke2-canal -o json 2>/dev/null) || {
     printf '[WARN] rke2-canal DaemonSet이 없어 노드 inotify 한도를 원격으로 읽지 못함(각 노드에서 --install-node-sysctl --check)\n' >&2
     return 0
@@ -97,6 +99,7 @@ diag_node_inotify() {
       cat /proc/sys/fs/inotify/max_user_instances 2>/dev/null | tr -d '[:space:]' || true)
     watches=$(kctl exec -n kube-system "${name}" -c calico-node -- \
       cat /proc/sys/fs/inotify/max_user_watches 2>/dev/null | tr -d '[:space:]' || true)
+    [[ -z ${instances} || -z ${watches} ]] || DIAG_INOTIFY_NODE_COUNT=$((DIAG_INOTIFY_NODE_COUNT + 1))
     payload=$(jq --arg node "${node}" --arg i "${instances}" --arg w "${watches}" \
       '.[$node] = {"fs.inotify.max_user_instances": (if $i == "" then null else $i end),
                    "fs.inotify.max_user_watches": (if $w == "" then null else $w end)}' <<<"${payload}")
