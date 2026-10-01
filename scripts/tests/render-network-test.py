@@ -489,6 +489,9 @@ def relay_other_node_case() -> None:
 
 
 relay_other_node_case()
+case("NW-27 이전 계약({enabled: true}만)은 Squid 호스트·443 기본값으로 렌더",
+     lambda spec: (enable_relay(spec), spec["network"].update({"identityProviderRelay": {"enabled": True}})),
+     True, relay_outputs)
 case("NW-23 relay 포트 443 외 거부", lambda spec: enable_relay(spec, port=8443), False)
 case("NW-24 suffix IdP 도메인은 relay 거부",
      lambda spec: (enable_relay(spec), spec["network"]["squid"]["identityProviderDomains"].append(".sso.example.invalid")),

@@ -89,6 +89,16 @@ try:
               and not any(call.split()[0] in {"apt-get", "systemctl", "install", "cp"} for call in calls),
               result.stdout + result.stderr + f"\ncalls={calls}")
 
+    path = root / "contracts/platform-production.yaml"
+    document = yaml.safe_load(path.read_text(encoding="utf-8"))
+    document["spec"]["network"]["identityProviderRelay"] = {"enabled": True}
+    path.write_text(yaml.safe_dump(document, allow_unicode=True, sort_keys=False), encoding="utf-8")
+    result, calls = run(root)
+    squid_ip = document["spec"]["network"]["squid"]["internalIP"]
+    check("IR-05 이전 계약({enabled: true}만)도 Squid 호스트·443으로 계획",
+          result.returncode == 0 and f"{squid_ip}:443" in result.stdout and not calls,
+          result.stdout + result.stderr)
+
     (root / "platform/network/idp-relay/haproxy.cfg").write_text("# stale\n", encoding="utf-8")
     result, calls = run(root)
     check("IR-04 생성물이 계약과 다르면 계획 전에 거부",

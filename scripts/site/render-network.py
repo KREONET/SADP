@@ -292,13 +292,15 @@ def idp_relay_settings(
         raise ValueError("network.identityProviderRelay.enabled must be boolean")
     if not enabled:
         return None
-    relay_ip = address(relay.get("address"), "network.identityProviderRelay.address")
+    # 이전 계약은 {enabled: true}만 기록했다. 값이 없으면 같은 규칙의 기본값(Squid 호스트, 443)으로
+    # 채운다. 아래 검증이 같은 조건을 다시 보므로 기본값이 규칙을 우회하지 않는다.
+    relay_ip = address(relay.get("address", str(squid_ip)), "network.identityProviderRelay.address")
     if not any(relay_ip in item for item in node_cidrs):
         raise ValueError("network.identityProviderRelay.address must be inside a node internal CIDR")
     # 외부 route가 있는 곳은 Squid egress 호스트뿐이다. 다른 노드에 두면 relay도 IdP에 못 닿는다.
     if relay_ip != squid_ip:
         raise ValueError("network.identityProviderRelay.address must be the Squid egress host")
-    relay_port = valid_port(relay.get("port"), "network.identityProviderRelay.port")
+    relay_port = valid_port(relay.get("port", 443), "network.identityProviderRelay.port")
     if relay_port != 443:
         raise ValueError("network.identityProviderRelay.port must be 443 (clients dial the IdP host:443)")
     if not idp_domains:

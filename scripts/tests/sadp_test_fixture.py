@@ -81,6 +81,9 @@ def _copy_tree(target: pathlib.Path) -> None:
         # 삭제했지만 아직 커밋하지 않은 파일은 ls-files --cached에 남는다.
         if not source.exists() and not source.is_symlink():
             continue
+        # submodule/gitlink(mode 160000)는 ls-files에 디렉터리로 나오고 fixture 렌더에 필요한 내용이 없다.
+        if source.is_dir() and not source.is_symlink():
+            continue
         destination = target / relative
         destination.parent.mkdir(parents=True, exist_ok=True)
         if source.is_symlink():

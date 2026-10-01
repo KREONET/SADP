@@ -53,8 +53,9 @@ relay = spec["network"].get("identityProviderRelay") or {}
 hosts = spec["network"]["squid"].get("identityProviderDomains") or []
 issuer = str((spec.get("identityProvider") or {}).get("issuer") or "")
 print("RELAY_ENABLED=" + shlex.quote(str(bool(relay.get("enabled"))).lower()))
-print("RELAY_ADDRESS=" + shlex.quote(str(relay.get("address") or "")))
-print("RELAY_PORT=" + shlex.quote(str(relay.get("port") or "")))
+# 이전 계약({enabled: true}만 있음)은 render-network.py와 같은 기본값을 쓴다.
+print("RELAY_ADDRESS=" + shlex.quote(str(relay.get("address") or spec["network"]["squid"]["internalIP"])))
+print("RELAY_PORT=" + shlex.quote(str(relay.get("port") or 443)))
 print("RELAY_HOSTS=" + shlex.quote(" ".join(hosts)))
 # issuer는 정규화하지 않는다. discovery URL만 끝 '/'를 떼고 만든다.
 print("ISSUER_HOST=" + shlex.quote(urlsplit(issuer).hostname or ""))

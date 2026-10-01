@@ -251,9 +251,11 @@ def suggest_network(values: dict[str, str]) -> set[str]:
 
 
 def read_cluster(*arguments: str) -> dict:
-    # 사용자 셸의 다른 kubeconfig를 따라가면 엉뚱한 클러스터의 주소를 저장할 수 있다.
-    kubectl = pathlib.Path("/var/lib/rancher/rke2/bin/kubectl")
-    kubeconfig = pathlib.Path("/etc/rancher/rke2/rke2.yaml")
+    # 사용자 셸의 다른 kubeconfig(KUBECONFIG)를 따라가면 엉뚱한 클러스터의 주소를 저장할 수 있다.
+    # 그래서 RKE2 고정 경로만 쓰고, 덮어쓰기는 전용 변수로만 받는다. 회귀 시험은 이 변수로 조회를
+    # 끄거나 가짜 클러스터를 넣어, 시험을 돌린 호스트가 RKE2 노드인지에 결과가 흔들리지 않게 한다.
+    kubectl = pathlib.Path(os.environ.get("SADP_WIZARD_KUBECTL") or "/var/lib/rancher/rke2/bin/kubectl")
+    kubeconfig = pathlib.Path(os.environ.get("SADP_WIZARD_KUBECONFIG") or "/etc/rancher/rke2/rke2.yaml")
     if not kubectl.is_file() or not kubeconfig.is_file():
         return {}
     try:
@@ -745,6 +747,13 @@ def installer_command(args: argparse.Namespace, output: pathlib.Path) -> list[st
     return command
 
 
+def apply_defaults(values: dict[str, str]) -> None:
+    """옛 template/site.env에 없는 선택 key의 기본값. 질문 전에 채워야 boolean 질문이 빈 값을 받지 않는다."""
+    values.setdefault("CLUSTER_MODE", "multi")
+    values.setdefault("SADP_SSH_USER", "root")
+    values.setdefault("WORKER_INTERNAL_ONLY", "false")
+
+
 def parse_args() -> argparse.Namespace:
     parser = argparse.ArgumentParser(
         description="질문과 답변으로 site.env를 만들고 SADP 통합 설치 phase를 실행합니다."
@@ -789,9 +798,7 @@ def main() -> int:
         return 1
     content = source.read_text(encoding="utf-8")
     values = parse_values(content)
-    values.setdefault("CLUSTER_MODE", "multi")
-    values.setdefault("SADP_SSH_USER", "root")
-    values.setdefault("WORKER_INTERNAL_ONLY", "false")
+    apply_defaults(values)
 
     print("SADP 대화형 설치 준비")
     print("- Enter: 현재값 유지, - 입력: 선택값 비우기")

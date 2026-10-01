@@ -5,6 +5,7 @@ from __future__ import annotations
 
 import argparse
 import importlib.util
+import os
 import pathlib
 import subprocess
 import sys
@@ -23,6 +24,11 @@ sadp_test_fixture.reexec_in_fixture(__file__)
 
 ROOT = pathlib.Path(__file__).resolve().parents[2]
 SCRIPT = ROOT / "scripts/install/sadp-install-wizard.py"
+# 시험을 RKE2 노드에서 돌리면 마법사가 실제 클러스터의 노드·CIDR을 읽어 질문 흐름이 바뀐다.
+# 하위 프로세스까지 상속되도록 클러스터 조회를 없는 경로로 고정한다. 조회를 보는 사례는
+# read_cluster를 직접 patch한다.
+os.environ["SADP_WIZARD_KUBECTL"] = "/nonexistent/sadp-wizard-test-kubectl"
+os.environ["SADP_WIZARD_KUBECONFIG"] = "/nonexistent/sadp-wizard-test-kubeconfig"
 spec = importlib.util.spec_from_file_location("sadp_install_wizard", SCRIPT)
 assert spec and spec.loader
 wizard = importlib.util.module_from_spec(spec)
@@ -143,7 +149,10 @@ check("SW-07 single 선택 시 예제 worker 목록 제거", single["WORKER_NODE
 check("SW-08 multi는 worker 질문 유지", wizard.should_ask(worker_question, dict(values, CLUSTER_MODE="multi")))
 
 def answers(overrides: dict[str, str], *, quick: bool = False) -> str:
+    # 마법사와 같은 기본값을 거친다. template에 선택 key가 없을 때 빈 답("-")을 보내면
+    # true/false 질문이 재질문하며 이후 답이 한 칸씩 밀린다(옛 site.env.example에서 실제로 발생).
     current = dict(values)
+    wizard.apply_defaults(current)
     lines = []
     for _, questions in wizard.SECTIONS:
         network_defaults = wizard.network_default_questions(questions, current) if quick else []
@@ -161,6 +170,11 @@ def answers(overrides: dict[str, str], *, quick: bool = False) -> str:
                 current[question.key] = value
     return "\n".join(lines) + "\n"
 
+
+legacy = {key: value for key, value in values.items() if key != "WORKER_INTERNAL_ONLY"}
+wizard.apply_defaults(legacy)
+check("SW-08b 옛 template에 없는 선택 key도 질문 전에 기본값으로 채움",
+      legacy["WORKER_INTERNAL_ONLY"] == "false" and legacy["CLUSTER_MODE"] and legacy["SADP_SSH_USER"])
 
 with tempfile.TemporaryDirectory() as raw_directory:
     output = pathlib.Path(raw_directory) / "site.env"
@@ -370,8 +384,12 @@ with patch.object(wizard, "automatic_network_defaults", return_value={}), \
     wizard.collect_answers(dict(network_values), advanced=False, detect=True)
 check("SW-37 실제 질문 루프에서도 수락한 클러스터 값을 다시 묻지 않음",
       not set(discovered).intersection(call.args[0].key for call in remaining.call_args_list))
-with patch.object(wizard.pathlib.Path, "is_file", return_value=True), \
+with patch.dict(os.environ), \
+     patch.object(wizard.pathlib.Path, "is_file", return_value=True), \
      patch.object(wizard.subprocess, "run", return_value=subprocess.CompletedProcess([], 0, '{}')) as run:
+    # 이 사례는 덮어쓰기 변수가 없을 때의 고정 RKE2 경로를 본다.
+    os.environ.pop("SADP_WIZARD_KUBECTL", None)
+    os.environ.pop("SADP_WIZARD_KUBECONFIG", None)
     wizard.read_cluster("nodes")
 check("SW-38 고정 RKE2 kubeconfig·읽기 전용 get·시간 제한 사용",
       run.call_args.args[0] == ["/var/lib/rancher/rke2/bin/kubectl", "--kubeconfig",
