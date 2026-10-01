@@ -209,6 +209,12 @@ if [[ ${PHASE} == node || ${PHASE} == all ]]; then
     --internal-ip "${NODE_IP}" --guarded-interfaces "${GUARDED_INTERFACES}")
   [[ ${internal_only} != true ]] || nic_check+=(--internal-only)
   step "노드 설정 변경 전 NIC 확인" "${nic_check[@]}"
+  # Envoy Gateway·Portal은 HTTPS_PROXY를 쓰지 않는다. 이 노드에 IdP로 가는 route가 없는데 relay도
+  # 꺼져 있으면 설치가 끝난 뒤 SecurityPolicy 미수락으로만 드러난다. 노드 설정 전에 멈춘다.
+  # 읽기 전용(route 조회)이라 계획 모드에서도 실행한다.
+  note "외부 IdP 경로 확인(relay 꺼짐일 때 이 노드의 route)"
+  python3 scripts/lib/diagnose.py node-idp-route \
+    || die "IdP 경로 없음. 위 [NEXT]대로 relay를 켜거나 이 노드에 IdP route를 만든 뒤 재실행"
 
   # 이후 containerd/Helm/이미지 작업이 모두 계약 프록시를 전제로 한다. Squid 담당 노드에서는
   # 다른 node 설정보다 먼저 프록시를 올려야 원툴 설치 순서가 env 검증 → egress 준비 → 소비자
@@ -466,10 +472,16 @@ if [[ ${SADP_DEPLOY_APPS} == true ]]; then
     require_input_file "${SADP_REGISTRY_PULL_DOCKERCONFIG}" "Registry pull Docker config"
     require_input_file "${SADP_REGISTRY_PUSH_DOCKERCONFIG}" "Registry push Docker config"
   fi
-  if [[ ${SADP_INSTALL_ALL:-false} == true ]]; then
+  # 이 단계를 all에서만 돌리면 개별 cluster phase가 token 없이 앱을 배포해 Portal이 503으로만
+  # 보인다(실제 사이트 장애). token 파일이 지정돼 있으면 cluster phase도 같은 값을 다시 넣는다.
+  if [[ ${SADP_INSTALL_ALL:-false} == true || -n ${SADP_PORTAL_FORGEJO_TOKEN_FILE:-} ]]; then
+    [[ ${APPLY} != true ]] || require_input_file \
+      "${SADP_PORTAL_FORGEJO_TOKEN_FILE:?통합 설치 Portal token 파일 필요}" "Portal Forgejo token 파일"
     step "Portal Forgejo 봇 자격증명을 OpenBao에 공급" \
       bash scripts/cluster/install-portal-backend.sh --token-only \
         --forgejo-token-file "${SADP_PORTAL_FORGEJO_TOKEN_FILE:?통합 설치 Portal token 파일 필요}"
+  else
+    note "SADP_PORTAL_FORGEJO_TOKEN_FILE 미지정: Forgejo 봇 token이 OpenBao에 이미 있어야 한다(없으면 Portal 503)"
   fi
   step "기본 앱과 Portal 배포" bash scripts/cluster/deploy-testbed-apps.sh \
     --registry-pull-dockerconfig "${SADP_REGISTRY_PULL_DOCKERCONFIG}" \

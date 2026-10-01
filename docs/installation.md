@@ -3,6 +3,28 @@
 대상은 기존 단일 서버 또는 1+N 노드 RKE2 위에 SADP를 설치하는 플랫폼 관리자입니다. SADP는 운영체제와 RKE2 자체를
 설치하지 않습니다.
 
+## 처음 설치 10단계
+
+처음 설치한다면 이 표만 따라가면 됩니다. 단계마다 성공 확인 명령이 하나 있고, 실패하면 오른쪽 절을
+봅니다. 어디서 막혔는지 모르겠으면 언제든 `sudo bash ./sadp --doctor --env-file /etc/sadp/site.env`를
+실행합니다. 처음 막힌 단계 하나와 다음 명령만 출력하며 클러스터를 바꾸지 않습니다.
+
+| # | 할 일 | 성공 확인 | 실패하면 |
+| --- | --- | --- | --- |
+| 1 | RKE2 노드와 도구 확인 | `sudo /var/lib/rancher/rke2/bin/kubectl --kubeconfig /etc/rancher/rke2/rke2.yaml get nodes` 모두 `Ready` | [1. 선행 조건](#1-선행-조건-확인) |
+| 2 | `/etc/sadp/site.env` 작성 | `python3 scripts/site/configure-site.py --env-file /etc/sadp/site.env --check`가 `[OK]` | [2. site.env](#2-sitenv와-root-전용-secret-파일-준비), [사이트 설정](site-configuration.md) |
+| 3 | 외부 IdP 값 대조 | `bash ./sadp --verify-idp --env-file /etc/sadp/site.env`가 `[OK]` | [외부 인증 연결](site-configuration.md#외부-인증-연결) |
+| 4 | 렌더·시험·commit/push | `bash ./sadp --test` 종료 코드 0 | [3. render](#3-render-계획--생성--테스트--commitpush) |
+| 5 | Squid 노드 적용(Squid, 필요 시 IdP relay) | `sudo bash ./sadp --install-squid --check` (relay를 켰으면 `--install-idp-relay --check`) | [5. Squid 노드](#5-squid-담당-노드부터-node-phase-적용), [IdP relay](network-egress.md#외부-idp-sni-relay) |
+| 6 | 나머지 노드 적용·재시작 | 1단계 명령에서 모든 노드 `Ready` | [6. 노드 재시작](#6-나머지-노드-적용과-수동-재시작) |
+| 7 | cluster phase | `sudo bash ./sadp --doctor --env-file /etc/sadp/site.env`가 5단계(OpenBao)까지 `[OK]` | [7. cluster phase](#7-control-plane-cluster-phase) |
+| 8 | staging → production TLS | `sudo bash ./sadp --verify-d5` | [8. TLS](#8-staging--production-tls-진행값-반영), [상태 기록 값](site-configuration.md#상태-기록-값은-설정이-아니다) |
+| 9 | 서비스 초기화·앱 배포 | `sudo bash ./sadp --doctor --env-file /etc/sadp/site.env`가 `모든 단계 정상` | [9. 서비스·앱](#9-서비스-초기화앱-배포), [설치가 멈췄을 때](#설치가-멈췄을-때) |
+| 10 | acceptance | `sudo bash ./sadp --verify-testbed` 종료 코드 0 | 각 `[FAIL]` 아래 `[NEXT]` 줄 |
+
+`verify-testbed`와 각 preflight는 `[FAIL]`마다 `[CAUSE]`(분류된 원인)와 `[NEXT]`(다음 명령)를
+붙입니다. 이 출력에는 Secret 값, 로그 원문, URL, IP가 들어가지 않으므로 그대로 공유해도 됩니다.
+
 ## 전체 흐름
 
 개별 phase 실행 기준입니다. 노드 설정 뒤 재시작과 Ready 확인을 마친 후 클러스터 단계로 넘어갑니다.
@@ -988,11 +1010,56 @@ internal 앱에 외부 Route가 없는지 확인합니다.
 Secret 본문은 인수인계 문서에 복사하지 않습니다. 설치 뒤 운영은
 [관리자 가이드](administrator-guide.md)를 따릅니다.
 
+## 사이트 저장소 운영
+
+사이트 저장소는 원본 SADP 저장소의 코드에 사이트 생성물(계약, `platform/**`, `apps/**/values-*.yaml`)을
+더한 branch입니다. 생성물은 손으로 고치지 않고 사이트 `site.env`로 다시 만듭니다.
+
+최초 한 번 원본을 upstream remote로 둡니다.
+
+```bash
+git remote add upstream https://github.com/KREONET/SADP.git
+git fetch upstream
+```
+
+원본 변경을 받을 때마다:
+
+```bash
+git fetch upstream
+git merge upstream/main
+python3 scripts/site/configure-site.py --env-file /etc/sadp/site.env --write --allow-dirty
+bash ./sadp --test
+git diff -- contracts apps argocd platform rke     # 사이트 값이 바뀐 것이 맞는지 검토
+git commit -am "merge upstream and re-render site outputs"
+git push
+```
+
+충돌 해결 규칙:
+
+- **코드(scripts/, charts/, docs/ 등)**: upstream 쪽을 택합니다. 사이트에서 고친 코드는 원본에 먼저 올립니다.
+- **생성물**: 어느 쪽이든 고르고 위 `--write`로 덮어씁니다. 손으로 병합하지 않습니다.
+- **`environments/site.env.example`**: upstream 쪽을 택하고, 새로 생긴 key를 `/etc/sadp/site.env`에 옮깁니다.
+
+`--write` 결과에 `platform/network/idp-relay/haproxy.cfg`, `platform/network/squid/squid.conf`,
+`platform/dns/rke2-coredns-config.yaml` 변경이 있으면 클러스터에도 반영합니다.
+
+```bash
+sudo bash ./sadp --install-squid --skip-package-install    # Squid 설정이 바뀐 경우(Squid 호스트)
+sudo bash ./sadp --install-idp-relay --apply               # relay 설정이 바뀐 경우(Squid 호스트)
+sudo bash ./sadp --doctor --env-file /etc/sadp/site.env    # 반영 후 단계 확인
+sudo bash ./sadp --verify-testbed
+```
+
 ## 설치가 멈췄을 때
 
 | 증상 | 의미 | 다음 확인 |
 | --- | --- | --- |
+| 어디서 막혔는지 모름 | 여러 단계가 함께 실패 | `sudo bash ./sadp --doctor --env-file /etc/sadp/site.env`가 처음 막힌 단계와 `[NEXT]`를 출력 |
 | 예제 domain/IP 적용 거부 | 문서용 값이 남음 | [사이트 설정](site-configuration.md) |
+| Portal 503 / `deployment-requests -> 503` | ExternalSecret에 `FORGEJO_BOT_TOKEN`이 없음 | `sudo bash scripts/cluster/install-portal-backend.sh --token-only --forgejo-token-file <SADP_PORTAL_FORGEJO_TOKEN_FILE>` |
+| `Portal 외부 OIDC 인증 흐름` FAIL, `[CAUSE] ... fetch-failed` | Portal Node fetch가 proxy를 쓰지 않아 IdP에 못 닿음 | `IDP_RELAY_ENABLED=true` 후 render → relay 설치 → `--deploy-apps`(Portal NetworkPolicy에 relay:443 추가) |
+| `rollout이 멈춤` + `taint node-role.kubernetes.io/control-plane` | 새 Pod가 control-plane taint로 Pending, 옛 Pod가 트래픽을 받아 겉으로 정상 | direct 모드 Envoy는 `render-exposure.py` 재렌더(toleration 포함) 후 노출 리소스 동기화 |
+| `이 노드에 외부 IdP로 가는 route가 없는데 IDP_RELAY_ENABLED=false` | 내부망 전용 worker | site.env `IDP_RELAY_ENABLED=true` → render → node phase 재실행 |
 | `IdP discovery 불일치 필드: <FIELD>` | site.env IdP 값이 실제 discovery와 다름(끝 `/` 포함) | discovery 문서에서 해당 필드를 그대로 복사해 site.env를 고친 뒤 `bash ./sadp --verify-idp --env-file <SITE_ENV>` |
 | `host differs from the OIDC_ISSUER host` / `contains the ..._CLIENT_ID value` | endpoint 붙여넣기 오류(오프라인 검출) | 해당 변수를 discovery 문서에서 다시 복사; 실제 다른 IdP 호스트면 `OIDC_ENDPOINT_HOSTS` |
 | `IdP discovery: ... 연결 실패` / `CONNECT를 거부` | 설치 호스트에서 IdP에 닿지 못함 | site.env `HTTPS_PROXY`와 Squid allowlist 확인. 폐쇄망이면 `--skip-idp-verify`(`[WARN]` 기록) |

@@ -230,6 +230,12 @@ render_apply_prerequisites secure-demo apps/secure-demo/values-beta.yaml
 render_apply_prerequisites portal-lite apps/portal-lite/values-beta.yaml
 
 bash scripts/node/install-squid-egress.sh --check
+# Envoy Gateway·Portal은 Squid를 쓰지 않으므로 relay가 켜져 있으면 relay drift도 여기서 멈춘다.
+source scripts/lib/diagnose.sh
+if [[ $(diag_relay_enabled) == true ]]; then
+  bash scripts/node/install-idp-relay.sh --check \
+    || die "IdP relay 확인 실패. Squid 호스트에서 sudo bash ./sadp --install-idp-relay --apply 후 재실행"
+fi
 kctl apply -f platform/network/egress-policies.yaml >/dev/null
 
 security_policy_accepted() {
@@ -251,7 +257,10 @@ if ! security_policy_accepted; then
     sleep 2
   done
 fi
-security_policy_accepted || die "secure-demo OIDC SecurityPolicy 미수락"
+if ! security_policy_accepted; then
+  diag_security_policy "${WORKLOAD_NAMESPACE}" secure-demo-oidc || true
+  die "secure-demo OIDC SecurityPolicy 미수락(위 [CAUSE]/[NEXT] 참고)"
+fi
 
 wait_external_secret_ready "${WORKLOAD_NAMESPACE}" secure-demo-runtime 5m
 wait_external_secret_ready "${WORKLOAD_NAMESPACE}" secure-demo-oidc-client 5m

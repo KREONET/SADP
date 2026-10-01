@@ -61,6 +61,7 @@ install-portal-backend|bash|scripts/cluster/install-portal-backend.sh|Portal Lit
 configure-argocd-repo|bash|scripts/cluster/configure-argocd-repo.sh|Argo CD repository Secret
 sync-images|bash|scripts/cluster/sync-external-images.sh|서드파티 이미지를 모든 노드에 동기화
 GROUP:verify — 검수
+doctor|bash|scripts/verify/doctor.sh|읽기 전용: 설치 단계를 순서대로 보고 처음 막힌 단계와 다음 명령만 출력
 verify-testbed|bash|scripts/verify/verify-testbed.sh|핵심 acceptance. control-plane 노드 위에서
 inspect-machine-auth-log|bash|scripts/verify/inspect-machine-auth-access-log.sh|기계 인증 요청의 안전한 Envoy 판정 필드 추출
 verify-d5|bash|scripts/verify/verify-d5.sh|cert-manager, wildcard TLS, HTTP->HTTPS

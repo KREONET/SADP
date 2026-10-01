@@ -84,6 +84,7 @@ SECTIONS: tuple[tuple[str, tuple[Question, ...]], ...] = (
             Question("SQUID_INTERNAL_IP", "Squid 담당 노드 내부 IPv4"),
             Question("SQUID_CLIENT_CIDRS", "Squid client CIDR 목록"),
             Question("EXTRA_PACKAGE_DOMAINS", "추가 허용 package domain(CSV, 없으면 -)", optional=True),
+            Question("IDP_RELAY_ENABLED", "Envoy Gateway·Portal용 외부 IdP SNI relay 사용", ("true", "false")),
         ),
     ),
     (
@@ -521,6 +522,7 @@ def collect_answers(values: dict[str, str], *, advanced: bool, detect: bool) -> 
             if detect and not keep_network and question.key == "GUARDED_INTERFACES":
                 skipped.update(suggest_cluster_network(values))
             if question.key not in skipped and should_ask(question, values):
+                propose_topology_default(question, values)
                 values[question.key] = answer(question, values.get(question.key, ""))
 
 
@@ -747,11 +749,25 @@ def installer_command(args: argparse.Namespace, output: pathlib.Path) -> list[st
     return command
 
 
+def propose_topology_default(question: Question, values: dict[str, str]) -> None:
+    """앞 답변으로 알 수 있는 네트워크 사실을 다음 질문의 기본값에 반영한다.
+
+    worker가 내부망 전용이면 Envoy Gateway·Portal(HTTPS_PROXY를 쓰지 않음)이 외부 IdP에 닿을
+    경로가 relay뿐이다. 사이트에서 이 조합을 false로 두어 SecurityPolicy가 거부된 일이 있었다.
+    값은 바꾸지 않고 기본값만 제안하며 사용자가 그대로 확인하거나 바꾼다.
+    """
+    if (question.key == "IDP_RELAY_ENABLED" and values.get("WORKER_INTERNAL_ONLY") == "true"
+            and values.get("IDP_RELAY_ENABLED", "false") != "true"):
+        print("  worker가 내부망 전용이라 외부 IdP 경로는 relay뿐입니다. 기본값을 true로 제안합니다.")
+        values["IDP_RELAY_ENABLED"] = "true"
+
+
 def apply_defaults(values: dict[str, str]) -> None:
     """옛 template/site.env에 없는 선택 key의 기본값. 질문 전에 채워야 boolean 질문이 빈 값을 받지 않는다."""
     values.setdefault("CLUSTER_MODE", "multi")
     values.setdefault("SADP_SSH_USER", "root")
     values.setdefault("WORKER_INTERNAL_ONLY", "false")
+    values.setdefault("IDP_RELAY_ENABLED", "false")
 
 
 def parse_args() -> argparse.Namespace:

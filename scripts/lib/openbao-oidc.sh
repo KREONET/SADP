@@ -209,6 +209,8 @@ oidc_classify_exec_failure() {
 # 이름과 revision만 출력하고 Pod를 건드리지 않는다. 항상 0을 반환한다(경고 전용).
 openbao_report_ondelete_revision_lag() {
   local namespace=${1:-openbao} run_dir lagging watched
+  # doctor가 경고를 "막힌 단계"로 판정할 수 있게 결과를 전역 변수로도 남긴다.
+  OPENBAO_REVISION_LAGGING=false
   run_dir=$(mktemp -d "${TMPDIR:-/tmp}/sadp-ondelete.XXXXXX")
   chmod 0700 "${run_dir}"
   if ! kctl get statefulset -n "${namespace}" -o json >"${run_dir}/sts.json" 2>/dev/null \
@@ -242,6 +244,7 @@ openbao_report_ondelete_revision_lag() {
     ok "${namespace} OnDelete StatefulSet Pod가 모두 최신 revision"
     return 0
   fi
+  OPENBAO_REVISION_LAGGING=true
   while read -r sts pods; do
     printf '[WARN] %s/%s: updateStrategy=OnDelete라 Pod %s가 옛 revision으로 남음\n' \
       "${namespace}" "${sts}" "${pods}" >&2

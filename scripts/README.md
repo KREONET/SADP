@@ -149,6 +149,7 @@ cluster apply는 외부 OIDC client secret이 root-only 파일로 준비됐는�
 
 | 그룹 | 명령 |
 | --- | --- |
+| 처음 막힌 단계 하나와 다음 명령(읽기 전용) | `--doctor --env-file <SITE_ENV>` |
 | 핵심 검수 | `--verify-testbed` |
 | TLS/Gateway | `--verify-d5` |
 | Rancher | `--verify-d6` |

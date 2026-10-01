@@ -48,13 +48,15 @@ check_installed_config() {
     return 1
   }
   cmp -s platform/network/squid/squid.conf /etc/squid/squid.conf || {
-    echo "[FAIL] 설치된 Squid 설정이 계약 생성물과 다름. --check 없이 다시 적용 필요" >&2
+    echo "[FAIL] 설치된 Squid 설정이 계약 생성물과 다름" >&2
+    echo "[NEXT] sudo bash ./sadp --install-squid --skip-package-install (생성물을 다시 설치하고 reload)" >&2
     return 1
   }
   # 저장소 파일만 parse 하면 daemon 이 오래된 설정으로 떠 있어도 [OK]가 된다.
   squid -k parse -f /etc/squid/squid.conf
   systemctl is-active --quiet squid || {
     echo "[FAIL] squid service가 active가 아님" >&2
+    echo "[NEXT] sudo systemctl status squid 로 사유를 보고 sudo bash ./sadp --install-squid --skip-package-install" >&2
     return 1
   }
 }

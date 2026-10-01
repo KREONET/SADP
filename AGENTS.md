@@ -231,6 +231,7 @@ evidence/       검수 산출물
 5. 셸은 전부 `#!/usr/bin/env bash` + `set -euo pipefail`이고 `bash`/`sudo bash`로 호출된다. `${var,,}` 같은 bash 4+ 문법을 써도 되지만, **이 저장소의 대화형 셸은 zsh라 손으로 테스트할 때는 `bash -c`로 감싸라.**
 6. 문서를 고쳤으면 `docs/` 안의 실행 예시가 실제 플래그와 맞는지 확인해라. 설치 문서의 명령은 그대로 복사해 쓰는 용도다.
 7. 스펙이 모호하면 추측하지 말고 먼저 질문해라.
+8. **새 `[FAIL]`에는 `[NEXT]`(다음 명령) 한 줄 이상을 붙여라.** 증상만 말하는 메시지 때문에 사이트 장애 진단이 늦었다. Kubernetes 상태·로그에서 원인을 고르는 분류는 `scripts/lib/diagnose.py` 한 곳에 두고(`diagnose.sh` wrapper), verify-testbed·preflight·`--doctor`가 공유한다. 분류 출력에는 리소스·key 이름과 reason만 쓰고 Secret 값, 로그 원문, URL, IP는 쓰지 않는다. 새 분류는 `scripts/tests/diagnose-test.py`에 실제 증상 문자열 fixture로 시험을 붙인다.
 
 ---
 

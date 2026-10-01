@@ -8,6 +8,8 @@ OPENBAO_ADDR=${OPENBAO_ADDR:-https://openbao.openbao.svc.cluster.local:8200}
 OPENBAO_CACERT=${OPENBAO_CACERT:-/openbao/tls/ca.crt}
 OPENBAO_ACTIVE_SERVICE=${OPENBAO_ACTIVE_SERVICE:-openbao-active}
 OPENBAO_ACTIVE_WAIT_ATTEMPTS=${OPENBAO_ACTIVE_WAIT_ATTEMPTS:-60}
+# ExternalSecret 실패를 빠진 key 이름과 주입 명령으로 분류한다(값·원문 비출력).
+source "$(dirname "${BASH_SOURCE[0]}")/diagnose.sh"
 
 openbao_print_unseal_commands() {
   cat >&2 <<'EOF'
@@ -168,6 +170,8 @@ external_secret_diagnose() {
   printf '  Target Secret: %s/%s exists=%s\n' \
     "${namespace}" "${EXTERNAL_SECRET_TARGET_NAME}" "${target_exists}" >&2
   printf '  Secret data는 읽거나 출력하지 않았음\n' >&2
+  # Forgejo token 주입 단계를 건너뛴 사이트에서 Portal이 503으로만 보였다. 빠진 key를 단계로 잇는다.
+  diag_external_secret "${namespace}" "${name}" || true
   external_secret_print_recovery "${namespace}" "${name}"
 }
 

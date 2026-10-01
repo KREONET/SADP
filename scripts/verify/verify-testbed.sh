@@ -4,6 +4,9 @@ set -euo pipefail
 source "$(dirname "$0")/../lib/testbed-common.sh"
 source "$(dirname "$0")/../lib/machine-auth.sh"
 source "$(dirname "$0")/../lib/openbao-oidc.sh"
+# [FAIL]마다 원인 분류와 [NEXT] 다음 명령을 붙인다. 증상만 보이면 처음 설치하는 사람이
+# 어디부터 볼지 알 수 없다. 분류기는 값·URL·IP를 출력하지 않는다.
+source "$(dirname "$0")/../lib/diagnose.sh"
 
 require_root
 require_command curl
@@ -11,7 +14,13 @@ require_command python3
 require_command jq
 require_command sha256sum
 fail=0
-check() { if "$@"; then ok "$*"; else printf '[FAIL] %s\n' "$*" >&2; fail=1; fi; }
+check() {
+  if "$@"; then ok "$*"; else
+    printf '[FAIL] %s\n' "$*" >&2
+    diag_next "bash ./sadp --doctor --env-file <SITE_ENV> 로 처음 막힌 단계를 확인하라"
+    fail=1
+  fi
+}
 WORKLOAD_NAMESPACE=$(workload_namespace) || exit 1
 
 mapfile -t contract_values < <(python3 - <<'PY'
@@ -68,7 +77,10 @@ app_group_max_services=${contract_values[14]:?AppGroup 서비스 상한이 없�
 public_ip_node=${contract_values[15]}
 hello_host=${contract_values[16]:?Hello values에 exposure.host가 없다}
 
-check_cluster_topology || fail=1
+check_cluster_topology || {
+  diag_next "계약 network.nodeAddresses와 kubectl get nodes의 Ready·이름을 맞춰라(노드 추가·교체 후 site.env WORKER_NODES 갱신 → render)"
+  fail=1
+}
 
 # 계약의 Pod CIDR은 RKE2 설치 뒤 자동으로 고쳐지지 않는다. 실제 Node 할당 대역과
 # Squid client ACL을 함께 보지 않으면 노드 curl만 성공하고 Pod CONNECT는 403이 된다.
@@ -82,6 +94,7 @@ if kctl get nodes -o json \
         "${live_kubernetes_service_ip}" "${live_cluster_dns_ip}"; then
   ok "실제 Pod/Service CIDR, 계약, Squid client ACL 일치"
 else
+  diag_next "site.env POD_CIDRS/SERVICE_CIDRS/SQUID_CLIENT_CIDRS를 실제 클러스터 값으로 고친 뒤 configure-site --write → --install-squid"
   fail=1
 fi
 
@@ -98,7 +111,8 @@ for pair in "internal ${internal_interface}" "external ${external_interface}"; d
   [[ -n ${name} ]] || continue
   ip link show "${name}" >/dev/null 2>&1 \
     && ok "${role} interface 존재: ${name}" \
-    || { printf '[FAIL] %s interface 없음: %s\n' "${role}" "${name}" >&2; fail=1; }
+    || { printf '[FAIL] %s interface 없음: %s\n' "${role}" "${name}" >&2
+       diag_next "ip -br link 로 실제 NIC 이름을 보고 site.env INTERNAL_INTERFACE/EXTERNAL_INTERFACE를 맞춘 뒤 render"; fail=1; }
 done
 
 if [[ -s ${node_dropin} ]]; then
@@ -106,15 +120,18 @@ if [[ -s ${node_dropin} ]]; then
   ip -o -4 addr show dev "${internal_interface}" 2>/dev/null \
     | awk '{print $4}' | cut -d/ -f1 | grep -qx "${node_ip}" \
     && ok "node-ip가 internal interface에 바인딩됨: ${internal_interface}" \
-    || { printf '[FAIL] node-ip(%s)가 %s에 없음\n' "${node_ip}" "${internal_interface}" >&2; fail=1; }
+    || { printf '[FAIL] node-ip(%s)가 %s에 없음\n' "${node_ip}" "${internal_interface}" >&2
+       diag_next "sudo bash ./sadp --install --env-file <SITE_ENV> --phase node 계획으로 network identity를 다시 확인하라"; fail=1; }
 else
   printf '[FAIL] RKE2 내부망 drop-in 없음: %s\n' "${node_dropin}" >&2
+  diag_next "sudo bash ./sadp --install --env-file <SITE_ENV> --phase node 계획을 보고 --apply"
   fail=1
 fi
 
 ip -4 route show default | grep -Eq "(^| )dev ${external_interface}( |$)" \
   && ok "default route가 external interface에 있음: ${external_interface}" \
-  || { printf '[FAIL] default route가 %s에 없음\n' "${external_interface}" >&2; fail=1; }
+  || { printf '[FAIL] default route가 %s에 없음\n' "${external_interface}" >&2
+       diag_next "ip -4 route 로 default route NIC을 확인하고 site.env EXTERNAL_INTERFACE를 실제 값으로 맞춰라"; fail=1; }
 
 # guard unit은 fail-open이다. Before= 는 순서만 잡고 의존은 만들지 않아, 이 unit이
 # 실패해도 rke2는 그대로 뜨고 그때 관리 포트는 열려 있다. 그래서 unit 상태와 실제
@@ -122,7 +139,8 @@ ip -4 route show default | grep -Eq "(^| )dev ${external_interface}( |$)" \
 if [[ -s ${guard_unit} ]]; then
   systemctl is-active --quiet sadp-rke2-interface-guard.service \
     && ok "interface guard unit active" \
-    || { echo '[FAIL] sadp-rke2-interface-guard.service 가 active 가 아니다(관리 포트가 열려 있을 수 있음)' >&2; fail=1; }
+    || { echo '[FAIL] sadp-rke2-interface-guard.service 가 active 가 아니다(관리 포트가 열려 있을 수 있음)' >&2
+       diag_next "sudo systemctl status sadp-rke2-interface-guard.service 로 실패 사유를 보고 --install-interface-guard 계획 → --apply"; fail=1; }
   # 계약의 전체 차단 대상(external/guarded)과 정확한 포트로 기존 check 경로를
   # 재사용한다. check_family가 INPUT 연결과 각 DROP 규칙을 IPv4/IPv6 모두 검사하므로,
   # SLAAC만 받은 guarded NIC도 검수에서 빠지지 않는다.
@@ -138,10 +156,12 @@ if [[ -s ${guard_unit} ]]; then
     ok "계약의 모든 non-internal NIC에서 IPv4/IPv6 관리 포트 차단"
   else
     echo '[FAIL] interface guard 규칙이 현재 계약과 일치하지 않음' >&2
+    diag_next "sudo bash ./sadp --install-interface-guard 계획 → --apply 로 계약 규칙을 다시 적용하라"
     fail=1
   fi
 else
   printf '[FAIL] interface guard unit 없음: %s\n' "${guard_unit}" >&2
+  diag_next "sudo bash ./sadp --install --env-file <SITE_ENV> --phase node 계획을 보고 --apply"
   fail=1
 fi
 
@@ -157,12 +177,16 @@ if [[ -s ${guard_unit} ]]; then
     actual=$(cat "/sys/class/net/${name}/address" 2>/dev/null || true)
     [[ ${recorded,,} == "${actual,,}" ]] \
       && ok "${role} interface MAC이 guard unit 기록과 일치: ${name}" \
-      || { printf '[FAIL] %s interface MAC drift: unit=%s actual=%s\n' "${role}" "${recorded}" "${actual}" >&2; fail=1; }
+      || { printf '[FAIL] %s interface MAC drift: unit=%s actual=%s\n' "${role}" "${recorded}" "${actual}" >&2
+       diag_next "재부팅으로 NIC 이름이 바뀌었는지 확인하라. 이름 고정은 systemd.link(docs/network-egress.md 3절)"; fail=1; }
   done
 fi
 kctl get gateway -n "${gateway_namespace}" "${gateway_name}" -o json | \
   jq -e '.status.conditions[] | select(.type=="Programmed" and .status=="True")' >/dev/null \
-  && ok "Envoy Gateway Programmed" || { echo '[FAIL] Gateway Programmed 아님' >&2; fail=1; }
+  && ok "Envoy Gateway Programmed" || { echo '[FAIL] Gateway Programmed 아님' >&2
+       diag_next "kubectl -n ${gateway_namespace} get gateway ${gateway_name} -o jsonpath='{.status.listeners}' 로 listener condition을 보라"
+       diag_deployment envoy-gateway-system envoy-gateway \
+           && diag_next "재확인 시점에는 정상이다. 다시 실행해 재현되는지 확인하라"; fail=1; }
 
 # RKE2 기본 ingress-nginx는 hostPort 80/443을 노드마다 선점한다. 살아 있으면 공인 IP로 온
 # 요청이 Envoy 대신 nginx로 가서 기본 backend 404와 fake 인증서를 돌려준다.
@@ -173,6 +197,7 @@ else
   echo '[FAIL] rke2-ingress-nginx-controller 가 살아 있다(노드 80/443 선점).' >&2
   echo '       /etc/rancher/rke2/config.yaml 의 disable 에 rke2-ingress-nginx 를 넣고' >&2
   echo '       rke2-server 를 재시작한다. 기준은 rke/control-node/config.yaml 이다.' >&2
+  diag_next "sudo bash ./sadp --install-node-config --role server 계획을 보고 유지보수 창에서 적용·재시작"
   fail=1
 fi
 
@@ -180,23 +205,27 @@ if bash scripts/verify/verify-squid-egress.sh; then
   ok "Squid npm/pip/apt allowlist 및 일반 목적지 차단"
 else
   echo '[FAIL] Squid egress acceptance' >&2
+  diag_next "Squid 호스트에서 sudo bash ./sadp --install-squid --check, 설정 drift면 sudo bash ./sadp --install-squid --skip-package-install"
   fail=1
 fi
 controller_proxy=$(kctl get deployment -n cert-manager cert-manager \
   -o jsonpath='{.spec.template.spec.containers[0].env[?(@.name=="HTTPS_PROXY")].value}' 2>/dev/null)
 [[ ${controller_proxy} == "${expected_proxy}" ]] \
   && ok "cert-manager controller Squid proxy" \
-  || { echo "[FAIL] cert-manager controller proxy: ${controller_proxy}" >&2; fail=1; }
+  || { echo "[FAIL] cert-manager controller proxy: ${controller_proxy}" >&2
+       diag_next "Argo cert-manager Application이 argocd/applications/cert-manager.yaml revision으로 Synced인지 확인하라"; fail=1; }
 for component in cert-manager-webhook cert-manager-cainjector; do
   component_proxy=$(kctl get deployment -n cert-manager "${component}" \
     -o jsonpath='{.spec.template.spec.containers[0].env[?(@.name=="HTTPS_PROXY")].value}' 2>/dev/null)
   [[ -z ${component_proxy} ]] && ok "${component} proxy 미적용" \
-    || { echo "[FAIL] ${component}에 proxy가 적용됨" >&2; fail=1; }
+    || { echo "[FAIL] ${component}에 proxy가 적용됨" >&2
+       diag_next "argocd/applications/cert-manager.yaml을 render-network.py로 다시 만들고 Argo 동기화하라"; fail=1; }
 done
 kctl get networkpolicy -n "${WORKLOAD_NAMESPACE}" default-deny-egress >/dev/null 2>&1 \
   && kctl get networkpolicy -n cert-manager cert-manager-controller-egress >/dev/null 2>&1 \
   && ok "Namespace default-deny와 cert-manager 최소 egress 정책" \
-  || { echo '[FAIL] egress NetworkPolicy 누락' >&2; fail=1; }
+  || { echo '[FAIL] egress NetworkPolicy 누락' >&2
+       diag_next "kubectl apply -f platform/network/egress-policies.yaml (deploy-apps 단계가 적용한다)"; fail=1; }
 
 for resource in secure-demo-runtime secure-demo-oidc-client portal-lite-auth; do
   external_secret=$(kctl get externalsecret -n "${WORKLOAD_NAMESPACE}" "${resource}" -o json)
@@ -204,20 +233,10 @@ for resource in secure-demo-runtime secure-demo-oidc-client portal-lite-auth; do
       <<<"${external_secret}" >/dev/null; then
     ok "ExternalSecret ${resource} Ready"
   else
-    reason=$(jq -r '[.status.conditions[]? | select(.type=="Ready") | .reason, .message] | map(select(. != null)) | join(": ")' \
-      <<<"${external_secret}")
-    echo "[FAIL] ExternalSecret ${resource}: ${reason:-Ready condition 없음}" >&2
-    store_name=$(jq -r '.spec.secretStoreRef.name // empty' <<<"${external_secret}")
-    if [[ -n ${store_name} ]]; then
-      store_status=$(kctl get secretstore -n "${WORKLOAD_NAMESPACE}" "${store_name}" -o json)
-      store_reason=$(jq -r '[.status.conditions[]? | .reason, .message] | map(select(. != null)) | join(": ")' \
-        <<<"${store_status}")
-      echo "[INFO] SecretStore ${store_name}: ${store_reason:-condition 없음}" >&2
-    fi
-    event_message=$(kctl get events -n "${WORKLOAD_NAMESPACE}" \
-      --field-selector "involvedObject.kind=ExternalSecret,involvedObject.name=${resource}" \
-      --sort-by=.lastTimestamp -o json | jq -r '.items[-1].message // empty')
-    [[ -z ${event_message} ]] || echo "[INFO] ExternalSecret event: ${event_message}" >&2
+    # condition/event 원문에는 KV 경로나 OpenBao 응답이 섞일 수 있어 분류만 출력한다.
+    echo "[FAIL] ExternalSecret ${resource} Ready 아님" >&2
+    diag_external_secret "${WORKLOAD_NAMESPACE}" "${resource}" \
+           && diag_next "재확인 시점에는 정상이다. 다시 실행해 재현되는지 확인하라"
     fail=1
   fi
 done
@@ -238,6 +257,7 @@ registry_push_secret=${registry_secrets[1]}
 registry_push_key=${registry_secrets[2]}
 if [[ ${registry_pull_secret} == "${registry_push_secret}" ]]; then
   echo '[FAIL] registry pull/push Kubernetes Secret 이름이 같음' >&2
+  diag_next "Portal PORTAL_BUILD_DOCKER_CONFIG_NAME과 site.env REGISTRY_PULL_SECRET을 다르게 두고 render"
   fail=1
 fi
 if pull_digest=$(kctl get secret "${registry_pull_secret}" -n "${WORKLOAD_NAMESPACE}" -o json |
@@ -260,6 +280,7 @@ if pull_digest=$(kctl get secret "${registry_pull_secret}" -n "${WORKLOAD_NAMESP
   ok "research Zone registry pull 전용 Secret 형식"
 else
   echo "[FAIL] research Zone ${registry_pull_secret} Secret 누락 또는 형식 오류" >&2
+  diag_next "sudo bash ./sadp --deploy-apps --registry-pull-dockerconfig <SADP_REGISTRY_PULL_DOCKERCONFIG> --registry-push-dockerconfig <SADP_REGISTRY_PUSH_DOCKERCONFIG>"
   fail=1
   pull_digest=""
 fi
@@ -282,6 +303,7 @@ if push_digest=$(kctl get secret "${registry_push_secret}" -n "${WORKLOAD_NAMESP
   ok "Portal build registry push 전용 Secret 형식"
 else
   echo "[FAIL] ${registry_push_secret}/${registry_push_key} 누락: Portal 단일 앱 source build 사용 불가" >&2
+  diag_next "sudo bash ./sadp --deploy-apps --registry-pull-dockerconfig <SADP_REGISTRY_PULL_DOCKERCONFIG> --registry-push-dockerconfig <SADP_REGISTRY_PUSH_DOCKERCONFIG>"
   fail=1
   push_digest=""
 fi
@@ -290,6 +312,7 @@ if [[ -n ${pull_digest} && -n ${push_digest} ]]; then
     ok "registry pull/push Docker config 분리"
   else
     echo '[FAIL] registry pull/push Docker config가 동일함(쓰기 credential이 앱 Pod로 전파될 위험)' >&2
+    diag_next "pull 전용(read) credential 파일을 따로 만들어 SADP_REGISTRY_PULL_DOCKERCONFIG에 지정하고 --deploy-apps"
     fail=1
   fi
 fi
@@ -301,11 +324,10 @@ for deployment in hello secure-demo portal-lite; do
   if [[ ${available:-0} -ge 1 ]]; then
     ok "${deployment} available"
   else
-    deployment_reason=$(jq -r '[.status.conditions[]? | select(.status=="False") | .reason, .message] | map(select(. != null)) | join(": ")' \
-      <<<"${deployment_json}")
-    pod_reason=$(kctl get pods -n "${WORKLOAD_NAMESPACE}" -l "app.kubernetes.io/name=${deployment}" -o json | \
-      jq -r '[.items[] | .metadata.name as $name | .status.containerStatuses[]? | select(.ready != true) | [$name, (.state.waiting.reason // .state.terminated.reason // "not-ready"), (.state.waiting.message // "")] | join(": ")] | join("; ")')
-    echo "[FAIL] ${deployment} unavailable: ${deployment_reason:-condition 없음}; ${pod_reason:-Pod 상태 없음}" >&2
+    # waiting.message 원문에는 registry 주소 같은 사이트 값이 섞이므로 분류만 출력한다.
+    echo "[FAIL] ${deployment} unavailable" >&2
+    diag_deployment "${WORKLOAD_NAMESPACE}" "${deployment}" \
+           && diag_next "재확인 시점에는 정상이다. 다시 실행해 재현되는지 확인하라"
     fail=1
   fi
 done
@@ -314,6 +336,7 @@ if kctl exec -n "${WORKLOAD_NAMESPACE}" deploy/portal-lite -- node -e \
   "fetch('https://example.com',{signal:AbortSignal.timeout(5000)}).then(()=>process.exit(0)).catch(()=>process.exit(1))" \
   >/dev/null 2>&1; then
   echo '[FAIL] 일반 Portal Pod가 allowlist 밖 인터넷에 직접 접근함' >&2
+  diag_next "kubectl apply -f platform/network/egress-policies.yaml 후 Portal NetworkPolicy 동기화를 확인하라"
   fail=1
 else
   ok "일반 Portal Pod direct 인터넷 차단"
@@ -323,7 +346,8 @@ for fqdn in ${https_hosts[@]+"${https_hosts[@]}"}; do
   code=$(curl -ksS --resolve "${fqdn}:443:${vip}" -o /dev/null -w '%{http_code}' \
     --connect-timeout 5 --max-time 20 "https://${fqdn}/" || true)
   [[ ${code} =~ ^(200|302|303|307|308)$ ]] && ok "HTTPS ${fqdn} -> ${code}" \
-    || { echo "[FAIL] HTTPS ${fqdn} -> ${code}" >&2; fail=1; }
+    || { echo "[FAIL] HTTPS ${fqdn} -> ${code}" >&2
+       diag_next "000이면 Gateway/VIP 경로, 5xx면 backend Pod 상태다: sudo bash ./sadp --doctor --env-file <SITE_ENV>"; fail=1; }
 done
 
 # NetworkPolicy는 Pod 연결만 다룬다. 직원 브라우저가 앱 응답의 악성 script를 실행해
@@ -337,10 +361,16 @@ if grep -Eiq '^cache-control:[[:space:]]*no-store[[:space:]]*$' <<<"${hello_head
   ok "일반 외부 앱 브라우저 응답 보안 헤더"
 else
   echo '[FAIL] 일반 외부 앱 브라우저 응답 보안 헤더 누락' >&2
+  diag_next "python3 scripts/site/render-exposure.py --check 후 platform/exposure/resources.yaml Argo 동기화를 확인하라"
   fail=1
 fi
 
 portal_url=https://${portal_host}
+# Portal 화면/API 실패는 대부분 Pod 미가용이거나 이미지·values 불일치다. 먼저 Pod 상태를 분류한다.
+portal_next() {
+  diag_deployment "${WORKLOAD_NAMESPACE}" portal-lite || return 0
+  diag_next "Portal 이미지와 values가 같은 revision인지 확인하라(sudo bash ./sadp --build-images 또는 --import-images → --deploy-apps)"
+}
 portal_resolve="${portal_host}:443:${vip}"
 # 홈(/)은 로그인하면 PaaS 대시보드, 미인증이면 메인 페이지(/portal)로 보낸다.
 # 로그인 후 대시보드 marker 검사는 세션이 필요하므로 scripts/verify/verify-portal-auth.sh가 맡고,
@@ -350,45 +380,48 @@ portal_home_headers=$(curl -ksS --resolve "${portal_resolve}" --connect-timeout 
 grep -Eq '^HTTP/[^ ]+ 30[2378]' <<<"${portal_home_headers}" \
   && grep -Eiq '^location: .*(%2F|/)portal[[:space:]]*$' <<<"${portal_home_headers}" \
   && ok "Portal 미인증 홈 -> 메인 페이지 이동" \
-  || { echo '[FAIL] Portal 홈 미인증 redirect' >&2; fail=1; }
+  || { echo '[FAIL] Portal 홈 미인증 redirect' >&2; portal_next; fail=1; }
 portal_main=$(curl -ksS --resolve "${portal_resolve}" --connect-timeout 5 --max-time 20 \
   "${portal_url}/portal" || true)
 grep -Eqi 'SADP' <<<"${portal_main}" \
   && grep -q '로그인' <<<"${portal_main}" \
   && ok "Portal 메인 페이지 로그인 진입점" \
-  || { echo '[FAIL] Portal 메인 페이지 로그인 진입점 없음' >&2; fail=1; }
+  || { echo '[FAIL] Portal 메인 페이지 로그인 진입점 없음' >&2; portal_next; fail=1; }
 portal_providers=$(curl -ksS --resolve "${portal_resolve}" --connect-timeout 5 --max-time 20 \
   "${portal_url}/api/auth/providers" || true)
 jq -e '.oidc.id == "oidc" and .oidc.type == "oidc"' <<<"${portal_providers}" >/dev/null \
-  && ok "Portal Auth.js 외부 OIDC provider" || { echo '[FAIL] Portal OIDC provider' >&2; fail=1; }
+  && ok "Portal Auth.js 외부 OIDC provider" || { echo '[FAIL] Portal OIDC provider' >&2; portal_next; fail=1; }
 portal_login=$(curl -ksS --resolve "${portal_resolve}" --connect-timeout 5 --max-time 20 \
   "${portal_url}/login" || true)
 grep -q 'SSO로 로그인' <<<"${portal_login}" \
-  && ok "Portal 로그인 UI" || { echo '[FAIL] Portal 로그인 UI' >&2; fail=1; }
+  && ok "Portal 로그인 UI" || { echo '[FAIL] Portal 로그인 UI' >&2; portal_next; fail=1; }
 # API v1 계약 marker는 app/layout.tsx meta라 로그인 없이 보이는 /login에서도 확인할 수 있다.
 grep -q 'nextjs-authjs-server' <<<"${portal_login}" \
   && grep -q 'profile.profile.exposure' <<<"${portal_login}" \
   && grep -q 'profile.generated.valuesTemplate' <<<"${portal_login}" \
   && ! grep -q 'profile.normalized' <<<"${portal_login}" \
   && ok "Portal Next.js/API v1 계약 일치" \
-  || { echo '[FAIL] Portal 브라우저/API 계약 불일치' >&2; fail=1; }
+  || { echo '[FAIL] Portal 브라우저/API 계약 불일치' >&2; portal_next; fail=1; }
 portal_account_headers=$(curl -ksS --resolve "${portal_resolve}" --connect-timeout 5 --max-time 20 \
   -D - -o /dev/null "${portal_url}/account" || true)
 grep -Eq '^HTTP/[^ ]+ 30[2378]' <<<"${portal_account_headers}" \
   && grep -Eiq '^location: .*\/login\?callbackUrl=(%2F|/)account' <<<"${portal_account_headers}" \
   && ok "Portal 미인증 /account 로그인 이동" \
-  || { echo '[FAIL] Portal 보호 페이지 redirect' >&2; fail=1; }
+  || { echo '[FAIL] Portal 보호 페이지 redirect' >&2; portal_next; fail=1; }
 if bash scripts/verify/verify-portal-auth.sh; then
   ok "Portal 외부 OIDC discovery와 로그인 시작 흐름"
 else
   echo '[FAIL] Portal 외부 OIDC 인증 흐름' >&2
+  # Auth.js 서버 측 fetch 실패는 화면에 드러나지 않고 Pod 로그에만 남는다. 원문은 출력하지 않는다.
+  diag_portal_logs "${WORKLOAD_NAMESPACE}" \
+    && diag_next "bash ./sadp --verify-idp --env-file <SITE_ENV> 로 IdP discovery와 site.env를 대조하라"
   fail=1
 fi
 portal_public_api_code=$(curl -ksS --resolve "${portal_resolve}" --connect-timeout 5 --max-time 20 \
   -o /dev/null -w '%{http_code}' "${portal_url}/api/v1/health" || true)
 [[ ${portal_public_api_code} == 401 ]] \
   && ok "Portal API BFF 미인증 요청 차단" \
-  || { echo "[FAIL] Portal API BFF 미인증 health -> ${portal_public_api_code}" >&2; fail=1; }
+  || { echo "[FAIL] Portal API BFF 미인증 health -> ${portal_public_api_code}" >&2; portal_next; fail=1; }
 
 # 공개 /api/v1/*는 Auth.js 세션과 역할을 검사하는 BFF라 익명 curl로 기능 검증할 수 없다.
 # Go API는 같은 Pod의 loopback만 열기 때문에, 값이 없는 acceptance 신원으로 내부 계약을
@@ -423,7 +456,7 @@ portal_api_request() {
 portal_health_result=$(portal_api_request GET /api/v1/health || true)
 jq -e '.status == 200 and ((.body | fromjson) | .status == "ok" and .service == "portal-lite")' \
   <<<"${portal_health_result}" >/dev/null \
-  && ok "Portal loopback API health" || { echo '[FAIL] Portal loopback API health' >&2; fail=1; }
+  && ok "Portal loopback API health" || { echo '[FAIL] Portal loopback API health' >&2; portal_next; fail=1; }
 portal_catalog_result=$(portal_api_request GET /api/v1/catalog || true)
 portal_catalog=$(jq -r '.body // empty' <<<"${portal_catalog_result}" 2>/dev/null || true)
 # jq 프로그램은 작은따옴표라 셸이 확장하지 않는다. Namespace 는 --arg 로 넘겨야 한다.
@@ -434,7 +467,7 @@ jq -e --arg ns "${WORKLOAD_NAMESPACE}" '
   ([.templates[].exposure] | sort) == ["oidc", "public"]
 ' <<<"${portal_catalog}" >/dev/null \
   && ok "Portal catalog 단일 Zone 및 기본 수동 승인 계약" \
-  || { echo '[FAIL] Portal catalog 계약' >&2; fail=1; }
+  || { echo '[FAIL] Portal catalog 계약' >&2; portal_next; fail=1; }
 jq -e --arg prefix "${app_group_namespace_prefix}" --argjson max "${app_group_max_services}" '
   .appGroups.enabled == true and
   .appGroups.namespacePrefix == $prefix and
@@ -444,7 +477,8 @@ jq -e --arg prefix "${app_group_namespace_prefix}" --argjson max "${app_group_ma
   (.appGroups.egressModes | index("custom")) != null
 ' <<<"${portal_catalog}" >/dev/null \
   && ok "Portal AppGroup Compose 제출 준비" \
-  || { echo '[FAIL] Portal AppGroup 비활성: OpenBao registry pull seed/role과 catalog 계약 확인' >&2; fail=1; }
+  || { echo '[FAIL] Portal AppGroup 비활성: OpenBao registry pull seed/role과 catalog 계약 확인' >&2
+       diag_next "sudo bash ./sadp --bootstrap-services 로 registry pull seed/role을 다시 수렴시킨 뒤 --deploy-apps"; fail=1; }
 # 사이트가 beta 등 다른 환경을 선택해도 같은 API 계약을 검증한다.
 portal_environment=$(jq -er '.environment' <<<"${portal_catalog}")
 portal_project=$(jq -er '.projects[0]' <<<"${portal_catalog}")
@@ -464,11 +498,18 @@ jq -e --arg client "acceptance-app-${portal_environment}" '
   .generated.expectedAnonymousStatus == 302
 ' <<<"${portal_profile}" >/dev/null \
   && ok "Portal AppProfile OIDC 사전검증 API" \
-  || { echo '[FAIL] Portal AppProfile 검증 API' >&2; fail=1; }
+  || { echo '[FAIL] Portal AppProfile 검증 API' >&2; portal_next; fail=1; }
 portal_deploy_result=$(portal_api_request POST /api/v1/deployment-requests '{}' || true)
 portal_deploy_code=$(jq -r '.status // 0' <<<"${portal_deploy_result}" 2>/dev/null || true)
 [[ ${portal_deploy_code} == 422 ]] && ok "Portal 자동 배포 API 활성(빈 프로필 422 검증)" \
-  || { echo "[FAIL] Portal deployment-requests -> ${portal_deploy_code}" >&2; fail=1; }
+  || { echo "[FAIL] Portal deployment-requests -> ${portal_deploy_code}" >&2
+       if [[ ${portal_deploy_code} == 503 ]]; then
+         diag_external_secret "${WORKLOAD_NAMESPACE}" portal-lite-auth \
+           && diag_next "Forgejo 연결(site.env FORGEJO_REPO_URL)과 봇 token 주입(--install-portal-backend --token-only)을 확인하라"
+       else
+         portal_next
+       fi
+       fail=1; }
 
 printf -v portal_group_name 'verify-compose-%05d-%05d' "${RANDOM}" "${RANDOM}"
 portal_compose=$'services:\n  frontend:\n    image: docker.io/library/nginx:1.27.4-alpine\n    expose:\n      - 80\n    depends_on:\n      - redis\n  redis:\n    image: docker.io/library/redis:7.4.2-alpine\n    expose:\n      - 6379\n'
@@ -504,7 +545,7 @@ jq -e --arg group "${portal_group_name}" \
       ["frontend." + $namespace + ".svc:80", "redis." + $namespace + ".svc:6379"])
 ' <<<"${portal_group_result}" >/dev/null \
   && ok "Portal Compose 다중 앱 사전검증 API" \
-  || { echo '[FAIL] Portal Compose 다중 앱 사전검증 API' >&2; fail=1; }
+  || { echo '[FAIL] Portal Compose 다중 앱 사전검증 API' >&2; portal_next; fail=1; }
 
 portal_openapi_result=$(portal_api_request GET /api/v1/openapi.yaml || true)
 portal_openapi=$(jq -r '.body // empty' <<<"${portal_openapi_result}" 2>/dev/null || true)
@@ -551,18 +592,25 @@ assert "application/problem+json" in spec["components"]["responses"]["Validation
   ok "Portal OpenAPI 3.1.1 구조/현재·향후 계약 검증"
 else
   echo '[FAIL] Portal OpenAPI 문서 구조/계약' >&2
+  portal_next
   fail=1
 fi
 
 kctl get securitypolicy -n "${WORKLOAD_NAMESPACE}" secure-demo-oidc -o json | \
   jq -e '.status.ancestors[].conditions[] | select(.type=="Accepted" and .status=="True")' >/dev/null \
   && ok "secure-demo SecurityPolicy Accepted" \
-  || { echo '[FAIL] secure-demo SecurityPolicy 미수락' >&2; fail=1; }
+  || { echo '[FAIL] secure-demo SecurityPolicy 미수락' >&2
+       diag_security_policy "${WORKLOAD_NAMESPACE}" secure-demo-oidc \
+           && diag_next "재확인 시점에는 정상이다. 다시 실행해 재현되는지 확인하라"; fail=1; }
 oidc_code=$(curl -ksS --resolve "secure-demo.${base_domain}:443:${vip}" \
   -o /dev/null -w '%{http_code}' --connect-timeout 5 --max-time 20 \
   "https://secure-demo.${base_domain}/" || true)
 [[ ${oidc_code} == 302 ]] && ok "secure-demo 미인증 요청 OIDC redirect" \
-  || { echo "[FAIL] secure-demo OIDC redirect -> ${oidc_code}" >&2; fail=1; }
+  || { echo "[FAIL] secure-demo OIDC redirect -> ${oidc_code}" >&2
+       diag_security_policy "${WORKLOAD_NAMESPACE}" secure-demo-oidc \
+         && { diag_deployment "${WORKLOAD_NAMESPACE}" secure-demo \
+              && diag_next "Envoy Gateway route 상태: kubectl get httproute -n ${WORKLOAD_NAMESPACE} secure-demo -o yaml"; }
+       fail=1; }
 
 # 외부 IdP는 SADP의 관리 대상이 아니다. discovery와 Portal OIDC 시작 흐름은
 # verify-portal-auth.sh가 공개 endpoint만 사용해 읽기 전용으로 검증한다.
@@ -570,7 +618,15 @@ status=$(kctl exec -n openbao openbao-0 -- env \
   BAO_ADDR=https://openbao.openbao.svc.cluster.local:8200 BAO_CACERT=/openbao/tls/ca.crt \
   bao status -format=json 2>/dev/null || true)
 jq -e '.initialized == true and .sealed == false and .storage_type == "raft"' <<<"${status}" >/dev/null \
-  && ok "OpenBao initialized/unsealed/Raft" || { echo '[FAIL] OpenBao status' >&2; fail=1; }
+  && ok "OpenBao initialized/unsealed/Raft" || { echo '[FAIL] OpenBao status' >&2
+       if jq -e '.sealed == true' <<<"${status}" >/dev/null 2>&1; then
+         diag_next "sealed: sudo bash ./sadp --unseal-openbao 계획 → --apply"
+       elif jq -e '.initialized == false' <<<"${status}" >/dev/null 2>&1; then
+         diag_next "미초기화: sudo bash scripts/cluster/bootstrap-testbed-services.sh --init-only"
+       else
+         diag_next "OpenBao Pod exec 실패 또는 Raft 아님: kubectl -n openbao get pod openbao-0 -o wide 로 상태를 보라"
+       fi
+       fail=1; }
 # OpenBao StatefulSet은 OnDelete라 템플릿 변경(oidc-preflight 추가 등)이 기존 Pod에 반영되지
 # 않아도 위 상태 검사는 통과한다. 다음 OIDC 단계가 exec 실패로 멈추기 전에 경고로 드러낸다.
 openbao_report_ondelete_revision_lag openbao
@@ -584,7 +640,8 @@ if [[ ${MACHINE_AUTH_MODE} == api-key ]]; then
       "${MACHINE_AUTH_SECRET_STORE}" \
       -o jsonpath='{.status.conditions[?(@.type=="Ready")].status}' 2>/dev/null || true)
     [[ ${store_ready} == True ]] && ok "machine-auth SecretStore Ready" \
-      || { echo '[FAIL] machine-auth SecretStore가 Ready가 아님' >&2; fail=1; }
+      || { echo '[FAIL] machine-auth SecretStore가 Ready가 아님' >&2
+       diag_next "sudo bash ./sadp --unseal-openbao 로 seal 상태를 보고 sudo bash ./sadp --bootstrap-services"; fail=1; }
     for client in "${MACHINE_AUTH_CLIENTS[@]}"; do
       credential_file=$(machine_auth_export_path "${client}")
       if [[ -s ${credential_file} && $(stat -c '%a' "${credential_file}") == 600 \
@@ -593,18 +650,22 @@ if [[ ${MACHINE_AUTH_MODE} == api-key ]]; then
         ok "${client} machine-auth 전달 파일 root:0600"
       else
         echo "[FAIL] ${client} machine-auth 전달 파일 권한/소유자" >&2
+        diag_next "sudo bash ./sadp --export-credentials 로 root:0600 전달 파일을 다시 만들어라"
         fail=1
       fi
       external_secret="${MACHINE_AUTH_SECRET_PREFIX}${client}"
       ready=$(kctl -n "${MACHINE_AUTH_NAMESPACE}" get externalsecret "${external_secret}" \
         -o jsonpath='{.status.conditions[?(@.type=="Ready")].status}' 2>/dev/null || true)
       [[ ${ready} == True ]] && ok "${client} machine-auth ExternalSecret Ready" \
-        || { echo "[FAIL] ${client} machine-auth ExternalSecret" >&2; fail=1; }
+        || { echo "[FAIL] ${client} machine-auth ExternalSecret" >&2
+             diag_external_secret "${MACHINE_AUTH_NAMESPACE}" "${external_secret}" \
+           && diag_next "재확인 시점에는 정상이다. 다시 실행해 재현되는지 확인하라"; fail=1; }
       kctl -n "${MACHINE_AUTH_NAMESPACE}" get secret \
         "${MACHINE_AUTH_SECRET_PREFIX}${client}-api-keys" -o json 2>/dev/null |
         jq -e --arg client "${client}" '.data | has($client)' >/dev/null \
         && ok "${client} Gateway credential key 이름 존재" \
-        || { echo "[FAIL] ${client} Gateway credential key 이름" >&2; fail=1; }
+        || { echo "[FAIL] ${client} Gateway credential key 이름" >&2
+       diag_next "sudo bash ./sadp --bootstrap-services 로 API 키를 OpenBao에 시드하고 ExternalSecret Ready를 확인하라"; fail=1; }
     done
     for service in "${MACHINE_AUTH_SERVICES[@]}"; do
       policy_document=$(kctl -n "${MACHINE_AUTH_NAMESPACE}" get securitypolicy \
@@ -616,15 +677,19 @@ if [[ ${MACHINE_AUTH_MODE} == api-key ]]; then
           and .spec.authorization.defaultAction == "Deny"
         ' <<<"${policy_document}" >/dev/null \
         && ok "${service} API key/CIDR 정책 및 header sanitize" \
-        || { echo "[FAIL] ${service} API key/CIDR 정책" >&2; fail=1; }
+        || { echo "[FAIL] ${service} API key/CIDR 정책" >&2
+       diag_next "python3 scripts/site/render-exposure.py --check 후 platform/exposure/resources.yaml 동기화를 확인하라"; fail=1; }
       jq -e '
         any(.status.ancestors[]?.conditions[]?;
           .type == "Accepted" and .status == "True")
         ' <<<"${policy_document}" >/dev/null \
         && ok "${service} SecurityPolicy Accepted" \
-        || { echo "[FAIL] ${service} SecurityPolicy 미수락" >&2; fail=1; }
+        || { echo "[FAIL] ${service} SecurityPolicy 미수락" >&2
+             diag_security_policy "${MACHINE_AUTH_NAMESPACE}" "${service}-machine-auth" \
+           && diag_next "재확인 시점에는 정상이다. 다시 실행해 재현되는지 확인하라"; fail=1; }
     done
   else
+    diag_next "site.env MACHINE_AUTH_CLIENTS/MACHINE_AUTH_ALLOWED_CIDRS를 채우고 configure-site --write"
     fail=1
   fi
 elif [[ ${MACHINE_AUTH_MODE} == oidc ]]; then
@@ -636,17 +701,20 @@ elif [[ ${MACHINE_AUTH_MODE} == oidc ]]; then
         and .spec.authorization.defaultAction == "Deny"
       ' >/dev/null \
       && ok "${service} 외부 OIDC JWT/CIDR machine-auth 정책" \
-      || { echo "[FAIL] ${service} 외부 OIDC machine-auth 정책" >&2; fail=1; }
+      || { echo "[FAIL] ${service} 외부 OIDC machine-auth 정책" >&2
+           diag_next "python3 scripts/site/render-exposure.py --check 후 platform/exposure/resources.yaml 동기화를 확인하라"; fail=1; }
   done
 else
   echo '[FAIL] machine-auth mode 계약 오류' >&2
+  diag_next "site.env MACHINE_AUTH_MODE를 oidc 또는 api-key로 두고 configure-site --write"
   fail=1
 fi
 
 http_code=$(curl -sS --resolve "hello.${base_domain}:80:${vip}" -o /dev/null \
   -w '%{http_code}' --max-time 10 "http://hello.${base_domain}/" || true)
 [[ ${http_code} == 301 ]] && ok "HTTP 80 -> HTTPS 301" \
-  || { echo "[FAIL] HTTP redirect -> ${http_code}" >&2; fail=1; }
+  || { echo "[FAIL] HTTP redirect -> ${http_code}" >&2
+       diag_next "site.env TLS 단계 기록(EXISTING_GATEWAY_TLS_READY)과 계약 routeListener를 확인하라(docs/site-configuration.md 상태 기록 표)"; fail=1; }
 
 if [[ ${public_mode} == direct ]]; then
   # direct 모드는 공인 IP가 노드 외부 NIC에 있으므로 Envoy Service가 그 주소를
@@ -664,6 +732,7 @@ if [[ ${public_mode} == direct ]]; then
     ok "direct 모드 Envoy Service externalIPs 에 공인 IP 존재"
   else
     echo '[FAIL] Envoy Service externalIPs 에 공인 IP가 없다(platform/exposure/resources.yaml 미적용).' >&2
+    diag_next "python3 scripts/site/render-exposure.py --check 후 platform/exposure/resources.yaml Argo 동기화를 확인하라"
     fail=1
   fi
 
@@ -672,12 +741,14 @@ if [[ ${public_mode} == direct ]]; then
     ok "direct 모드 공인 IP 노드 계약과 실제 Node 존재"
   else
     echo '[FAIL] direct 모드 spec.public.nodeName이 없거나 실제 Node와 불일치' >&2
+    diag_next "kubectl get nodes 의 이름으로 site.env PUBLIC_IP_NODE를 고치고 configure-site --write"
     fail=1
   fi
   jq -e '.spec.externalTrafficPolicy == "Local"' \
     <<<"${envoy_service_document}" >/dev/null 2>&1 \
     && ok "direct 모드 Envoy Service externalTrafficPolicy=Local" \
-    || { echo '[FAIL] direct 모드 Envoy Service가 Local이 아님' >&2; fail=1; }
+    || { echo '[FAIL] direct 모드 Envoy Service가 Local이 아님' >&2
+       diag_next "platform/exposure/resources.yaml의 EnvoyProxy Argo 동기화를 확인하라"; fail=1; }
 
   proxy_node=$(kctl -n "${gateway_namespace}" get envoyproxy \
     "$(python3 -c 'import yaml; print(yaml.safe_load(open("contracts/platform-production.yaml"))["spec"]["gateway"]["proxyConfigName"])')" \
@@ -685,7 +756,8 @@ if [[ ${public_mode} == direct ]]; then
     2>/dev/null || true)
   [[ -n ${public_ip_node} && ${proxy_node} == "${public_ip_node}" ]] \
     && ok "direct 모드 Envoy Pod 공인 IP 노드 선택자" \
-    || { echo '[FAIL] direct 모드 Envoy Pod nodeSelector 불일치' >&2; fail=1; }
+    || { echo '[FAIL] direct 모드 Envoy Pod nodeSelector 불일치' >&2
+       diag_next "platform/exposure/resources.yaml의 EnvoyProxy Argo 동기화를 확인하라"; fail=1; }
 
   service_name=${envoy_service#service/}
   service_selector=$(jq -r '
@@ -700,7 +772,16 @@ if [[ ${public_mode} == direct ]]; then
       and any(.status.conditions[]?; .type == "Ready" and .status == "True"))
   ' <<<"${envoy_pods}" >/dev/null 2>&1 \
     && ok "direct 모드 Envoy Pod 위치/Readiness" \
-    || { echo '[FAIL] direct 모드 Envoy Pod 위치 또는 Readiness' >&2; fail=1; }
+    || { echo '[FAIL] direct 모드 Envoy Pod 위치 또는 Readiness' >&2
+         # 옛 Pod가 트래픽을 받는 동안 새 Pod가 taint로 Pending이면 겉으로는 정상이다.
+         envoy_deployment=$(kctl -n "${gateway_namespace}" get deployment -l "${service_selector}" -o name 2>/dev/null | head -1)
+         if [[ -n ${envoy_deployment} ]]; then
+           diag_deployment "${gateway_namespace}" "${envoy_deployment##*/}" \
+           && diag_next "재확인 시점에는 정상이다. 다시 실행해 재현되는지 확인하라"
+         else
+           diag_next "kubectl -n ${gateway_namespace} get pod -l ${service_selector} -o wide 로 위치와 Pending 사유를 보라"
+         fi
+         fail=1; }
 
   endpoint_slices=$(kctl -n "${gateway_namespace}" get endpointslice \
     -l "kubernetes.io/service-name=${service_name}" -o json 2>/dev/null || true)
@@ -709,7 +790,8 @@ if [[ ${public_mode} == direct ]]; then
       .nodeName == $node and .conditions.ready != false)
   ' <<<"${endpoint_slices}" >/dev/null 2>&1 \
     && ok "direct 모드 Local Service의 공인 IP 노드 endpoint Ready" \
-    || { echo '[FAIL] direct 모드 Local Service endpoint가 공인 IP 노드에서 Ready가 아님' >&2; fail=1; }
+    || { echo '[FAIL] direct 모드 Local Service endpoint가 공인 IP 노드에서 Ready가 아님' >&2
+       diag_next "Local 정책은 공인 IP 노드에 Ready Envoy가 없으면 트래픽을 버린다. 위 Envoy Pod 진단을 먼저 해결하라"; fail=1; }
 
   # 공인 IP가 실제로 Envoy 인증서를 내미는지까지 본다. nginx fake 인증서면 즉시 실패다.
   public_subject=$(echo | openssl s_client -connect "${public_ip}:443" \
@@ -718,13 +800,17 @@ if [[ ${public_mode} == direct ]]; then
     ok "공인 443 -> Envoy Gateway 인증서 일치"
   else
     echo "[FAIL] 공인 443 인증서가 계약 도메인이 아니다: ${public_subject:-없음}" >&2
+    diag_next "다른 프로세스가 공인 443을 선점했는지(ss -ltnp) 보고 wildcard Certificate Ready를 확인하라(sudo bash ./sadp --verify-d5)"
     fail=1
   fi
 
   public_code=$(curl -sk -o /dev/null -w '%{http_code}' --connect-timeout 5 --max-time 10 \
     --resolve "hello.${base_domain}:443:${public_ip}" "https://hello.${base_domain}/" || true)
   [[ ${public_code} == 200 ]] && ok "공인 443 -> hello 200" \
-    || { echo "[FAIL] 공인 443 hello 응답 ${public_code}(404면 nginx가 선점 중)" >&2; fail=1; }
+    || { echo "[FAIL] 공인 443 hello 응답 ${public_code}(404면 nginx가 선점 중)" >&2
+         diag_deployment "${WORKLOAD_NAMESPACE}" hello \
+           && diag_next "404면 RKE2 ingress-nginx 선점, 000이면 공인 IP 노드의 Envoy와 interface guard를 확인하라"
+         fail=1; }
 elif curl -fsS -o /dev/null --connect-timeout 5 --max-time 10 \
   "https://hello.${base_domain}/" 2>/dev/null; then
   ok "공인 443 -> Envoy Gateway"
@@ -732,4 +818,7 @@ else
   note "공인 443은 아직 경계 NAT에 연결됨: NAT 80/443 -> ${vip} 필요"
 fi
 
+if ((fail)); then
+  diag_next "단계별로 처음 막힌 곳을 보려면: sudo bash ./sadp --doctor --env-file <SITE_ENV>"
+fi
 exit "${fail}"

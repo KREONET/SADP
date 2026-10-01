@@ -173,6 +173,14 @@ def answers(overrides: dict[str, str], *, quick: bool = False) -> str:
 
 legacy = {key: value for key, value in values.items() if key != "WORKER_INTERNAL_ONLY"}
 wizard.apply_defaults(legacy)
+relay_question = next(q for _, questions in wizard.SECTIONS for q in questions if q.key == "IDP_RELAY_ENABLED")
+proposed = dict(values, WORKER_INTERNAL_ONLY="true", IDP_RELAY_ENABLED="false")
+with redirect_stdout(io.StringIO()):
+    wizard.propose_topology_default(relay_question, proposed)
+kept = dict(values, WORKER_INTERNAL_ONLY="false", IDP_RELAY_ENABLED="false")
+wizard.propose_topology_default(relay_question, kept)
+check("SW-08c 내부망 전용 worker면 IdP relay 기본값을 true로 제안하고 아니면 유지",
+      proposed["IDP_RELAY_ENABLED"] == "true" and kept["IDP_RELAY_ENABLED"] == "false")
 check("SW-08b 옛 template에 없는 선택 key도 질문 전에 기본값으로 채움",
       legacy["WORKER_INTERNAL_ONLY"] == "false" and legacy["CLUSTER_MODE"] and legacy["SADP_SSH_USER"])
 

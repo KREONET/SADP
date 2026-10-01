@@ -6,6 +6,22 @@
 다른 사이트에 배포할 때 생성된 YAML의 IP·도메인·이름을 검색 치환하지 않습니다. Git 밖의
 `site.env`를 검증한 뒤 생성기 한 번으로 계약과 하위 파일을 만듭니다.
 
+## 상태 기록 값은 설정이 아니다
+
+아래 세 key는 "원하는 상태"가 아니라 **이미 끝낸 단계의 기록**입니다. 실제로 끝낸 순서대로만
+올립니다. 클러스터가 앞서 나갔는데 이 값이 뒤처지면 `configure-site.py --write`가 계약을 과거로
+되돌려(예: HTTPS route를 HTTP로) 서비스가 내려갑니다. 반대로 끝내지 않은 단계를 미리 올리면 아직 없는
+인증서를 참조합니다.
+
+| key | 언제 올리나 | 확인 명령 | 뒤처지면 | 앞서가면 |
+| --- | --- | --- | --- | --- |
+| `ACME_STAGING_VERIFIED=true` | staging wildcard Certificate `Ready=True`를 확인한 뒤 | `kubectl -n <GATEWAY_NAMESPACE> get certificate` | production 전환이 거부됨 | 검증 안 된 DNS-01 경로로 production 발급 시도(rate limit 위험) |
+| `TLS_ISSUER_MODE=production` | 위 값을 올린 뒤 production 발급을 시작할 때 | `sudo bash ./sadp --verify-d5` | `--write`가 issuer를 staging으로 되돌림 | staging 확인 없이 발급 |
+| `EXISTING_GATEWAY_TLS_READY=true` | production wildcard Secret이 Ready가 된 뒤 | `sudo bash ./sadp --verify-d5` | `--write`가 routeListener를 http로 되돌려 앱 route가 HTTP로 내려감 | Gateway가 없는 Secret을 참조(`InvalidCertificateRef`) |
+
+통합 설치기(`--phase all --apply`)는 확인 후 이 값을 직접 갱신합니다. 단계를 손으로 진행했다면 같은
+순서로 site.env를 고친 뒤 render → `--test` → commit/push → cluster를 다시 실행합니다.
+
 ## 1. 값의 소유 위치
 
 사이트 설정과 Secret 실제 값은 서로 다른 경로로 전달됩니다.
