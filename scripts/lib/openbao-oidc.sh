@@ -16,6 +16,8 @@ EOF
 oidc_print_discovery_checks() {
   cat >&2 <<EOF
 [ACTION] 값 비노출 확인 명령:
+  kubectl -n ${OIDC_OPENBAO_NAMESPACE} get pod ${OIDC_OPENBAO_POD} -o jsonpath='{.metadata.labels.controller-revision-hash}{" "}{range .spec.containers[*]}{.name}{" "}{end}{"\n"}'
+  kubectl -n ${OIDC_OPENBAO_NAMESPACE} get statefulset ${OIDC_OPENBAO_STATEFULSET} -o jsonpath='{.spec.updateStrategy.type}{" "}{.status.updateRevision}{"\n"}'
   kubectl -n ${OIDC_OPENBAO_NAMESPACE} exec ${OIDC_OPENBAO_POD} -- sh -c 'nslookup "\$1" >/dev/null' sh ${OIDC_ISSUER_HOST}
   kubectl -n ${OIDC_OPENBAO_NAMESPACE} exec ${OIDC_OPENBAO_POD} -c oidc-preflight -- sh -c 'curl -q --connect-timeout 5 --max-time 15 --silent --show-error --output /dev/null "\$1"' sh '${OIDC_DISCOVERY_URL}'
   kubectl -n ${OIDC_GATEWAY_NAMESPACE} get gateway ${OIDC_GATEWAY_NAME} -o jsonpath='{.status.listeners}{"\n"}'
@@ -52,7 +54,9 @@ tls = spec.get("tls") or {}
 identity = spec.get("identityProvider") or {}
 openbao = spec.get("openbao") or {}
 
-issuer = str(identity.get("issuer") or "").rstrip("/")
+# issuer는 정규화하지 않는다. OpenBao는 oidc_discovery_url과 discovery 응답의 issuer를 정확히
+# 비교하므로 끝 '/'를 지우면 Authentik처럼 '/'로 끝나는 issuer에서 설정이 거부된다.
+issuer = str(identity.get("issuer") or "")
 parsed = urlsplit(issuer)
 if parsed.scheme != "https" or not parsed.hostname or parsed.username or parsed.password:
     raise SystemExit("[FAIL] spec.identityProvider.issuer는 credential 없는 HTTPS URL이어야 한다")
@@ -105,7 +109,145 @@ PY
   OIDC_OPENBAO_CLIENT_ID=${values[12]}
   OIDC_OPENBAO_SECRET_NAME=${values[13]}
   OIDC_OPENBAO_POD=${SADP_OPENBAO_POD:-openbao-0}
-  OIDC_DISCOVERY_URL="${OIDC_EXPECTED_ISSUER}/.well-known/openid-configuration"
+  # 사전 진단이 Pod ownerReference로 실제 이름을 다시 찾는다. 이 값은 확인 명령 안내용 기본값이다.
+  OIDC_OPENBAO_STATEFULSET=${OIDC_OPENBAO_POD%-*}
+  OIDC_DISCOVERY_URL="${OIDC_EXPECTED_ISSUER%/}/.well-known/openid-configuration"
+}
+
+# oidc-preflight 컨테이너가 실제로 exec 가능한 상태인지 exec 전에 진단한다.
+#
+# OpenBao StatefulSet은 updateStrategy=OnDelete다. unseal 재료가 필요한 Pod를 controller가 임의로
+# 재시작하지 않게 하려는 선택이지만, 그 대가로 템플릿에 oidc-preflight가 추가돼도 기존 Pod는 옛
+# revision으로 계속 돈다. 이때 exec는 "container not found"로 실패하고 원인이 드러나지 않았다.
+# 이 함수는 메타데이터와 컨테이너 상태만 읽고 Secret/환경변수/로그는 읽지 않는다. Pod를 지우거나
+# 재시작하지 않는다. 교체는 unseal을 동반하는 유지보수 작업이라 운영자가 결정한다.
+oidc_preflight_container_diagnose() {
+  local namespace=${OIDC_OPENBAO_NAMESPACE} pod=${OIDC_OPENBAO_POD}
+  local pod_json sts_json strategy update_revision pod_revision image ready reason
+
+  pod_json=$(kctl get pod -n "${namespace}" "${pod}" -o json 2>/dev/null) || {
+    oidc_preflight_failure "OpenBao Pod를 조회할 수 없음" \
+      "Pod 존재 여부와 kubectl 조회 권한을 확인하라." discovery
+    return 1
+  }
+  OIDC_OPENBAO_STATEFULSET=$(jq -r '
+    first(.metadata.ownerReferences[]? | select(.kind == "StatefulSet") | .name) // empty
+  ' <<<"${pod_json}")
+  [[ -n ${OIDC_OPENBAO_STATEFULSET} ]] || OIDC_OPENBAO_STATEFULSET=${pod%-*}
+  sts_json=$(kctl get statefulset -n "${namespace}" "${OIDC_OPENBAO_STATEFULSET}" -o json 2>/dev/null) || {
+    oidc_preflight_failure "OpenBao StatefulSet을 조회할 수 없음" \
+      "Pod의 ownerReference와 openbao Namespace의 StatefulSet 이름을 확인하라." discovery
+    return 1
+  }
+
+  # (a) 템플릿에 없으면 Pod를 교체해도 소용없다. 생성물이나 Argo 동기화부터 봐야 한다.
+  if ! jq -e 'any(.spec.template.spec.containers[]?; .name == "oidc-preflight")' \
+      <<<"${sts_json}" >/dev/null; then
+    oidc_preflight_failure "OpenBao StatefulSet 템플릿에 oidc-preflight 컨테이너가 없음" \
+      "platform/openbao/proxy-values.yaml 생성물에 extraContainers.oidc-preflight가 있는지 보고, Argo openbao Application(devtroncd)이 그 revision으로 Synced인지 확인하라." \
+      discovery
+    return 1
+  fi
+
+  # (b) 템플릿에는 있는데 Pod에 없거나 revision이 뒤처졌다 = 기존 Pod가 교체되지 않았다.
+  strategy=$(jq -r '.spec.updateStrategy.type // "RollingUpdate"' <<<"${sts_json}")
+  update_revision=$(jq -r '.status.updateRevision // empty' <<<"${sts_json}")
+  pod_revision=$(jq -r '.metadata.labels["controller-revision-hash"] // empty' <<<"${pod_json}")
+  if ! jq -e 'any(.spec.containers[]?; .name == "oidc-preflight")' <<<"${pod_json}" >/dev/null \
+      || [[ -n ${update_revision} && ${pod_revision} != "${update_revision}" ]]; then
+    if [[ ${strategy} == OnDelete ]]; then
+      oidc_preflight_failure \
+        "StatefulSet updateStrategy=OnDelete라 기존 Pod ${pod}가 새 템플릿(oidc-preflight)으로 교체되지 않음" \
+        "유지보수 창에서 kubectl -n ${namespace} delete pod ${pod} 로 Pod만 지운다(PVC와 Raft 데이터는 유지). 새 Pod는 sealed로 뜨므로 sudo bash ./sadp --unseal-openbao --apply 로 unseal한 뒤 이 단계를 다시 실행하라. 이 스크립트는 Pod를 자동 삭제하지 않는다." \
+        discovery
+    else
+      oidc_preflight_failure "OpenBao Pod ${pod}가 StatefulSet 최신 revision이 아님" \
+        "kubectl -n ${namespace} rollout status statefulset/${OIDC_OPENBAO_STATEFULSET} 로 교체 진행 상태를 확인하라." \
+        discovery
+    fi
+    return 1
+  fi
+
+  # (c) 컨테이너는 있으나 실행 전이다. 폐쇄망 노드에 curl 이미지가 없는 경우가 대부분이다.
+  ready=$(jq -r '
+    first(.status.containerStatuses[]? | select(.name == "oidc-preflight") | .ready) // false
+  ' <<<"${pod_json}")
+  if [[ ${ready} != true ]]; then
+    # waiting.reason은 Kubernetes가 정한 CamelCase 식별자만 남긴다. message는 이미지 경로나
+    # registry 오류 원문을 담을 수 있어 출력하지 않는다.
+    reason=$(jq -r '
+      first(.status.containerStatuses[]? | select(.name == "oidc-preflight") | .state.waiting.reason) // empty
+    ' <<<"${pod_json}" | tr -cd 'A-Za-z0-9')
+    image=$(jq -r '
+      first(.spec.template.spec.containers[]? | select(.name == "oidc-preflight") | .image) // empty
+    ' <<<"${sts_json}")
+    oidc_preflight_failure \
+      "oidc-preflight 컨테이너가 준비되지 않음(waiting.reason=${reason:-unknown})" \
+      "이미지가 노드에 없으면 sudo bash ./sadp --sync-images --image ${image:-<oidc-preflight image>} 로 모든 노드에 넣은 뒤 이 단계를 다시 실행하라." \
+      discovery
+    return 1
+  fi
+  return 0
+}
+
+# kubectl exec 오류 원문에는 URL·노드 주소·API 응답이 섞일 수 있다. 원인만 분류해 알린다.
+oidc_classify_exec_failure() {
+  local errors=$1
+  if grep -qiE 'container not found|is not valid for pod|container .* not found' "${errors}"; then
+    printf '%s' "exec 대상 oidc-preflight 컨테이너가 Pod에 없음(OnDelete StatefulSet 미교체 가능)"
+  elif grep -qi 'forbidden' "${errors}"; then
+    printf '%s' "kubectl exec 권한 거부(pods/exec RBAC)"
+  elif grep -qiE 'unable to upgrade connection|error dialing backend' "${errors}"; then
+    printf '%s' "API server→kubelet exec 연결 실패(노드 kubelet 10250 경로와 interface guard 확인)"
+  else
+    printf '%s' "OpenBao Pod exec 실패(분류 불가, 원문은 출력하지 않음)"
+  fi
+}
+
+# OnDelete StatefulSet은 템플릿이 바뀌어도 Pod를 스스로 교체하지 않는다. 설치·검수 끝에서
+# revision이 뒤처진 Pod를 [WARN]으로 알려 다음 OIDC 단계가 exec 실패로 멈추기 전에 드러낸다.
+# 이름과 revision만 출력하고 Pod를 건드리지 않는다. 항상 0을 반환한다(경고 전용).
+openbao_report_ondelete_revision_lag() {
+  local namespace=${1:-openbao} run_dir lagging watched
+  run_dir=$(mktemp -d "${TMPDIR:-/tmp}/sadp-ondelete.XXXXXX")
+  chmod 0700 "${run_dir}"
+  if ! kctl get statefulset -n "${namespace}" -o json >"${run_dir}/sts.json" 2>/dev/null \
+      || ! kctl get pod -n "${namespace}" -o json >"${run_dir}/pods.json" 2>/dev/null; then
+    rm -rf -- "${run_dir}"
+    printf '[WARN] %s StatefulSet/Pod revision 조회 실패: OnDelete 미반영 여부를 확인하지 못함\n' \
+      "${namespace}" >&2
+    return 0
+  fi
+  # 대상이 하나도 없는데 "모두 최신"이라고 말하면 조회 실패와 구분되지 않는다.
+  watched=$(jq -rn --slurpfile sts "${run_dir}/sts.json" '
+    [$sts[0].items[]? | select((.spec.updateStrategy.type // "") == "OnDelete")] | length
+  ' 2>/dev/null || echo 0)
+  lagging=$(jq -rn --slurpfile sts "${run_dir}/sts.json" --slurpfile pods "${run_dir}/pods.json" '
+    $sts[0].items[]?
+    | select((.spec.updateStrategy.type // "") == "OnDelete" and (.status.updateRevision // "") != "")
+    | . as $set
+    | [$pods[0].items[]?
+        | select(any(.metadata.ownerReferences[]?; .kind == "StatefulSet" and .name == $set.metadata.name))
+        | select((.metadata.labels["controller-revision-hash"] // "") != $set.status.updateRevision)
+        | .metadata.name]
+    | select(length > 0)
+    | "\($set.metadata.name) \(join(","))"
+  ')
+  rm -rf -- "${run_dir}"
+  if [[ ${watched:-0} == 0 ]]; then
+    printf '[INFO] %s에 revision을 확인할 OnDelete StatefulSet 없음\n' "${namespace}"
+    return 0
+  fi
+  if [[ -z ${lagging} ]]; then
+    ok "${namespace} OnDelete StatefulSet Pod가 모두 최신 revision"
+    return 0
+  fi
+  while read -r sts pods; do
+    printf '[WARN] %s/%s: updateStrategy=OnDelete라 Pod %s가 옛 revision으로 남음\n' \
+      "${namespace}" "${sts}" "${pods}" >&2
+  done <<<"${lagging}"
+  printf '[WARN] 유지보수 창에서 해당 Pod를 한 대씩 삭제(PVC 유지)하고 sudo bash ./sadp --unseal-openbao --apply 로 unseal하라. 자동 삭제는 하지 않는다\n' >&2
+  return 0
 }
 
 oidc_gateway_tls_preflight() {
@@ -191,6 +333,12 @@ oidc_discovery_preflight() {
   : >"${errors}"
   chmod 0600 "${response}" "${errors}"
 
+  # exec 실패 뒤에 원인을 추측하지 않도록 컨테이너 반영 상태를 먼저 진단한다.
+  if ! oidc_preflight_container_diagnose; then
+    rm -rf "${run_dir}"
+    return 1
+  fi
+
   if ! kctl exec -n "${OIDC_OPENBAO_NAMESPACE}" "${OIDC_OPENBAO_POD}" -c oidc-preflight -- \
       sh -ceu '
         if command -v curl >/dev/null 2>&1; then
@@ -204,9 +352,10 @@ oidc_discovery_preflight() {
         fi
         printf "__SADP_CURL_EXIT__:90\n"
       ' sh "${OIDC_DISCOVERY_URL}" >"${response}" 2>"${errors}"; then
+    cause=$(oidc_classify_exec_failure "${errors}")
     rm -rf "${run_dir}"
-    oidc_preflight_failure "OpenBao Pod exec 실패" \
-      "OpenBao Pod의 oidc-preflight 컨테이너 반영 상태와 kubectl exec 권한을 확인하라." discovery
+    oidc_preflight_failure "${cause}" \
+      "아래 확인 명령으로 Pod 컨테이너·revision과 StatefulSet updateStrategy를 보고, exec 권한과 kubelet 경로를 확인하라." discovery
     return 1
   fi
 

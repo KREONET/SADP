@@ -24,7 +24,7 @@ configuration:
     PLATFORM_BASE_DOMAIN: sadp.example.invalid
     PORTAL_RELEASE: 0.4.0-gitops
     AUTH_OIDC_ID: sadp-portal
-    AUTH_OIDC_ISSUER: https://idp.example.invalid/application/o/sadp
+    AUTH_OIDC_ISSUER: https://idp.example.invalid/application/o/sadp/
     AUTH_OIDC_TOKEN_ENDPOINT: https://idp.example.invalid/application/o/token/
     AUTH_OIDC_END_SESSION_ENDPOINT: ''
     AUTH_OIDC_GROUPS_CLAIM: groups

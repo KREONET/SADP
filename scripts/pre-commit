@@ -1,4 +1,6 @@
 #!/usr/bin/env bash
 # 설치: ln -sf ../../scripts/pre-commit .git/hooks/pre-commit
-# CI 가 도는 것과 같은 가드를 커밋 전에 로컬에서 돌린다.
-exec bash "$(git rev-parse --show-toplevel)/scripts/ci-guard.sh"
+# CI(.github/workflows/sadp-test.yml)의 머지 조건과 같은 `--test` 전체를 커밋 전에 돌린다.
+# 가드만 돌리면 회귀 시험 실패가 CI에서야 드러나고, 그 사이 다른 변경이 쌓이면 어느 커밋이
+# 깨뜨렸는지 구분할 수 없다. helm이 PATH에 있어야 한다(없으면 render-test.sh가 실패한다).
+exec bash "$(git rev-parse --show-toplevel)/sadp" --test

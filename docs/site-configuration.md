@@ -50,6 +50,9 @@ sudo install -m 0600 environments/site.env.example /etc/sadp/site.env
 sudoedit /etc/sadp/site.env
 ```
 
+통합 설치기의 기본 위치는 `/etc/sadp/site.env`입니다. 개발 checkout에는 `environments/site.env`를 둘
+수도 있으나 도구는 두 곳을 자동 탐색하지 않으므로 모든 명령에 `--env-file`을 명시합니다.
+
 `site.env.example`의 key를 삭제하거나 복제하지 말고 값을 사이트 사실에 맞게 바꿉니다. 특히
 다음 문서 전용 값은 적용 전에 모두 없어야 합니다.
 
@@ -194,6 +197,7 @@ OIDC_AUTHORIZATION_ENDPOINT=https://<IDP_HOST>/<AUTHORIZATION_PATH>
 OIDC_TOKEN_ENDPOINT=https://<IDP_HOST>/<TOKEN_PATH>
 OIDC_JWKS_URI=https://<IDP_HOST>/<JWKS_PATH>
 OIDC_END_SESSION_ENDPOINT=https://<IDP_HOST>/<LOGOUT_PATH>
+OIDC_ENDPOINT_HOSTS=
 OIDC_GROUPS_CLAIM=groups
 OIDC_CLIENT_ID_CLAIM=azp
 PORTAL_OIDC_CLIENT_ID=<PORTAL_CLIENT_ID>
@@ -201,6 +205,35 @@ PORTAL_OIDC_CLIENT_ID=<PORTAL_CLIENT_ID>
 
 client secret과 SAML metadata/signing key는 이 파일에 넣지 않습니다. client 등록, callback, secret
 전달 절차는 [외부 인증](identity-provider.md)을 따릅니다.
+
+URL은 IdP 관리 화면이 아니라 discovery 문서(`<OIDC_ISSUER>/.well-known/openid-configuration`)에서
+**끝 `/`까지 그대로** 복사합니다. issuer는 정규화하지 않습니다(OIDC Core 정확 일치). Authentik
+issuer는 `/`로 끝나며, 이를 지우면 OpenBao discovery 비교·Envoy JWT `iss`·Portal Auth.js가 모두
+불일치로 거부합니다. SADP는 discovery URL을 만들 때만 끝 `/`를 떼고 붙입니다.
+
+`configure-site.py`는 외부 호출 없이 다음을 거부합니다. 오류에는 값이 아니라 변수 이름만 나옵니다.
+
+| 거부 조건 | 이유 |
+| --- | --- |
+| authorization/token/jwks/end-session endpoint의 호스트가 `OIDC_ISSUER` 호스트와 다름 | 대부분 붙여넣기 오류이며, 그대로 두면 엉뚱한 도메인이 Squid IdP allowlist에 열림 |
+| issuer나 endpoint 문자열에 `PORTAL_OIDC_CLIENT_ID`/`OIDC_SHARED_CLIENT_ID` 값이 들어 있음 | client ID가 URL 호스트에 붙여넣어져 `https_url()` 형식 검사를 통과한 실제 장애 |
+| 파생된 `identityProviderDomains`에 issuer 호스트와 예외 호스트 밖의 도메인이 있음 | 위 검사를 우회하는 경로가 생겨도 Squid에 열리기 전에 멈춤 |
+
+| 선택 변수 | 형식 | 의미 |
+| --- | --- | --- |
+| `OIDC_ENDPOINT_HOSTS` | 호스트 CSV | IdP가 실제로 issuer와 다른 호스트에서 endpoint를 공개할 때만 그 호스트를 적는다. issuer 호스트는 적지 않는다. `IDENTITY_SOURCE_PROTOCOL=saml`이면 broker 구성상 호스트 분리를 허용하므로 필요 없다 |
+| `IDP_RELAY_ENABLED` | `true`/`false` | Envoy Gateway가 proxy 없이 외부 IdP에 닿아야 하는데 worker에 외부 route가 없을 때 `true`. Squid egress 호스트 443에 SNI relay를 두고 CoreDNS가 IdP 호스트를 그 주소로 해석한다. IdP URL은 모두 443이어야 한다. [네트워크](network-egress.md#외부-idp-sni-relay) |
+| `HTTPS_PROXY` | `http://<PROXY_HOST>:<PORT>` | `--verify-idp`와 render/all 전 discovery 대조만 쓰는 외부 HTTPS proxy. 비우면 직접 연결. 호출 셸의 proxy 환경변수는 쓰지 않는다. 자격증명·경로는 거부. 계약·생성물에 넣지 않는다 |
+
+형식 검사를 통과한 경로 오타나 다른 application 복사는 실제 discovery와 대조해야만 잡힙니다.
+읽기 전용이며 필드 이름만 출력하고 값·응답 본문은 출력하지 않습니다.
+
+```bash
+bash ./sadp --verify-idp --env-file /etc/sadp/site.env
+```
+
+통합 설치기의 `render`/`all` phase는 렌더 전에 같은 대조를 실행합니다. IdP에 닿을 수 없는 폐쇄망만
+`--skip-idp-verify`로 생략하며 이때 `[WARN]`이 남습니다.
 
 ## 4. 검증·생성·드리프트 확인
 

@@ -112,7 +112,8 @@ class InstallAllTest(unittest.TestCase):
                 self.assertIs(self.installer.git("diff", check=False), result)
 
     def test_default_plan_never_changes_host_or_env(self):
-        result = subprocess.run(["bash", "./sadp", "--install", "--env-file", str(self.env)],
+        # 계획이 호스트·env를 바꾸지 않는지만 본다. 외부 IdP 대조는 sadp-installer-test가 mock으로 본다.
+        result = subprocess.run(["bash", "./sadp", "--install", "--skip-idp-verify", "--env-file", str(self.env)],
                                 cwd=ROOT, capture_output=True, text=True)
         self.assertEqual(result.returncode, 0, result.stderr)
         self.assertIn("[PLAN]", result.stdout)
@@ -196,7 +197,8 @@ class InstallAllTest(unittest.TestCase):
     def test_remote_shell_skips_interactive_startup_and_preserves_stdin(self):
         startup = Path(self.temp.name) / "startup.bash"
         startup.write_text('printf "%s" "$PS1"\nexit 99\n')
-        environment = dict(os.environ, BASH_ENV=str(startup), ENV=str(startup))
+        # 오류 문구를 비교하므로 bash 메시지 번역(ko_KR 등)을 끈다.
+        environment = dict(os.environ, BASH_ENV=str(startup), ENV=str(startup), LC_ALL="C", LANGUAGE="")
         for key in ("PS1", "SSH_CLIENT", "SSH_CONNECTION", "SSH_TTY"):
             environment.pop(key, None)
         broken = subprocess.run(["bash", "-ceu", "true"], env=environment, stdin=subprocess.DEVNULL, capture_output=True)
@@ -380,6 +382,10 @@ command() {
                 script = root / "scripts/install/sadp-install.sh"
                 script.parent.mkdir(parents=True)
                 script.write_text((ROOT / "scripts/install/sadp-install.sh").read_text())
+                # 설치기가 source하는 함수 정의 파일은 실물을 쓴다(OnDelete revision 보고).
+                library = root / "scripts/lib/openbao-oidc.sh"
+                library.parent.mkdir(parents=True)
+                library.write_text((ROOT / "scripts/lib/openbao-oidc.sh").read_text())
                 token = root / "token"
                 token.write_text("fixture only")
                 env_file = root / "site.env"
@@ -429,6 +435,8 @@ command() {
                                          "--env-file", str(env_file), "--node-name", cfg["nodes"]["controlHostname"]],
                                         env=environment, capture_output=True, text=True)
                 self.assertEqual(result.returncode, 1 if fail_init else 0, result.stdout + result.stderr)
+                if not fail_init:
+                    self.assertIn("OnDelete StatefulSet", result.stdout + result.stderr)
                 calls = log.read_text()
                 if fail_init:
                     self.assertNotIn("unseal-openbao.sh", calls)

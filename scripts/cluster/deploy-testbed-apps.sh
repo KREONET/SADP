@@ -241,7 +241,9 @@ for _ in {1..15}; do
   sleep 2
 done
 if ! security_policy_accepted; then
-  # CoreDNS split-horizon이 기존 controller Pod보다 늦게 반영된 재실행 상황.
+  # Envoy Gateway controller는 HTTPS_PROXY를 쓰지 않는다. IDP_RELAY_ENABLED=true면 IdP 호스트를
+  # SNI relay로 보내는 CoreDNS hosts가 기존 controller Pod의 실패한 discovery 뒤에 반영됐을 수 있어
+  # 한 번 재시작해 다시 조회하게 한다. relay 없이 외부 route도 없으면 재시작해도 수락되지 않는다.
   kctl rollout restart -n envoy-gateway-system deployment/envoy-gateway >/dev/null
   kctl rollout status -n envoy-gateway-system deployment/envoy-gateway --timeout=5m >/dev/null
   for _ in {1..60}; do

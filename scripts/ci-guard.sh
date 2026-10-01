@@ -62,6 +62,26 @@ else
   echo "[OK]   자격증명 패턴 없음"
 fi
 
+# OIDC issuer는 정규화하지 않는다(OIDC Core 정확 일치). discovery 응답 issuer, JWT iss,
+# OpenBao oidc_discovery_url 비교가 모두 바이트 단위라 끝 '/' 하나만 지워도 Authentik처럼
+# '/'로 끝나는 issuer에서 세 곳이 동시에 거부한다. 실제로 configure-site.py와 openbao-oidc.sh의
+# rstrip이 이 장애를 냈다. discovery URL만 `${issuer%/}/.well-known/...`로 만들고, issuer 값
+# 자체를 끝 '/' 제거로 바꾸는 코드는 막는다. 같은 줄에 issuer가 보이는 정규화만 잡는다.
+read -r -d '' issuer_strip_pattern <<'RE' || true
+rstrip\(\s*['"]/['"]\s*\)|removesuffix\(\s*['"]/['"]\s*\)|TrimSuffix\([^)]*,\s*"/"\s*\)|TrimRight\([^)]*,\s*"/"\s*\)|replace\(\s*/\\/\+?\$/|[A-Za-z_]*issuer[A-Za-z_]*=["']?\$\{[^}]*%/\}["']?([[:space:];]|$)
+RE
+issuer_strip=$(grep -RInEi "${issuer_strip_pattern}" scripts apps/portal-lite \
+    --exclude-dir=node_modules --exclude-dir=.next --exclude-dir=__pycache__ \
+    --exclude=ci-guard.sh --exclude=ci-guard-issuer-test.py 2>/dev/null \
+  | grep -i 'issuer' || true)
+if [[ -n ${issuer_strip} ]]; then
+  echo "[FAIL] OIDC issuer를 끝 '/' 제거로 정규화하는 코드가 있다(discovery URL만 \${issuer%/}로 만든다):"
+  echo "${issuer_strip}" | cut -d: -f1,2 | sed 's/^/         /'
+  FAIL=1
+else
+  echo "[OK]   OIDC issuer 정규화 코드 없음"
+fi
+
 # 위 패턴 검사는 확장자로 대상을 고른다. environments/bot-token 처럼 확장자가 없고 값만
 # 들어 있는 파일은 어떤 include 에도 걸리지 않아 그대로 통과한다. 실제로 40자 토큰이
 # 커밋된 적이 있다. environments/ 에는 예시만 커밋한다는 규칙을 파일 목록으로 강제한다.

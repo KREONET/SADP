@@ -44,18 +44,24 @@ environments/site.env  (사이트별 Private 입력, Git에 없음)
 
 ### ⚠️ `site.env`는 있을 수도 없을 수도 있다 — **먼저 확인해라**
 
-`site.env`는 `.gitignore` 대상이라 저장소만 봐서는 알 수 없다. `configure-site.py --write`를 안내하기 전에 반드시 확인해라.
+`site.env`는 `.gitignore` 대상이거나 저장소 밖에 있어 저장소만 봐서는 알 수 없다. 위치 후보는 둘이다.
+`configure-site.py --write`를 안내하기 전에 **두 곳을 모두** 확인해라.
 
 ```bash
-ls -l environments/site.env
+ls -l environments/site.env /etc/sadp/site.env
 ```
 
-**있으면** 그것이 상류다. 계약을 손으로 고쳐도 다음 `--write`에서 되돌아간다.
+통합 설치기(`--install`)의 기본값은 **`/etc/sadp/site.env`**다. 설치기로 올린 사이트는 대개 이쪽만 있다.
+`configure-site.py`는 기본 경로를 탐색하지 않는다. `--env-file`이 없으면 두 후보를 안내하고 멈춘다
+(두 파일이 함께 있을 때 도구가 상류를 추측하면 `--write`가 계약을 다른 값으로 되돌린다).
+
+**둘 중 하나라도 있으면** 그것이 상류다. 계약을 손으로 고쳐도 다음 `--write`에서 되돌아간다.
+둘 다 있으면 어느 쪽이 이 사이트의 상류인지 사람에게 확인해라.
 **계약과 `site.env`를 같은 변경에서 함께 고쳐라.** 확인은 저장소 복사본에서 한다.
 
 ```bash
 cp -a . /tmp/sitecheck && cd /tmp/sitecheck
-python3 scripts/site/configure-site.py --env-file environments/site.env --write --allow-dirty
+python3 scripts/site/configure-site.py --env-file <상류 site.env> --write --allow-dirty
 diff -u <원본>/contracts/platform-production.yaml contracts/platform-production.yaml   # 비어야 정상
 ```
 
@@ -86,9 +92,16 @@ bash ./sadp --test          # 아래를 전부 돌린다
 진입점 파일 이름은 `sadp`이고 실행 권한을 전제로 하지 않는다. 따라서
 **`bash ./sadp`**로 부른다.
 
-`render-test.sh`는 `helm`이 있어야 한다. **`helm`이 없으면 정상 profile 시험은 실패하고,
-금지 profile 시험은 `helm` 실행 실패를 "정상적으로 거부됨"으로 세어 조용히 통과한다**
-(`t_bad()`). 즉 helm 없이 본 `[OK]`는 검증된 것이 아니다.
+`render-test.sh`는 `helm`이 있어야 한다. 금지 profile 시험(`t_bad()`)은 `helm` 실행 실패를
+"정상적으로 거부됨"으로 셀 수 있어서, 지금은 시작할 때 `helm`이 없으면 `[FAIL]`로 멈춘다.
+이 사전 검사를 지우지 마라.
+
+`--test`는 **현재 작업 트리를 `environments/site.env.example`로 다시 렌더한 임시 사본(fixture)**에서
+시험을 돌린다(`scripts/tests/sadp_test_fixture.py`). 사이트 branch의 계약·생성물을 그대로 읽으면
+예제 기준 기대값과 달라 변경 전부터 실패하고 새 회귀가 그 소음에 묻힌다. 사이트 checkout의 계약·
+생성물·`site.env`에 기대는 시험을 새로 만들면 파일 머리에서 `sadp_test_fixture.reexec_in_fixture(__file__)`를
+불러 단독 실행도 fixture에서 돌게 해라. 환경 때문에 건너뛰는 항목은 `[OK]`가 아니라 `[SKIP] <사유>`로 출력한다.
+`ci-guard.sh`와 `git diff --check`만 실제 checkout에서 돈다.
 
 `--test`가 부르는 것은 다음과 같다. 하나만 다시 돌리고 싶으면 개별로 불러라.
 
@@ -102,11 +115,14 @@ python3 scripts/tests/promote-image-test.py
 python3 scripts/tests/portal-ui-build-env-test.py
 python3 scripts/tests/registry-credential-test.py
 bash scripts/tests/render-test.sh     # helm template 회귀: 정상 profile 통과 / 금지 profile 실패
-bash scripts/ci-guard.sh              # 금지 입력 차단. pre-commit과 CI가 같은 스크립트를 쓴다
+bash scripts/ci-guard.sh              # 금지 입력 차단(실제 checkout 대상)
 git diff --check
 ```
 
-`scripts/pre-commit`은 `ci-guard.sh`를 그대로 부른다. 설치: `ln -sf ../../scripts/pre-commit .git/hooks/pre-commit`
+**머지 조건은 `bash ./sadp --test` 종료 코드 0이다.** `scripts/pre-commit`과 CI
+(`.github/workflows/sadp-test.yml`, Forgejo Actions도 이 경로를 읽는다)가 같은 `--test` 전체를 돌린다.
+pre-commit 설치: `ln -sf ../../scripts/pre-commit .git/hooks/pre-commit`. 원격 저장소의 브랜치 보호에서
+이 job을 required check로 지정해야 실제 머지 차단이 된다.
 
 **클러스터가 있어야 도는 것 (control-plane 노드에서 root로):**
 
@@ -190,7 +206,7 @@ scripts/        역할별로 나눠 둔다. 자세한 지도는 scripts/README.m
   verify/         검수 (verify-*)
   ops/            운영 (backup, toggle-portal, rotate-forgejo-token)
   tests/          회귀 시험 (*-test.py, render-test.sh)
-  ci-guard.sh     pre-commit과 CI의 공통 진입점이라 최상위에 둔다
+  ci-guard.sh     --test·pre-commit·CI가 공통으로 부르는 금지 입력 가드라 최상위에 둔다
 platform/       생성된 네트워크·DNS·OpenBao·노출 설정
 apps/           앱별 values (hello, secure-demo, portal-lite, _template)
                 _groups/ 는 포털이 만드는 AppGroup Namespace bootstrap values 자리다
@@ -237,6 +253,10 @@ evidence/       검수 산출물
   OIDC 그룹은 진입 경계일 뿐 사용자별 객체 권한이 아니다. 일반 외부 앱의 Gateway 응답 헤더와
   `scripts/ops/quarantine-app.sh`를 유지하되, 서버 응답·redirect 유출과 앱 PVC 복구까지 보장한다고
   쓰지 마라. 정확한 약속은 `docs/security-boundaries.md`를 따른다.
+- **OIDC issuer는 정규화하지 않는다(OIDC Core 정확 일치). discovery URL만 `${issuer%/}`로 만든다.** Authentik issuer는 `/`로 끝나고, 끝 `/`를 지우면 OpenBao discovery 비교·Envoy JWT `iss`·Auth.js가 동시에 깨진다. `ci-guard.sh`가 issuer에 대한 `rstrip("/")`·`TrimSuffix/TrimRight(…, "/")`·`replace(/\/+$/)`를 막는다. discovery 대조는 `scripts/lib/oidc-discovery.sh` 하나만 써라.
+- **direct 모드에서 공인 IP 노드가 control-plane이면 Envoy Pod에 control-plane NoSchedule toleration이 필요하다.** `render-exposure.py`가 nodeSelector와 함께 렌더한다(한 노드에 고정돼 다른 노드로 퍼지지 않는다). 지우면 rollout이 Pending에서 멈춘다.
+- **Envoy Gateway의 OIDC/JWT(controller discovery, data plane token·JWKS)와 Portal의 Node fetch는 프록시를 쓰지 않는다.** 외부 IdP와 외부 route 없는 worker 조합이면 `IDP_RELAY_ENABLED=true`로 Squid egress 호스트에 SNI relay(`scripts/node/install-idp-relay.sh`)를 두고 CoreDNS `hosts`가 IdP 호스트를 relay 주소로 해석한다. relay는 TLS를 풀지 않고 계약 IdP 호스트의 SNI만 넘긴다. Envoy에 proxy 환경변수를 넣어 해결했다고 쓰지 마라.
+- **OpenBao StatefulSet은 `updateStrategy=OnDelete`다.** 템플릿(예: `oidc-preflight` 컨테이너)을 바꿔도 기존 Pod는 옛 revision으로 남는다. Pod 교체는 unseal을 동반하는 유지보수 결정이므로 스크립트가 Pod를 지우거나 재시작하게 만들지 마라. `openbao-oidc.sh`가 exec 전에 템플릿/revision/컨테이너 상태를 진단하고, `verify-testbed.sh`와 cluster phase 끝이 revision 뒤처짐을 `[WARN]`으로 알린다.
 - **`exposure.type`(public|oidc)은 폐기했지만 계속 읽는다.** 새 values는 `exposure.mode`(external|internal) + `authentication.mode`(none|oidc)를 쓴다. 하위호환 유도는 `charts/app-profile/templates/_helpers.tpl`과 `apps/portal-lite/backend/app_profile.go`의 `resolveAccess` 두 곳에 있고 **규칙이 같아야 한다.** 한쪽만 고치면 포털은 통과시키고 Helm이 거부하거나, 더 나쁘게는 인증이 조용히 꺼진다.
 - **AppGroup Namespace 접두사의 SSOT는 `platform.appGroups.namespacePrefix` 계약값이다.** 현재 `app-`이며, `charts/app-group`/`charts/app-profile`, 포털의 `PORTAL_APP_GROUP_NAMESPACE_PREFIX`, Argo `AppProject app-groups` destination(`app-*`)이 모두 이 값과 일치해야 한다. Chart는 AppGroup 앱의 릴리스 Namespace가 계약의 `<prefix><group>`과 다르면 렌더에서 멈춘다.
 - **AppGroup 이름은 플랫폼 전역에서 유일하다.** Namespace가 환경과 무관하게 `app-<group>`이므로 같은 이름을 다른 project/environment에서 재사용하면 안 된다. 포털 store의 `groupClaim`이 이를 거부한다.

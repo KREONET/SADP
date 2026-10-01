@@ -271,7 +271,13 @@ sudo bash ./sadp --configure-openbao-oidc
 | `DNS 해석 실패` | OpenBao Pod에서 issuer host가 CoreDNS/split-horizon으로 해석됨 |
 | `TLS 인증서/CA 검증 실패` | wildcard SAN, chain, 만료와 OpenBao Pod trust store |
 | `연결 거부` / `timeout` | OpenBao Pod→외부 OIDC HTTPS endpoint |
-| `issuer 불일치` | discovery JSON의 issuer와 계약 issuer가 정확히 같음 |
+| `issuer 불일치` | discovery JSON의 issuer와 계약 issuer가 끝 `/`까지 정확히 같음(정규화하지 않음) |
+| `StatefulSet 템플릿에 oidc-preflight 컨테이너가 없음` | `platform/openbao/proxy-values.yaml`의 `extraContainers`와 Argo `openbao` Application(devtroncd)의 Synced revision |
+| `OnDelete라 기존 Pod ...가 새 템플릿(oidc-preflight)으로 교체되지 않음` | Pod `controller-revision-hash`와 StatefulSet `status.updateRevision`. 아래 [OnDelete Pod 교체](#ondelete-pod-교체)를 따른다 |
+| `oidc-preflight 컨테이너가 준비되지 않음(waiting.reason=...)` | `ImagePullBackOff`/`ErrImagePull`이면 출력된 `--sync-images --image` 명령으로 모든 노드에 이미지 동기화 |
+| `exec 대상 oidc-preflight 컨테이너가 Pod에 없음` | 사전 진단 뒤에도 exec가 컨테이너를 못 찾음. Pod가 방금 교체됐는지와 revision을 다시 확인 |
+| `kubectl exec 권한 거부` | 실행 계정의 `pods/exec` RBAC |
+| `API server→kubelet exec 연결 실패` | Pod가 있는 노드의 kubelet 10250 경로와 interface guard |
 
 자동 출력된 다음 형태의 명령만 사용합니다. Secret은 객체 이름만 확인하고 `-o yaml`, `.data`, Pod
 환경변수, client Secret 파일은 출력하지 않습니다.
@@ -285,12 +291,38 @@ kubectl -n <GATEWAY_NAMESPACE> get gateway <GATEWAY_NAME> \
 kubectl -n <GATEWAY_NAMESPACE> get svc \
   -l gateway.envoyproxy.io/owning-gateway-name=<GATEWAY_NAME> \
   -o jsonpath='{range .items[*]}{.metadata.name}{" "}{.spec.ports[*].port}{"\n"}{end}'
+kubectl -n openbao get pod openbao-0 \
+  -o jsonpath='{.metadata.labels.controller-revision-hash}{" "}{range .spec.containers[*]}{.name}{" "}{end}{"\n"}'
+kubectl -n openbao get statefulset openbao \
+  -o jsonpath='{.spec.updateStrategy.type}{" "}{.status.updateRevision}{"\n"}'
 kubectl -n openbao exec openbao-0 -- sh -c \
   'nslookup "$1" >/dev/null' sh '<OIDC_ISSUER_HOST>'
-kubectl -n openbao exec openbao-0 -- sh -c \
-  'wget -T 15 -S -O /dev/null "$1"' sh \
-  '<OIDC_ISSUER>/.well-known/openid-configuration'
+kubectl -n openbao exec openbao-0 -c oidc-preflight -- sh -c \
+  'curl -q --connect-timeout 5 --max-time 15 --silent --show-error --output /dev/null "$1"' sh \
+  '<OIDC_ISSUER_WITHOUT_TRAILING_SLASH>/.well-known/openid-configuration'
 ```
+
+discovery URL만 issuer 끝 `/`를 떼고 만듭니다. `auth/oidc/config`의 `oidc_discovery_url`과 비교
+대상 issuer는 끝 `/`를 포함한 원래 값 그대로입니다.
+
+#### OnDelete Pod 교체
+
+OpenBao StatefulSet은 `updateStrategy=OnDelete`입니다. unseal 재료가 필요한 Pod를 controller가 임의로
+재시작하지 않게 하려는 선택이라, 템플릿에 `oidc-preflight`가 추가돼도 기존 Pod는 옛 revision으로
+계속 돕니다. preflight와 `--verify-testbed`는 이를 알리기만 하고 Pod를 지우지 않습니다.
+
+유지보수 창에서 Pod를 한 대씩 교체합니다. PVC와 Raft 데이터는 Pod 삭제로 지워지지 않습니다.
+
+```bash
+sudo /var/lib/rancher/rke2/bin/kubectl --kubeconfig /etc/rancher/rke2/rke2.yaml \
+  -n openbao delete pod openbao-0
+sudo bash ./sadp --unseal-openbao
+sudo bash ./sadp --unseal-openbao --apply
+sudo bash ./sadp --configure-openbao-oidc
+```
+
+새 Pod는 sealed로 뜨므로 unseal 전에는 ExternalSecret 공급이 멈춥니다. replica가 여러 대면 한 대의
+unseal과 active/Ready를 확인한 뒤 다음 Pod로 넘어갑니다.
 
 ### 2) DNS-01 node route 복구
 

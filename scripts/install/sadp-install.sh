@@ -11,6 +11,7 @@ APPLY=false
 ALLOW_DIRTY=false
 NODE_NAME=
 INTERACTIVE=false
+SKIP_IDP_VERIFY=false
 WIZARD_OPTIONS=()
 
 usage() {
@@ -34,6 +35,7 @@ phase:
   --advanced          --interactive의 기본값 묶음·로컬 탐지 없이 상세 질문
   --no-detect         --interactive의 로컬 NIC·RKE2 클러스터 조회 생략
   --repair            --interactive에서 기존 env를 검증하고 오류 항목만 수정
+  --skip-idp-verify   render/all 전 외부 IdP discovery 대조 생략(폐쇄망 전용, [WARN] 남김)
 
 안전한 기본 동작:
   --apply가 없으면 site.env와 실행 계획만 검사한다. 개별 node/cluster --apply는
@@ -51,6 +53,7 @@ while (($#)); do
     --apply) APPLY=true ;;
     --interactive) INTERACTIVE=true ;;
     --advanced|--no-detect|--repair) WIZARD_OPTIONS+=("$1") ;;
+    --skip-idp-verify) SKIP_IDP_VERIFY=true ;;
     -h|--help) usage; exit 0 ;;
     *) printf '[FAIL] 알 수 없는 인자: %s\n' "$1" >&2; usage >&2; exit 2 ;;
   esac
@@ -71,9 +74,25 @@ if [[ ${INTERACTIVE} == true ]]; then
   [[ ${APPLY} == false ]] || args+=(--apply)
   [[ -z ${NODE_NAME} ]] || args+=(--node-name "${NODE_NAME}")
   [[ ${ALLOW_DIRTY} == false ]] || args+=(--allow-dirty)
+  [[ ${SKIP_IDP_VERIFY} == false ]] || args+=(--skip-idp-verify)
   exec python3 scripts/install/sadp-install-wizard.py "${args[@]}"
 fi
 [[ -r ${ENV_FILE} ]] || { printf '[FAIL] site.env를 읽을 수 없음: %s\n' "${ENV_FILE}" >&2; exit 1; }
+
+# render는 site.env 값을 계약·Portal values·Squid allowlist까지 퍼뜨린다. 형식 검사만 통과한
+# 잘못된 IdP endpoint가 퍼진 뒤 로그인 단계에서야 드러나지 않게, 렌더 전에 실제 discovery와
+# 대조한다. node/cluster phase는 이미 렌더된 checkout을 쓰고 worker는 외부망이 없을 수 있어
+# 여기서 다시 묻지 않는다. 폐쇄망처럼 IdP에 닿을 수 없는 경우만 명시적으로 생략한다.
+if [[ ${PHASE} == render || ${PHASE} == all ]]; then
+  if [[ ${SKIP_IDP_VERIFY} == true ]]; then
+    printf '[WARN] --skip-idp-verify: 외부 IdP discovery 대조를 생략함. endpoint 오류는 OIDC 단계에서야 드러난다. 가능한 곳에서 bash ./sadp --verify-idp --env-file <site.env>로 먼저 확인하라\n' >&2
+  else
+    bash scripts/verify/verify-idp-discovery.sh --env-file "${ENV_FILE}" || {
+      printf '[FAIL] 외부 IdP discovery 대조 실패로 설치를 중단함(폐쇄망이면 --skip-idp-verify)\n' >&2
+      exit 1
+    }
+  fi
+fi
 if [[ ${PHASE} == all ]]; then
   args=(--env-file "${ENV_FILE}")
   [[ ${APPLY} == false ]] || args+=(--apply)
@@ -196,6 +215,12 @@ if [[ ${PHASE} == node || ${PHASE} == all ]]; then
   # 설정이 된다. Squid 자체 package만 승인된 direct mirror 또는 기존 upstream proxy로 bootstrap한다.
   if [[ ${NODE_IP} == "${SQUID_INTERNAL_IP}" ]]; then
     step "계약 기반 Squid egress 선행 설치" bash scripts/node/install-squid-egress.sh
+    # Envoy Gateway는 Squid를 쓰지 않으므로 외부 IdP 경로를 같은 egress 호스트의 SNI relay로 준다.
+    if [[ ${IDP_RELAY_ENABLED:-false} == true ]]; then
+      relay=(bash scripts/node/install-idp-relay.sh)
+      [[ ${APPLY} != true ]] || relay+=(--apply)
+      step "Envoy Gateway용 외부 IdP SNI relay" "${relay[@]}"
+    fi
   fi
 
   node_config=(bash scripts/node/install-rke2-node-config.sh --role "${NODE_ROLE}")
@@ -260,6 +285,8 @@ fi
 KUBECTL_BIN=${KUBECTL_BIN:-/var/lib/rancher/rke2/bin/kubectl}
 KUBECONFIG_PATH=${KUBECONFIG_PATH:-/etc/rancher/rke2/rke2.yaml}
 kctl() { "${KUBECTL_BIN}" --kubeconfig "${KUBECONFIG_PATH}" "$@"; }
+# OnDelete revision 보고 함수만 쓴다. 이 파일은 함수 정의만 있어 source해도 부작용이 없다.
+source scripts/lib/openbao-oidc.sh
 
 apply_dns_secret() {
   kctl create namespace cert-manager --dry-run=client -o yaml | kctl apply -f - >/dev/null
@@ -392,7 +419,19 @@ if [[ ${APPLY} == true ]]; then
   wait_for_install_revision
 fi
 
+# OpenBao StatefulSet은 OnDelete라 platform 단계가 템플릿을 바꿔도 기존 Pod는 교체되지 않는다.
+# cluster phase가 끝날 때마다 revision 뒤처짐을 [WARN]으로 남겨 다음 OIDC 단계의 exec 실패를
+# 미리 알린다. Pod는 건드리지 않는다(교체는 unseal을 동반하는 유지보수 결정이다).
+report_openbao_revision_lag() {
+  if [[ ${APPLY} == true ]]; then
+    openbao_report_ondelete_revision_lag openbao
+  else
+    note "적용 모드에서는 마지막에 openbao OnDelete StatefulSet의 Pod revision 뒤처짐을 [WARN]으로 보고"
+  fi
+}
+
 if [[ ${EXISTING_GATEWAY_TLS_READY} != true ]]; then
+  report_openbao_revision_lag
   note "TLS 인증서 준비 단계이므로 서비스 초기화·앱 배포·검수를 보류한다"
   note "인증서 Ready 확인 후 site.env의 TLS 진행값을 갱신하고 render→commit/push→cluster를 다시 실행한다"
   exit 0
@@ -442,4 +481,5 @@ if [[ ${SADP_RUN_VERIFY} == true ]]; then
   step "SADP 핵심 acceptance" bash scripts/verify/verify-testbed.sh
 fi
 
+report_openbao_revision_lag
 ok "SADP 통합 설치 phase=${PHASE} 완료"

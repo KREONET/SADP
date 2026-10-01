@@ -2,6 +2,7 @@
 # 외부 IdP를 변경하지 않고 OIDC discovery와 Portal Authorization Code 시작점만 검증한다.
 set -euo pipefail
 source "$(dirname "$0")/../lib/testbed-common.sh"
+source "$(dirname "$0")/../lib/oidc-discovery.sh"
 
 require_root
 for command in curl jq python3; do require_command "${command}"; done
@@ -18,7 +19,7 @@ print(contract["gateway"]["vip"])
 print((portal.get("exposure") or {}).get("host") or "")
 for field in (
     "managed", "sourceProtocol", "issuer", "authorizationEndpoint", "tokenEndpoint",
-    "jwksURI", "portalClientID",
+    "jwksURI", "portalClientID", "endSessionEndpoint",
 ):
     print(identity.get(field) or "")
 PY
@@ -27,11 +28,13 @@ vip=${contract_values[0]}
 portal_host=${contract_values[1]:?Portal values에 exposure.host가 없다}
 managed=${contract_values[2]}
 source_protocol=${contract_values[3]}
-issuer=${contract_values[4]%/}
+# issuer는 정규화하지 않는다. discovery URL만 공용 함수가 `${issuer%/}`로 만든다.
+issuer=${contract_values[4]}
 authorization_endpoint=${contract_values[5]}
 token_endpoint=${contract_values[6]}
 jwks_uri=${contract_values[7]}
 portal_client_id=${contract_values[8]}
+end_session_endpoint=${contract_values[9]}
 portal_origin=https://${portal_host}
 
 [[ ${managed} == external ]] || die "identityProvider.managed는 external이어야 함"
@@ -48,19 +51,9 @@ cleanup() { rm -rf -- "${run_dir}"; }
 trap cleanup EXIT
 cookie_jar=${run_dir}/cookies.txt
 
-discovery=$(curl -fsS --connect-timeout 5 --max-time 30 \
-  "${issuer}/.well-known/openid-configuration") \
-  || die "외부 OIDC discovery를 읽을 수 없음"
-jq -e \
-  --arg issuer "${issuer}" \
-  --arg authorization "${authorization_endpoint}" \
-  --arg token "${token_endpoint}" \
-  --arg jwks "${jwks_uri}" '
-    .issuer == $issuer
-    and .authorization_endpoint == $authorization
-    and .token_endpoint == $token
-    and .jwks_uri == $jwks
-  ' <<<"${discovery}" >/dev/null \
+# control-plane에서는 기존처럼 호출 환경의 proxy 설정을 따른다(proxy 인자 비움).
+sadp_oidc_discovery_verify "${issuer}" "${authorization_endpoint}" "${token_endpoint}" \
+  "${jwks_uri}" "${end_session_endpoint}" \
   || die "외부 OIDC discovery와 계약 endpoint가 일치하지 않음"
 ok "외부 OIDC discovery와 공개 계약 일치"
 

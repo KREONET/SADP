@@ -12,6 +12,13 @@ import tempfile
 import yaml
 
 
+sys.path.insert(0, str(pathlib.Path(__file__).resolve().parent))
+import sadp_test_fixture  # noqa: E402
+
+# 사이트 checkout의 계약·생성물에 기대는 시험이다. 직접 실행해도 예제 site.env로
+# 렌더한 fixture 사본에서 돌게 해 사이트 값 때문에 생기는 거짓 실패를 막는다.
+sadp_test_fixture.reexec_in_fixture(__file__)
+
 ROOT = pathlib.Path(__file__).resolve().parents[2]
 PASSED = 0
 FAILED = 0
@@ -383,6 +390,139 @@ for source, curl_code, expected_calls, expected_code in [('provided', 28, 0, 0),
         else:
             FAILED += 1
             print(f'[FAIL] Squid ACME 검사 source={source}: code={result.returncode}, 요청 {count}회')
+
+
+
+# 외부 IdP SNI relay. Envoy Gateway는 proxy를 쓰지 않아 외부 route 없는 worker에서 IdP에 못 닿는다.
+RELAY_HOSTS = ["idp.example.invalid", "keys.example.invalid"]
+
+
+def enable_relay(spec: dict, **override) -> None:
+    spec["network"]["squid"]["identityProviderDomains"] = list(RELAY_HOSTS)
+    spec["network"]["identityProviderRelay"] = {
+        "enabled": True,
+        "address": spec["network"]["squid"]["internalIP"],
+        "port": 443,
+        **override,
+    }
+
+
+def coredns_plugins(root: pathlib.Path) -> list[dict]:
+    resource = yaml.safe_load((root / "platform/dns/rke2-coredns-config.yaml").read_text(encoding="utf-8"))
+    return yaml.safe_load(resource["spec"]["valuesContent"])["servers"][0]["plugins"]
+
+
+def relay_outputs(root: pathlib.Path) -> str:
+    relay_ip = contract(root)["network"]["squid"]["internalIP"]
+    config = (root / "platform/network/idp-relay/haproxy.cfg").read_text(encoding="utf-8")
+    lines = [line.strip() for line in config.splitlines()]
+    if f"bind {relay_ip}:443" not in lines or sum(line.startswith("bind ") for line in lines) != 1:
+        return "relay가 내부 IP 443 하나에만 bind하지 않는다"
+    if "default_backend" in config or "mode http" in config or " crt " in config:
+        return "relay가 기본 backend를 두거나 TLS를 종단한다"
+    # tcp-request는 use_backend보다 먼저 평가된다. 조건 없는 reject는 허용 SNI까지 끊는다.
+    if "tcp-request content reject" in lines:
+        return "조건 없는 tcp-request reject가 있다"
+    for rule in (
+        "tcp-request connection reject unless sadp_clients",
+        "tcp-request content reject unless { req.ssl_hello_type 1 }",
+        "acl idp_sni req.ssl_sni -m str -i " + " ".join(RELAY_HOSTS),
+        "tcp-request content reject unless idp_sni",
+    ):
+        if rule not in lines:
+            return f"relay 제한 규칙 누락: {rule}"
+    sources = contract(root)["network"]["squid"]["clientCIDRs"]
+    if f"acl sadp_clients src {' '.join(sources)}" not in lines:
+        return "relay 출발지가 Squid client CIDR과 다르다"
+    if "daemon" in lines:
+        return "systemd 관리 HAProxy에 daemon 지시어가 있다"
+    for host in RELAY_HOSTS:
+        if not any(line.startswith("use_backend") and f"req.ssl_sni -m str -i {host} }}" in line for line in lines):
+            return f"정확한 SNI 규칙 누락: {host}"
+        if not any(line.startswith(f"server upstream {host}:443 resolvers sadp_node") for line in lines):
+            return f"backend가 같은 IdP 호스트 443이 아니다: {host}"
+    plugins = coredns_plugins(root)
+    names = [item["name"] for item in plugins]
+    if "hosts" not in names or names.index("hosts") > names.index("forward"):
+        return "CoreDNS hosts가 forward 앞에 없다"
+    block = plugins[names.index("hosts")]["configBlock"].splitlines()
+    if block != [f"{relay_ip} {host}" for host in RELAY_HOSTS] + ["ttl 30", "fallthrough"]:
+        return f"CoreDNS hosts 내용 불일치: {block}"
+    return ""
+
+
+def relay_disabled_outputs(root: pathlib.Path) -> str:
+    if (root / "platform/network/idp-relay/haproxy.cfg").exists():
+        return "relay를 끈 계약에서 haproxy.cfg가 생성됐다"
+    if "hosts" in [item["name"] for item in coredns_plugins(root)]:
+        return "relay를 끈 계약에서 CoreDNS hosts가 생겼다"
+    return ""
+
+
+case("NW-20 IdP relay는 정확한 SNI만 내부 IP 443에서 넘기고 CoreDNS hosts로 해석", enable_relay, True, relay_outputs)
+case("NW-21 relay를 끄면 haproxy.cfg와 CoreDNS hosts가 없다",
+     lambda spec: spec["network"].update({"identityProviderRelay": {"enabled": False}}), True,
+     relay_disabled_outputs)
+def relay_on_other_node(spec: dict) -> None:
+    # 같은 내부망의 다른 노드 주소를 써야 "egress 호스트가 아님" 규칙을 정확히 겨눈다.
+    other = next(str(item) for item in spec["network"]["nodeAddresses"]
+                 if str(item) != spec["network"]["squid"]["internalIP"])
+    enable_relay(spec, address=other)
+
+
+def relay_other_node_case() -> None:
+    global PASSED, FAILED
+    root = workspace()
+    try:
+        mutate(root, relay_on_other_node)
+        result = run(root)
+        ok = result.returncode != 0 and "must be the Squid egress host" in result.stderr
+    finally:
+        shutil.rmtree(root, ignore_errors=True)
+    label = "NW-22 relay 주소가 Squid egress 호스트가 아니면 거부"
+    if ok:
+        PASSED += 1
+        print(f"[OK]   {label}")
+    else:
+        FAILED += 1
+        print(f"[FAIL] {label}: {result.stderr.strip()}")
+
+
+relay_other_node_case()
+case("NW-23 relay 포트 443 외 거부", lambda spec: enable_relay(spec, port=8443), False)
+case("NW-24 suffix IdP 도메인은 relay 거부",
+     lambda spec: (enable_relay(spec), spec["network"]["squid"]["identityProviderDomains"].append(".sso.example.invalid")),
+     False)
+case("NW-25 relay enabled 비boolean 거부", lambda spec: enable_relay(spec, enabled="true"), False)
+
+
+def stale_relay_check() -> None:
+    global PASSED, FAILED
+    root = workspace()
+    try:
+        mutate(root, enable_relay)
+        run(root)
+        mutate(root, lambda spec: spec["network"].update({"identityProviderRelay": {"enabled": False}}))
+        checked = run(root, "--check")
+        rendered = run(root)
+        ok = (
+            checked.returncode != 0
+            and "idp-relay/haproxy.cfg must not exist" in checked.stderr
+            and rendered.returncode == 0
+            and not (root / "platform/network/idp-relay/haproxy.cfg").exists()
+        )
+    finally:
+        shutil.rmtree(root, ignore_errors=True)
+    label = "NW-26 relay를 끈 뒤 남은 haproxy.cfg는 --check 실패, render가 제거"
+    if ok:
+        PASSED += 1
+        print(f"[OK]   {label}")
+    else:
+        FAILED += 1
+        print(f"[FAIL] {label}")
+
+
+stale_relay_check()
 
 print(f"통과 {PASSED} / 실패 {FAILED}")
 raise SystemExit(FAILED != 0)

@@ -12,6 +12,13 @@ import tempfile
 import yaml
 
 
+sys.path.insert(0, str(pathlib.Path(__file__).resolve().parent))
+import sadp_test_fixture  # noqa: E402
+
+# --write 사례는 저장소를 통째로 복사한다. 사이트 checkout에서 직접 실행해도 실제 site.env가
+# 임시 사본으로 번지지 않고 예제 계약 기준으로 돌도록 fixture에서 다시 실행한다.
+sadp_test_fixture.reexec_in_fixture(__file__)
+
 ROOT = pathlib.Path(__file__).resolve().parents[2]
 PASSED = 0
 FAILED = 0
@@ -41,7 +48,7 @@ MACHINE_AUTH_SERVICES=
 MACHINE_AUTH_CLIENTS=
 MACHINE_AUTH_ALLOWED_CIDRS=
 IDENTITY_SOURCE_PROTOCOL=openid
-OIDC_ISSUER=https://idp.company.kr/application/o/sadp
+OIDC_ISSUER=https://idp.company.kr/application/o/sadp/
 OIDC_AUTHORIZATION_ENDPOINT=https://idp.company.kr/application/o/authorize/
 OIDC_TOKEN_ENDPOINT=https://idp.company.kr/application/o/token/
 OIDC_JWKS_URI=https://idp.company.kr/application/o/sadp/jwks/
@@ -359,8 +366,20 @@ def verify_generated(workspace: pathlib.Path) -> str:
     identity = spec.get("identityProvider") or {}
     if identity.get("managed") != "external":
         return "identity provider must remain external"
-    if identity.get("issuer") != "https://idp.company.kr/application/o/sadp":
+    # Authentik issuer는 '/'로 끝난다. 정규화하면 discovery/JWT iss/OpenBao 비교가 모두 깨진다.
+    if identity.get("issuer") != "https://idp.company.kr/application/o/sadp/":
         return f"external OIDC issuer mismatch: {identity.get('issuer')}"
+    if (spec.get("machineAuth") or {}).get("oidc", {}).get("issuer") != identity.get("issuer"):
+        return "machine-auth JWT issuer가 계약 issuer와 다르다"
+    portal_config = yaml.safe_load(
+        (workspace / "apps/portal-lite/values-beta.yaml").read_text(encoding="utf-8")
+    )["configuration"]["config"]
+    if portal_config.get("AUTH_OIDC_ISSUER") != identity.get("issuer"):
+        return "Portal AUTH_OIDC_ISSUER가 끝 '/'를 잃었다"
+    if "OIDC_ISSUER=https://idp.company.kr/application/o/sadp/\n" not in install_env:
+        return "site-install.env OIDC_ISSUER가 끝 '/'를 잃었다"
+    if spec["network"]["squid"].get("identityProviderDomains") != ["idp.company.kr"]:
+        return "IdP Squid 도메인이 issuer 호스트 하나가 아니다"
     if any(path.is_file() for path in (workspace / "platform/keycloak").rglob("*")):
         return "managed identity-provider manifest was generated"
     quota_documents = [
@@ -540,7 +559,7 @@ def generated_saml_source(workspace: pathlib.Path, _result) -> str:
     )["spec"]["identityProvider"]
     if identity.get("sourceProtocol") != "saml":
         return f"SAML upstream marker mismatch: {identity.get('sourceProtocol')}"
-    if identity.get("issuer") != "https://idp.company.kr/application/o/sadp":
+    if identity.get("issuer") != "https://idp.company.kr/application/o/sadp/":
         return "SAML broker의 OIDC issuer가 바뀌었다"
     return ""
 
@@ -1300,6 +1319,199 @@ def check_internal_workers(workspace, result):
 case("SC-58 내부망 전용 worker 계약과 설치 env 전달", VALID + "WORKER_INTERNAL_ONLY=true\n",
      True, check_internal_workers, write=True)
 case("SC-59 내부망 전용 worker 잘못된 boolean 거부", VALID + "WORKER_INTERNAL_ONLY=maybe\n", False)
+
+
+
+# 외부 IdP endpoint 오프라인 검증. 실제 장애: token endpoint 호스트에 client ID가 붙여넣어져
+# https_url 형식 검사를 통과하고 계약·Portal·Squid까지 전파됐다.
+def rejected_without_value(*names: str, forbidden: tuple[str, ...]):
+    def verify(_workspace, result):
+        output = result.stdout + result.stderr
+        missing = [name for name in names if name not in output]
+        if missing:
+            return f"오류가 변수 이름을 가리키지 않는다: {missing}"
+        leaked = [value for value in forbidden if value in output]
+        if leaked:
+            return "오류 메시지에 입력값이 노출됐다"
+        return ""
+    return verify
+
+
+def idp_domains(*expected: str):
+    def verify(workspace, _result):
+        spec = yaml.safe_load(
+            (workspace / "contracts/platform-production.yaml").read_text(encoding="utf-8")
+        )["spec"]
+        domains = spec["network"]["squid"]["identityProviderDomains"]
+        if domains != list(expected):
+            return f"identityProviderDomains 불일치: {domains}"
+        if "OIDC_ENDPOINT_HOSTS" in str(spec) or "endpointHosts" in str(spec):
+            return "예외 호스트 입력이 계약에 기록됐다"
+        return ""
+    return verify
+
+
+case(
+    "SC-60 token endpoint 호스트가 issuer와 다르면 거부(값 비노출)",
+    mutate(
+        VALID,
+        "OIDC_TOKEN_ENDPOINT=https://idp.company.kr/application/o/token/",
+        "OIDC_TOKEN_ENDPOINT=https://idp.company.krnet/application/o/token/",
+    ),
+    False,
+    rejected_without_value("OIDC_TOKEN_ENDPOINT", "OIDC_ENDPOINT_HOSTS", forbidden=("krnet",)),
+)
+case(
+    "SC-61 endpoint에 Portal client ID가 들어가면 거부(값 비노출)",
+    mutate(
+        VALID,
+        "OIDC_TOKEN_ENDPOINT=https://idp.company.kr/application/o/token/",
+        "OIDC_TOKEN_ENDPOINT=https://idp.portal-prodnet/application/o/token/",
+    ),
+    False,
+    rejected_without_value(
+        "OIDC_TOKEN_ENDPOINT", "PORTAL_OIDC_CLIENT_ID", forbidden=("portal-prod",)
+    ),
+)
+case(
+    "SC-62 issuer에 공통 client ID가 들어가면 거부(대소문자 무시, 값 비노출)",
+    mutate(
+        VALID,
+        "OIDC_ISSUER=https://idp.company.kr/application/o/sadp/",
+        "OIDC_ISSUER=https://idp.company.kr/application/o/authentik.shared-client_123/",
+    ) + "OIDC_SHARED_CLIENT_ID=Authentik.Shared-Client_123\n",
+    False,
+    rejected_without_value(
+        "OIDC_ISSUER", "OIDC_SHARED_CLIENT_ID", forbidden=("Shared-Client", "shared-client")
+    ),
+)
+case(
+    "SC-63 end-session endpoint 호스트 오염도 거부",
+    mutate(
+        VALID,
+        "OIDC_END_SESSION_ENDPOINT=\n",
+        "OIDC_END_SESSION_ENDPOINT=https://logout.company.kr/end-session/\n",
+    ),
+    False,
+    rejected_without_value("OIDC_END_SESSION_ENDPOINT", forbidden=("logout.company.kr",)),
+)
+case(
+    "SC-64 SAML broker는 endpoint 호스트 분리를 허용하고 Squid 도메인에 반영",
+    mutate(
+        mutate(VALID, "IDENTITY_SOURCE_PROTOCOL=openid", "IDENTITY_SOURCE_PROTOCOL=saml"),
+        "OIDC_TOKEN_ENDPOINT=https://idp.company.kr/application/o/token/",
+        "OIDC_TOKEN_ENDPOINT=https://broker.company.kr/oauth2/token/",
+    ),
+    True,
+    idp_domains("idp.company.kr", "broker.company.kr"),
+    write=True,
+)
+case(
+    "SC-65 OIDC_ENDPOINT_HOSTS에 명시한 호스트만 예외로 허용",
+    mutate(
+        VALID,
+        "OIDC_JWKS_URI=https://idp.company.kr/application/o/sadp/jwks/",
+        "OIDC_JWKS_URI=https://keys.company.kr/application/o/sadp/jwks/",
+    ) + "OIDC_ENDPOINT_HOSTS=Keys.Company.KR\n",
+    True,
+    idp_domains("idp.company.kr", "keys.company.kr"),
+    write=True,
+)
+case(
+    "SC-66 OIDC_ENDPOINT_HOSTS에 없는 두 번째 호스트는 여전히 거부",
+    mutate(
+        mutate(
+            VALID,
+            "OIDC_JWKS_URI=https://idp.company.kr/application/o/sadp/jwks/",
+            "OIDC_JWKS_URI=https://keys.company.kr/application/o/sadp/jwks/",
+        ),
+        "OIDC_TOKEN_ENDPOINT=https://idp.company.kr/application/o/token/",
+        "OIDC_TOKEN_ENDPOINT=https://token.company.kr/application/o/token/",
+    ) + "OIDC_ENDPOINT_HOSTS=keys.company.kr\n",
+    False,
+    rejected_without_value("OIDC_TOKEN_ENDPOINT", forbidden=("token.company.kr",)),
+)
+
+
+def domain_assertion() -> str:
+    # endpoint 검사를 우회하는 새 경로가 생겨도 Squid 도메인 파생 단계가 마지막으로 막는지 본다.
+    module = load_configure_site()
+    workspace = pathlib.Path(tempfile.mkdtemp(prefix="configure-site-idp-"))
+    try:
+        env_file = workspace / "site.env"
+        env_file.write_text(VALID, encoding="utf-8")
+        cfg = module.validate(module.parse_env(env_file))
+        cfg["identityProvider"]["jwksURI"] = "https://elsewhere.company.kr/jwks/"
+        contract = yaml.safe_load(
+            (ROOT / "contracts/platform-production.yaml").read_text(encoding="utf-8")
+        )
+        try:
+            module.build_contract(contract, cfg)
+        except module.ConfigError as error:
+            if "elsewhere" in str(error):
+                return "도메인 단언 오류에 값이 노출됐다"
+            if "identityProviderDomains" not in str(error):
+                return "도메인 단언이 아닌 다른 검사에서 실패했다"
+            return ""
+        return "issuer/예외 밖 IdP 도메인이 Squid 계약으로 파생됐다"
+    finally:
+        shutil.rmtree(workspace, ignore_errors=True)
+
+
+direct_case("SC-67 파생 identityProviderDomains는 issuer·예외 호스트만 허용", domain_assertion)
+case(
+    "SC-68 HTTPS_PROXY 자격증명 포함 거부",
+    VALID + "HTTPS_PROXY=http://user:pass@10.20.30.11:3128\n",
+    False,
+    rejected_without_value("HTTPS_PROXY", forbidden=("pass",)),
+)
+case("SC-69 HTTPS_PROXY 포트 누락 거부", VALID + "HTTPS_PROXY=http://10.20.30.11\n", False)
+
+
+
+def relay_generated(workspace, _result):
+    spec = yaml.safe_load((workspace / "contracts/platform-production.yaml").read_text(encoding="utf-8"))["spec"]
+    relay = spec["network"].get("identityProviderRelay")
+    if relay != {"enabled": True, "address": "10.20.30.11", "port": 443}:
+        return f"relay 계약 불일치: {relay}"
+    if "IDP_RELAY_ENABLED=true\n" not in (workspace / "platform/network/site-install.env").read_text():
+        return "설치 env에 relay 여부가 없다"
+    config = workspace / "platform/network/idp-relay/haproxy.cfg"
+    if not config.exists() or "req.ssl_sni -m str -i idp.company.kr }" not in config.read_text():
+        return "relay haproxy.cfg가 IdP 호스트로 생성되지 않았다"
+    coredns = (workspace / "platform/dns/rke2-coredns-config.yaml").read_text(encoding="utf-8")
+    if "10.20.30.11 idp.company.kr" not in coredns:
+        return "CoreDNS hosts가 IdP 호스트를 relay로 보내지 않는다"
+    # Portal의 Node fetch는 proxy를 안 쓰므로 relay:443 egress가 있어야 Auth.js가 IdP에 닿는다.
+    portal = yaml.safe_load((workspace / "apps/portal-lite/values-beta.yaml").read_text(encoding="utf-8"))
+    if {"cidr": "10.20.30.11/32", "protocol": "TCP", "port": 443} not in portal["networkPolicy"]["allowedCIDRs"]:
+        return "Portal NetworkPolicy에 relay:443 egress가 없다"
+    return ""
+
+
+def relay_absent(workspace, _result):
+    spec = yaml.safe_load((workspace / "contracts/platform-production.yaml").read_text(encoding="utf-8"))["spec"]
+    if spec["network"].get("identityProviderRelay", {}).get("enabled") is not False:
+        return "relay 기본값이 false로 기록되지 않았다"
+    if (workspace / "platform/network/idp-relay/haproxy.cfg").exists():
+        return "relay를 끈 사이트에 haproxy.cfg가 남았다"
+    return ""
+
+
+case("SC-70 IDP_RELAY_ENABLED=true는 계약·설치 env·HAProxy·CoreDNS hosts를 함께 생성",
+     VALID + "IDP_RELAY_ENABLED=true\n", True, relay_generated, write=True)
+case("SC-71 IDP_RELAY_ENABLED 기본은 꺼짐이며 relay 생성물이 없다", VALID, True, relay_absent, write=True)
+case(
+    "SC-72 relay는 443이 아닌 IdP URL을 거부(값 비노출)",
+    mutate(
+        VALID,
+        "OIDC_TOKEN_ENDPOINT=https://idp.company.kr/application/o/token/",
+        "OIDC_TOKEN_ENDPOINT=https://idp.company.kr:8443/application/o/token/",
+    ) + "IDP_RELAY_ENABLED=true\n",
+    False,
+    rejected_without_value("OIDC_TOKEN_ENDPOINT", "IDP_RELAY_ENABLED", forbidden=("8443",)),
+)
+case("SC-73 IDP_RELAY_ENABLED 잘못된 boolean 거부", VALID + "IDP_RELAY_ENABLED=yes\n", False)
 
 print(f"통과 {PASSED} / 실패 {FAILED}")
 raise SystemExit(FAILED != 0)

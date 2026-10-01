@@ -372,6 +372,44 @@ kubectl rollout status -n kube-system deployment/rke2-coredns-rke2-coredns
 self-check용 `DNS_RECURSIVE_NAMESERVERS`와 다릅니다. upstream은 일반 외부 이름, recursive
 nameserver는 public `_acme-challenge` 권위 응답을 보기 위한 경로입니다.
 
+### 외부 IdP SNI relay
+
+Envoy Gateway의 OIDC SecurityPolicy는 controller가 issuer discovery를, data plane Envoy가 token
+교환과 JWKS 조회를 직접 수행합니다. 둘 다 `HTTPS_PROXY`를 쓰지 않으므로 외부 route가 없는 worker에서는
+Squid allowlist와 무관하게 `no route to host`가 나고 SecurityPolicy가 `Accepted=False`로 남습니다.
+
+`IDP_RELAY_ENABLED=true`이면 다음이 생성·적용됩니다.
+
+| 구성 | 위치 | 동작 |
+| --- | --- | --- |
+| SNI relay | Squid egress 호스트 `<SQUID_INTERNAL_IP>:443` (`platform/network/idp-relay/haproxy.cfg`) | TLS를 풀지 않고 ClientHello SNI가 계약 IdP 호스트와 정확히 같을 때만 그 호스트 443으로 TCP 전달. 다른 SNI, 비TLS, `SQUID_CLIENT_CIDRS` 밖 출발지는 끊음. 내부 IP에만 bind |
+| Portal NetworkPolicy | `apps/portal-lite/values-beta.yaml` | Node fetch도 proxy를 쓰지 않으므로 relay가 켜지면 `<SQUID_INTERNAL_IP>/32:443` egress 추가 |
+| CoreDNS `hosts` | `platform/dns/rke2-coredns-config.yaml` | IdP 호스트만 relay 주소로 해석하고 나머지는 `forward` |
+
+TLS는 끝단 그대로라 인증서 검증과 client Secret이 relay를 거치며 노출되지 않습니다. relay backend는
+egress 호스트 자신의 resolver로 IdP를 찾으므로 CoreDNS hosts와 loop가 생기지 않습니다. IdP URL은 모두
+443이어야 하며 suffix(`.example.org`) IdP 도메인은 relay할 수 없습니다.
+
+적용 순서(각 단계는 계획이 기본이고 자동 재시작하지 않습니다):
+
+```bash
+# Squid egress 호스트
+sudo bash ./sadp --install-idp-relay
+sudo bash ./sadp --install-idp-relay --apply
+sudo bash ./sadp --install-idp-relay --check
+
+# control-plane
+kubectl apply -f platform/dns/rke2-coredns-config.yaml
+kubectl -n kube-system rollout status deploy/rke2-coredns-rke2-coredns
+kubectl -n envoy-gateway-system rollout restart deploy/envoy-gateway
+kubectl -n <WORKLOAD_NAMESPACE> get securitypolicy secure-demo-oidc \
+  -o jsonpath='{.status.ancestors[*].conditions[?(@.type=="Accepted")].status}{"\n"}'
+```
+
+통합 설치기의 node phase는 Squid 노드에서 Squid 다음에 relay를 설치하고, platform 단계가 CoreDNS를
+적용하며, 앱 배포 단계가 SecurityPolicy 미수락 시 envoy-gateway를 한 번 재시작합니다. `--check`는
+relay 경유 discovery 200과 계약 밖 SNI 차단을 실제로 확인하며 응답 본문은 출력하지 않습니다.
+
 ## 8. cert-manager egress
 
 `render-network.py`가 cert-manager Application과 NetworkPolicy를 함께 생성합니다.
@@ -409,6 +447,7 @@ systemctl status sadp-rke2-interface-guard.service
 | --- | --- | --- |
 | internal NIC | RKE2/etcd/API/kubelet/Canal, Squid | 승인되지 않은 경로 |
 | external NIC | Envoy TCP 80/443 | Kubernetes 관리 port, DB, 임의 ingress |
+| IdP relay(선택) | 내부 IP 443, 계약 IdP 호스트 SNI | 다른 SNI, 비TLS, 공인 NIC bind |
 | 앱 Pod | 선언한 DNS/internal/web/custom | 나머지 egress |
 
 NetworkPolicy는 Pod 정책일 뿐 node 자체의 direct 인터넷 차단을 대신하지 않습니다. 경계와 host

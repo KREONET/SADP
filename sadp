@@ -41,6 +41,7 @@ install-containerd-proxy|bash|scripts/node/install-rke2-containerd-proxy.sh|cont
 node-bundle|python3|scripts/ops/build-node-bundle.py|Secret 없는 node proxy bundle과 portable checksum 생성
 install-docker-proxy|bash|scripts/node/install-docker-proxy.sh|control-plane Docker image pull을 Squid 경유
 install-squid|bash|scripts/node/install-squid-egress.sh|allowlist Squid proxy 설치
+install-idp-relay|bash|scripts/node/install-idp-relay.sh|Envoy Gateway용 외부 IdP SNI relay(HAProxy) plan/--apply/--check
 upgrade-rke2|bash|scripts/node/upgrade-rke2.sh|versions.lock의 고정 버전으로 기존 RKE2 노드 업데이트
 GROUP:cluster — control-plane에서 root. 클러스터 전체
 bootstrap|bash|scripts/cluster/bootstrap-testbed.sh|전체 설치 진입점(아래 단계를 순서대로)
@@ -64,6 +65,7 @@ verify-testbed|bash|scripts/verify/verify-testbed.sh|핵심 acceptance. control-
 inspect-machine-auth-log|bash|scripts/verify/inspect-machine-auth-access-log.sh|기계 인증 요청의 안전한 Envoy 판정 필드 추출
 verify-d5|bash|scripts/verify/verify-d5.sh|cert-manager, wildcard TLS, HTTP->HTTPS
 verify-d6|bash|scripts/verify/verify-d6.sh|Rancher 설치와 기본 RBAC
+verify-idp|bash|scripts/verify/verify-idp-discovery.sh|site.env IdP endpoint를 실제 discovery와 대조(읽기 전용)
 verify-portal-auth|bash|scripts/verify/verify-portal-auth.sh|Auth.js -> 외부 OIDC 인증 흐름
 verify-squid|bash|scripts/verify/verify-squid-egress.sh|렌더된 allowlist 검증(host 변경 없음)
 verify-backups|bash|scripts/verify/verify-backups.sh|백업 checksum/포맷과 복원 시험
@@ -121,14 +123,26 @@ list_commands() {
 }
 
 # 회귀 시험 묶음. AGENTS.md 3절의 목록과 같은 것을 돌린다.
+#
+# 시험은 현재 작업 트리를 예제 site.env로 다시 렌더한 fixture 사본에서 돈다. 사이트 branch의
+# 계약·생성물을 그대로 읽으면 예제 기준 기대값과 달라 변경 전부터 실패하고, 새 회귀가 그
+# 소음에 묻힌다. 반대로 ci-guard와 git diff --check는 이 checkout 자체의 동기화와 금지 입력을
+# 보는 것이므로 실제 저장소에서 돌린다.
 run_test_suite() {
-  local failed=0 script
+  local failed=0 script fixture
+  if ! fixture=$(python3 scripts/tests/sadp_test_fixture.py --build); then
+    printf '\n[FAIL] 회귀 시험 fixture 준비 실패\n' >&2
+    return 1
+  fi
+  # shellcheck disable=SC2064 # fixture 경로는 지금 고정해야 한다.
+  trap "python3 scripts/tests/sadp_test_fixture.py --remove '${fixture}'" RETURN
+  printf '[INFO] 시험 fixture: 예제 site.env로 렌더한 작업 트리 사본\n'
   for script in scripts/tests/*-test.py; do
     printf '\n=== %s ===\n' "${script}"
-    python3 "${script}" || failed=1
+    SADP_TEST_FIXTURE_ROOT=${fixture} python3 "${fixture}/${script}" || failed=1
   done
   printf '\n=== scripts/tests/render-test.sh ===\n'
-  bash scripts/tests/render-test.sh || failed=1
+  (cd "${fixture}" && bash scripts/tests/render-test.sh) || failed=1
   printf '\n=== scripts/ci-guard.sh ===\n'
   bash scripts/ci-guard.sh || failed=1
   printf '\n=== git diff --check ===\n'

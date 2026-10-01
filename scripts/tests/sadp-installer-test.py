@@ -3,21 +3,90 @@
 
 from __future__ import annotations
 
+import json
+import os
 import pathlib
+import shutil
 import subprocess
+import sys
+import tempfile
 
+
+sys.path.insert(0, str(pathlib.Path(__file__).resolve().parent))
+import sadp_test_fixture  # noqa: E402
+
+# 사이트 checkout의 계약·생성물에 기대는 시험이다. 직접 실행해도 예제 site.env로
+# 렌더한 fixture 사본에서 돌게 해 사이트 값 때문에 생기는 거짓 실패를 막는다.
+sadp_test_fixture.reexec_in_fixture(__file__)
 
 ROOT = pathlib.Path(__file__).resolve().parents[2]
 ENV_FILE = ROOT / "environments" / "site.env.example"
 PASSED = 0
 FAILED = 0
 
+# render/all 앞에서 외부 IdP discovery를 대조하므로 네트워크 대신 PATH mock curl이 예제
+# site.env와 같은 discovery 문서를 돌려준다. MOCK_DISCOVERY_OVERRIDE로 한 필드만 틀리게 만든다.
+MOCK_DIR = pathlib.Path(tempfile.mkdtemp(prefix="sadp-installer-test-"))
+(MOCK_DIR / "curl").write_text(
+    r"""#!/usr/bin/env bash
+out=
+while (($#)); do
+  case "$1" in
+    --output) out=$2; shift ;;
+    --write-out|--connect-timeout|--max-time|--proto|--proxy) shift ;;
+  esac
+  shift
+done
+python3 - "${out}" <<'PY'
+import json, os, sys
+values = dict(
+    line.split("=", 1) for line in open(os.environ["MOCK_ENV_FILE"], encoding="utf-8").read().splitlines()
+    if line and not line.startswith("#") and "=" in line
+)
+document = {
+    "issuer": values["OIDC_ISSUER"],
+    "authorization_endpoint": values["OIDC_AUTHORIZATION_ENDPOINT"],
+    "token_endpoint": values["OIDC_TOKEN_ENDPOINT"],
+    "jwks_uri": values["OIDC_JWKS_URI"],
+}
+document.update(json.loads(os.environ.get("MOCK_DISCOVERY_OVERRIDE") or "{}"))
+json.dump(document, open(sys.argv[1], "w", encoding="utf-8"))
+PY
+printf '200'
+""",
+    encoding="utf-8",
+)
+(MOCK_DIR / "curl").chmod(0o755)
 
-def check(label: str, command: list[str], expected: int, contains: tuple[str, ...]) -> None:
+
+def environment(**extra: str) -> dict[str, str]:
+    return dict(
+        os.environ,
+        PATH=f"{MOCK_DIR}:{os.environ['PATH']}",
+        MOCK_ENV_FILE=str(ENV_FILE),
+        **extra,
+    )
+
+
+def check(
+    label: str,
+    command: list[str],
+    expected: int,
+    contains: tuple[str, ...],
+    *,
+    absent: tuple[str, ...] = (),
+    env: dict[str, str] | None = None,
+) -> None:
     global PASSED, FAILED
-    result = subprocess.run(command, cwd=ROOT, capture_output=True, text=True, check=False)
+    result = subprocess.run(
+        command, cwd=ROOT, env=env or environment(), capture_output=True, text=True, check=False
+    )
     output = result.stdout + result.stderr
-    if result.returncode == expected and all(item in output for item in contains):
+    if (
+        result.returncode == expected
+        and all(item in output for item in contains)
+        and not any(item in output for item in absent)
+    ):
         PASSED += 1
         print(f"[OK]   {label}")
         return
@@ -29,7 +98,9 @@ def check(label: str, command: list[str], expected: int, contains: tuple[str, ..
 
 def check_order(label: str, command: list[str], before: str, after: str) -> None:
     global PASSED, FAILED
-    result = subprocess.run(command, cwd=ROOT, capture_output=True, text=True, check=False)
+    result = subprocess.run(
+        command, cwd=ROOT, env=environment(), capture_output=True, text=True, check=False
+    )
     output = result.stdout + result.stderr
     before_index = output.find(before)
     after_index = output.find(after)
@@ -50,7 +121,8 @@ check(
     "SI-01 example site.env render plan is read-only",
     ["bash", "./sadp", "--install", "--env-file", str(ENV_FILE), "--phase", "render"],
     0,
-    ("site=sadp", "외부 OIDC issuer 연결:", "IdP 설정은 설치기 관리 대상 아님", "검사만 완료"),
+    ("site=sadp", "외부 OIDC issuer 연결:", "IdP 설정은 설치기 관리 대상 아님", "검사만 완료",
+     "IdP discovery와 site.env"),
 )
 check(
     "SI-02 worker role/IP and node steps are inferred from env",
@@ -210,5 +282,40 @@ check_order(
     "Prometheus/Loki/Alloy 이미지 Squid 경유 선배포",
 )
 
+check(
+    "SI-10 render 전 IdP discovery 불일치면 렌더·계획 전에 중단",
+    ["bash", "./sadp", "--install", "--env-file", str(ENV_FILE), "--phase", "render"],
+    1,
+    ("불일치 필드: token_endpoint", "외부 IdP discovery 대조 실패로 설치를 중단함"),
+    absent=("검사만 완료", "idp.example.invalid"),
+    env=environment(MOCK_DISCOVERY_OVERRIDE=json.dumps({"token_endpoint": "https://x.invalid/t/"})),
+)
+check(
+    "SI-11 all phase도 계획 출력 전에 IdP discovery를 대조",
+    ["bash", "./sadp", "--install", "--env-file", str(ENV_FILE), "--phase", "all"],
+    1,
+    ("불일치 필드: issuer",),
+    absent=("[PLAN]",),
+    env=environment(MOCK_DISCOVERY_OVERRIDE=json.dumps({"issuer": "https://idp.example.invalid/x"})),
+)
+check(
+    "SI-12 --skip-idp-verify는 외부 요청 없이 [WARN]을 남기고 진행",
+    ["bash", "./sadp", "--install", "--env-file", str(ENV_FILE), "--phase", "render",
+     "--skip-idp-verify"],
+    0,
+    ("[WARN] --skip-idp-verify", "검사만 완료"),
+    env=environment(MOCK_DISCOVERY_OVERRIDE=json.dumps({"issuer": "https://wrong.invalid/"})),
+)
+check(
+    "SI-13 node phase는 IdP를 다시 조회하지 않음(worker는 외부망이 없을 수 있음)",
+    ["bash", "./sadp", "--install", "--env-file", str(ENV_FILE), "--phase", "node",
+     "--node-name", "sadp-worker-1"],
+    0,
+    ("role=agent",),
+    absent=("IdP discovery",),
+    env=environment(MOCK_DISCOVERY_OVERRIDE=json.dumps({"issuer": "https://wrong.invalid/"})),
+)
+
+shutil.rmtree(MOCK_DIR, ignore_errors=True)
 print(f"통과 {PASSED} / 실패 {FAILED}")
 raise SystemExit(1 if FAILED else 0)

@@ -17,6 +17,13 @@ import tempfile
 import yaml
 
 
+sys.path.insert(0, str(pathlib.Path(__file__).resolve().parent))
+import sadp_test_fixture  # noqa: E402
+
+# 사이트 checkout의 계약·생성물에 기대는 시험이다. 직접 실행해도 예제 site.env로
+# 렌더한 fixture 사본에서 돌게 해 사이트 값 때문에 생기는 거짓 실패를 막는다.
+sadp_test_fixture.reexec_in_fixture(__file__)
+
 ROOT = pathlib.Path(__file__).resolve().parents[2]
 COPY_PATHS = ("contracts", "scripts/site/templates", "scripts/site/render-exposure.py", "rke/etc/hosts")
 EXPOSURE = "platform/exposure/resources.yaml"
@@ -262,6 +269,13 @@ def direct_public_service(root: pathlib.Path, _result) -> str:
         "kubernetes.io/hostname": expected_node
     }:
         return "direct mode Envoy Pod가 공인 IP 노드에 고정되지 않는다"
+    tolerations = deployment["pod"].get("tolerations") or []
+    if not any(
+        item.get("key") == "node-role.kubernetes.io/control-plane"
+        and item.get("effect") == "NoSchedule"
+        for item in tolerations
+    ):
+        return "공인 IP 노드가 control-plane이면 Envoy Pod가 taint 때문에 Pending이 된다"
     external_ips = service.get("patch", {}).get("value", {}).get("spec", {}).get("externalIPs")
     if external_ips != [contract["gateway"]["vip"], contract["public"]["ip"]]:
         return f"direct mode externalIPs 불일치: {external_ips}"

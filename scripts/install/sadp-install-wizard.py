@@ -738,6 +738,8 @@ def installer_command(args: argparse.Namespace, output: pathlib.Path) -> list[st
         command.extend(("--node-name", args.node_name))
     if args.allow_dirty:
         command.append("--allow-dirty")
+    if args.skip_idp_verify:
+        command.append("--skip-idp-verify")
     if args.apply:
         command.append("--apply")
     return command
@@ -760,6 +762,9 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--advanced", action="store_true", help="기본값 생략 없이 기존 상세 질문 사용")
     parser.add_argument("--no-detect", action="store_true", help="로컬 NIC와 RKE2 클러스터 네트워크 조회 생략")
     parser.add_argument("--repair", action="store_true", help="기존 출력 env를 검증하고 오류 항목만 수정")
+    parser.add_argument(
+        "--skip-idp-verify", action="store_true", help="설치기로 전달: 외부 IdP discovery 대조 생략(폐쇄망)"
+    )
     return parser.parse_args()
 
 

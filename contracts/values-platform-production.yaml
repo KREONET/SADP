@@ -49,6 +49,6 @@ platform:
       groupApp: portal-group-app-eso
       groupRegistry: portal-group-registry-eso
   identityProvider:
-    issuer: https://idp.example.invalid/application/o/sadp
+    issuer: https://idp.example.invalid/application/o/sadp/
     jwksURI: https://idp.example.invalid/application/o/sadp/jwks/
     groupsClaim: groups

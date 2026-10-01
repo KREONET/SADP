@@ -190,6 +190,7 @@ KNOWN_KEYS = {
     "IDENTITY_SOURCE_PROTOCOL", "OIDC_ISSUER", "OIDC_AUTHORIZATION_ENDPOINT",
     "OIDC_TOKEN_ENDPOINT", "OIDC_JWKS_URI", "OIDC_END_SESSION_ENDPOINT",
     "OIDC_GROUPS_CLAIM", "OIDC_CLIENT_ID_CLAIM", "PORTAL_OIDC_CLIENT_ID", "OIDC_SHARED_CLIENT_ID",
+    "OIDC_ENDPOINT_HOSTS", "HTTPS_PROXY", "IDP_RELAY_ENABLED",
     "STORAGE_CLASS", "APP_GROUP_VOLUME_SIZE", "APP_GROUP_MAX_SERVICES", "FORGEJO_REPO_URL",
     "FORGEJO_REVISION", "OCI_REGISTRY", "OCI_PROJECT", "REGISTRY_PULL_SECRET",
     "TEST_APP_IMAGE_TAG", "PORTAL_IMAGE_TAG", "IMAGE_PULL_POLICY",
@@ -396,7 +397,10 @@ def parse_identity_provider(values: dict[str, str]) -> dict[str, str]:
     source_protocol = required(values, "IDENTITY_SOURCE_PROTOCOL").lower()
     if source_protocol not in SUPPORTED_IDENTITY_SOURCE_PROTOCOLS:
         raise ConfigError("IDENTITY_SOURCE_PROTOCOL must be openid or saml")
-    issuer = https_url(required(values, "OIDC_ISSUER"), "OIDC_ISSUER").rstrip("/")
+    # issuer는 정규화하지 않는다. OIDC Core는 discovery 응답의 issuer, JWT iss, OpenBao
+    # oidc_discovery_url을 바이트 단위로 비교한다. Authentik처럼 '/'로 끝나는 issuer에서
+    # 끝 '/'를 지우면 세 소비자가 모두 불일치로 거부한다. discovery URL만 `${issuer%/}`로 만든다.
+    issuer = https_url(required(values, "OIDC_ISSUER"), "OIDC_ISSUER")
     authorization = https_url(
         required(values, "OIDC_AUTHORIZATION_ENDPOINT"), "OIDC_AUTHORIZATION_ENDPOINT"
     )
@@ -415,7 +419,7 @@ def parse_identity_provider(values: dict[str, str]) -> dict[str, str]:
     # IdP가 발급한 Client ID는 Kubernetes 이름이 아니므로 대소문자를 그대로 보존한다.
     if shared_client and not re.fullmatch(r"[!-~]{1,512}", shared_client):
         raise ConfigError("OIDC_SHARED_CLIENT_ID must be 1-512 printable ASCII characters without spaces")
-    return {
+    identity = {
         "managed": "external",
         "sourceProtocol": source_protocol,
         "issuer": issuer,
@@ -430,6 +434,114 @@ def parse_identity_provider(values: dict[str, str]) -> dict[str, str]:
         ),
         **({"sharedClientID": shared_client} if shared_client else {}),
     }
+    reject_client_id_in_urls(values, identity)
+    return identity
+
+
+# issuer 외 endpoint 필드. site.env 변수 이름과 계약 필드 이름을 함께 둬서 오류 메시지에
+# 값 대신 변수 이름만 쓸 수 있게 한다.
+OIDC_ENDPOINT_FIELDS = (
+    ("OIDC_AUTHORIZATION_ENDPOINT", "authorizationEndpoint"),
+    ("OIDC_TOKEN_ENDPOINT", "tokenEndpoint"),
+    ("OIDC_JWKS_URI", "jwksURI"),
+    ("OIDC_END_SESSION_ENDPOINT", "endSessionEndpoint"),
+)
+
+
+def reject_client_id_in_urls(values: dict[str, str], identity: dict[str, str]) -> None:
+    """client ID가 URL에 붙여넣어진 입력을 거부한다.
+
+    실제 장애에서 token endpoint 호스트 한가운데에 client ID가 들어가
+    `https://<host 앞부분>.<client id>net/...`이 되었다. https_url 형식 검사는 이를 통과시키고,
+    오염된 호스트가 계약·Portal values·Squid idp_domains까지 전파됐다. client ID는 IdP 관리
+    화면에서 URL과 나란히 복사되는 값이라 이런 실수가 반복되기 쉽다. 값은 오류에 쓰지 않는다.
+    """
+    client_ids = [("PORTAL_OIDC_CLIENT_ID", optional(values, "PORTAL_OIDC_CLIENT_ID"))]
+    if identity.get("sharedClientID"):
+        client_ids.append(("OIDC_SHARED_CLIENT_ID", identity["sharedClientID"]))
+    urls = [("OIDC_ISSUER", identity["issuer"])]
+    urls += [(name, identity[field]) for name, field in OIDC_ENDPOINT_FIELDS if identity[field]]
+    for url_name, url in urls:
+        for client_name, client_id in client_ids:
+            # 호스트 부분은 대소문자를 구분하지 않으므로 비교도 구분하지 않는다.
+            if client_id and client_id.lower() in url.lower():
+                raise ConfigError(
+                    f"{url_name} contains the {client_name} value; "
+                    "re-copy the URL from the IdP discovery document"
+                )
+
+
+def identity_provider_hosts(values: dict[str, str], identity: dict[str, str]) -> list[str]:
+    """IdP 트래픽이 가도 되는 호스트 목록을 만들고 endpoint 호스트를 오프라인으로 검증한다.
+
+    일반 OIDC IdP는 모든 endpoint를 issuer와 같은 호스트에서 공개한다. 다른 호스트가 보이면
+    거의 항상 붙여넣기 오류이고, 그대로 두면 Squid allowlist에 엉뚱한 도메인이 열린다. 실제로
+    endpoint를 다른 호스트로 나누는 IdP는 OIDC_ENDPOINT_HOSTS에 호스트를 명시해야 한다.
+    SAML→OIDC broker는 상류 IdP와 broker가 호스트를 나누는 구성이 정상이라 예외로 둔다.
+    외부 호출은 하지 않는다. 실제 discovery 대조는 verify-idp-discovery.sh가 맡는다.
+    """
+    issuer_host = urlsplit(identity["issuer"]).hostname or ""
+    allowed = [issuer_host]
+    for item in csv(values, "OIDC_ENDPOINT_HOSTS"):
+        host = dns_name(item, "OIDC_ENDPOINT_HOSTS")
+        if host == issuer_host:
+            raise ConfigError("OIDC_ENDPOINT_HOSTS must not repeat the OIDC_ISSUER host")
+        allowed.append(host)
+    saml = identity["sourceProtocol"] == "saml"
+    for name, field in OIDC_ENDPOINT_FIELDS:
+        host = urlsplit(identity[field]).hostname if identity[field] else None
+        if host is None or host in allowed:
+            continue
+        if not saml:
+            raise ConfigError(
+                f"{name} host differs from the OIDC_ISSUER host; fix the pasted URL or list "
+                "the IdP-owned host in OIDC_ENDPOINT_HOSTS"
+            )
+        allowed.append(host)
+    return allowed
+
+
+def parse_idp_relay(values: dict[str, str], identity: dict[str, str]) -> bool:
+    """Envoy Gateway용 외부 IdP SNI relay 사용 여부.
+
+    Envoy Gateway controller(OIDC discovery)와 data plane(token 교환·JWKS)은 HTTPS_PROXY를 쓰지
+    않는다. worker에 외부 route가 없으면 SecurityPolicy가 no route to host로 Accepted=False가 된다.
+    relay는 egress 호스트 내부 IP의 443에서 SNI만 보고 IdP로 TCP를 그대로 넘긴다(TLS 종단 없음).
+    Pod는 CoreDNS hosts로 IdP 호스트를 relay IP로 해석하고 원래 호스트의 443으로 접속하므로,
+    IdP URL이 443이 아니면 relay가 받을 수 없다.
+    """
+    enabled = boolean(values, "IDP_RELAY_ENABLED")
+    if not enabled:
+        return False
+    names = [("OIDC_ISSUER", identity["issuer"])]
+    names += [(name, identity[field]) for name, field in OIDC_ENDPOINT_FIELDS if identity[field]]
+    for name, url in names:
+        if urlsplit(url).port not in (None, 443):
+            raise ConfigError(f"IDP_RELAY_ENABLED=true requires {name} on HTTPS port 443")
+    return True
+
+
+def parse_https_proxy(values: dict[str, str]) -> str:
+    """verify-idp-discovery.sh가 쓸 외부 HTTPS proxy. 계약·생성물에는 넣지 않는다.
+
+    호출 셸의 HTTPS_PROXY를 따르면 같은 site.env라도 실행자마다 결과가 달라진다. 그래서
+    site.env 값만 쓰고 비우면 직접 연결한다. 로그와 argv에 남으므로 자격증명은 받지 않는다.
+    """
+    raw = optional(values, "HTTPS_PROXY")
+    if not raw:
+        return ""
+    parsed = urlsplit(raw)
+    try:
+        proxy_port = parsed.port
+    except ValueError as error:
+        raise ConfigError("HTTPS_PROXY has an invalid port") from error
+    if parsed.scheme not in {"http", "https"} or not parsed.hostname or proxy_port is None:
+        raise ConfigError("HTTPS_PROXY must be http://host:port or https://host:port")
+    if parsed.username or parsed.password:
+        raise ConfigError("HTTPS_PROXY must not embed credentials")
+    if parsed.path not in {"", "/"} or parsed.query or parsed.fragment:
+        raise ConfigError("HTTPS_PROXY must not contain a path, query or fragment")
+    return raw
 
 
 def parse_machine_auth(
@@ -1097,6 +1209,9 @@ def validate(values: dict[str, str]) -> dict:
         required(values, "APP_GROUP_MAX_SERVICES"), "APP_GROUP_MAX_SERVICES", 20
     )
     identity_provider = parse_identity_provider(values)
+    identity_hosts = identity_provider_hosts(values, identity_provider)
+    idp_relay = parse_idp_relay(values, identity_provider)
+    https_proxy = parse_https_proxy(values)
     install_gitops = boolean(values, "SADP_INSTALL_GITOPS", default=False)
     ssh_user = optional(values, "SADP_SSH_USER") or "root"
     if not re.fullmatch(r"[a-z_][a-z0-9_-]{0,31}", ssh_user):
@@ -1264,6 +1379,7 @@ def validate(values: dict[str, str]) -> dict:
             ),
             "squidIP": str(squid_ip),
             "squidPort": squid_port,
+            "idpRelay": idp_relay,
             "squidClients": [str(item) for item in squid_clients],
             "extraPackages": extra_packages,
             "ports": {
@@ -1295,6 +1411,10 @@ def validate(values: dict[str, str]) -> dict:
             "providedPrivateKeyPath": provided_private_key,
         },
         "identityProvider": identity_provider,
+        # 계약에 넣지 않는 IdP 검사 입력. 허용 호스트는 Squid 도메인 단언에만, proxy는
+        # verify-idp-discovery.sh에만 쓴다.
+        "identityProviderHosts": identity_hosts,
+        "idpVerifyProxy": https_proxy,
         "installer": {
             "sshUser": ssh_user,
             "pushTokenFile": push_token_file,
@@ -1445,9 +1565,22 @@ def build_contract(base: dict, cfg: dict) -> dict:
             if url
         )
     )
+    # 파생 결과를 한 번 더 단언한다. endpoint 검사를 우회하는 경로가 새로 생겨도 issuer 호스트와
+    # 명시 예외 밖의 도메인이 Squid에 열리기 전에 멈춘다.
+    unexpected = set(squid["identityProviderDomains"]) - set(cfg["identityProviderHosts"])
+    if unexpected:
+        raise ConfigError(
+            "derived identityProviderDomains contain a host outside OIDC_ISSUER/OIDC_ENDPOINT_HOSTS"
+        )
     squid["dnsProviderEndpoints"] = (
         cfg["tls"]["providerEndpoints"] if cfg["tls"]["source"] == "acme" else []
     )
+    # relay는 Squid와 같은 egress 호스트에서 돈다. 외부 route가 있는 곳이 그 호스트뿐이다.
+    network["identityProviderRelay"] = {
+        "enabled": cfg["network"]["idpRelay"],
+        "address": cfg["network"]["squidIP"],
+        "port": 443,
+    }
     # 현재 사용자 앱은 사이트당 단일 workload Namespace를 공유한다. Gateway/Rancher만
     # 새 Namespace로 바꾸고 quota 대상이 이전 사이트 값에 남으면 render-quota가 실패하고,
     # 더 나쁘게는 오래된 Namespace에만 제한이 걸릴 수 있으므로 같은 계약 변경에 묶는다.
@@ -1843,6 +1976,12 @@ def app_values(
         for entry in portal_forgejo_egress(cfg):
             if entry not in allowed_cidrs:
                 allowed_cidrs.append(entry)
+        # Node fetch(undici)는 HTTPS_PROXY를 쓰지 않는다. relay가 켜지면 CoreDNS가 IdP 이름을
+        # egress 호스트로 돌리므로 Auth.js discovery/token 요청은 그 주소:443으로 나간다.
+        if cfg["network"]["idpRelay"]:
+            relay = {"cidr": f"{cfg['network']['squidIP']}/32", "protocol": "TCP", "port": 443}
+            if relay not in allowed_cidrs:
+                allowed_cidrs.append(relay)
         policy["allowedCIDRs"] = allowed_cidrs
 
         portal_forgejo_config(config, cfg)
@@ -2121,6 +2260,7 @@ def install_env(cfg: dict) -> str:
         "SERVICE_CIDR": cfg["network"]["serviceCIDRs"][0],
         "CLUSTER_UPSTREAM_DNS": cfg["network"]["clusterUpstreamDNS"],
         "SQUID_INTERNAL_IP": cfg["network"]["squidIP"],
+        "IDP_RELAY_ENABLED": str(cfg["network"]["idpRelay"]).lower(),
         "INTERNAL_ALLOWED_TCP_PORTS": ",".join(map(str, cfg["network"]["ports"]["internalTCP"])),
         "INTERNAL_ALLOWED_UDP_PORTS": ",".join(map(str, cfg["network"]["ports"]["internalUDP"])),
         "EXTERNAL_ALLOWED_TCP_PORTS": "80,443",
@@ -2251,11 +2391,23 @@ GENERATED_PATHS = (
     ROOT / "platform/network/squid/dns-provider-domains.txt",
     ROOT / "platform/network/proxy.env",
     ROOT / "platform/openbao/proxy-values.yaml",
+    ROOT / "platform/network/idp-relay/haproxy.cfg",
     ROOT / "platform/network/firewall.env",
     ROOT / "platform/network/egress-policies.yaml",
     ROOT / "platform/dns/rke2-coredns-config.yaml",
     ROOT / "argocd/applications/cert-manager.yaml",
     ROOT / "platform/quota/resources.yaml",
+)
+
+
+# 계약에서 하위 생성물을 만드는 순서. --write, --check-rendered, 회귀 시험 fixture가 같은
+# 목록을 써야 한쪽에만 렌더러가 추가되어 검사가 조용히 빠지는 일이 없다.
+RENDERERS = (
+    "scripts/lib/contract-values.py",
+    "scripts/site/render-exposure.py",
+    "scripts/site/render-network.py",
+    "scripts/site/render-rancher.py",
+    "scripts/site/render-quota.py",
 )
 
 
@@ -2282,11 +2434,7 @@ def write_transaction(updates: dict[pathlib.Path, str], cfg: dict) -> None:
             if tls_output.exists():
                 tls_output.unlink()
         commands = (
-            [sys.executable, "scripts/lib/contract-values.py"],
-            [sys.executable, "scripts/site/render-exposure.py"],
-            [sys.executable, "scripts/site/render-network.py"],
-            [sys.executable, "scripts/site/render-rancher.py"],
-            [sys.executable, "scripts/site/render-quota.py"],
+            *([sys.executable, script] for script in RENDERERS),
             ["bash", "scripts/tests/render-test.sh"],
             ["bash", "scripts/ci-guard.sh"],
         )
@@ -2322,13 +2470,7 @@ def check_rendered(updates: dict[pathlib.Path, str]) -> None:
             + ", ".join(map(str, stale[:12]))
             + (" ..." if len(stale) > 12 else "")
         )
-    commands = (
-        [sys.executable, "scripts/lib/contract-values.py", "--check"],
-        [sys.executable, "scripts/site/render-exposure.py", "--check"],
-        [sys.executable, "scripts/site/render-network.py", "--check"],
-        [sys.executable, "scripts/site/render-rancher.py", "--check"],
-        [sys.executable, "scripts/site/render-quota.py", "--check"],
-    )
+    commands = tuple([sys.executable, script, "--check"] for script in RENDERERS)
     for command in commands:
         result = subprocess.run(command, cwd=ROOT, text=True, capture_output=True, check=False)
         if result.stdout:
@@ -2386,9 +2528,42 @@ def summary(cfg: dict) -> None:
     print("[OK] no credential values accepted or generated")
 
 
+# site.env가 놓이는 두 관례 위치. 자동 탐색은 하지 않는다. 두 파일이 함께 있으면 어느 쪽이
+# 상류인지 도구가 추측하게 되고, 틀리면 --write가 계약을 다른 사이트 값으로 되돌린다.
+SITE_ENV_CANDIDATES = (ROOT / "environments/site.env", pathlib.Path("/etc/sadp/site.env"))
+
+
+def missing_env_file_message() -> str:
+    lines = ["--env-file is required; no default site.env is searched. Candidates:"]
+    for candidate in SITE_ENV_CANDIDATES:
+        try:
+            state = "exists" if candidate.is_file() else "absent"
+        except OSError:
+            state = "unreadable"
+        shown = candidate.relative_to(ROOT) if candidate.is_relative_to(ROOT) else candidate
+        lines.append(f"  --env-file {shown}  ({state})")
+    lines.append("The installer default is /etc/sadp/site.env; pass the file that is upstream for this site.")
+    return "\n".join(lines)
+
+
+def idp_verify_env(cfg: dict) -> str:
+    """verify-idp-discovery.sh용 IdP 공개값. 원본 site.env를 source하지 않게 검증된 값만 준다."""
+    identity = cfg["identityProvider"]
+    values = {
+        "OIDC_ISSUER": identity["issuer"],
+        "OIDC_AUTHORIZATION_ENDPOINT": identity["authorizationEndpoint"],
+        "OIDC_TOKEN_ENDPOINT": identity["tokenEndpoint"],
+        "OIDC_JWKS_URI": identity["jwksURI"],
+        "OIDC_END_SESSION_ENDPOINT": identity["endSessionEndpoint"],
+        "IDENTITY_SOURCE_PROTOCOL": identity["sourceProtocol"],
+        "SADP_IDP_HTTPS_PROXY": cfg["idpVerifyProxy"],
+    }
+    return "".join(f"{key}={shlex.quote(value)}\n" for key, value in values.items())
+
+
 def main() -> int:
     parser = argparse.ArgumentParser()
-    parser.add_argument("--env-file", required=True, type=pathlib.Path)
+    parser.add_argument("--env-file", type=pathlib.Path)
     mode = parser.add_mutually_exclusive_group()
     mode.add_argument("--check", action="store_true", help="validate only (default)")
     mode.add_argument(
@@ -2407,12 +2582,23 @@ def main() -> int:
         action="store_true",
         help="print validated, shell-quoted non-secret installer inputs",
     )
+    parser.add_argument(
+        "--print-idp-env",
+        action="store_true",
+        help="print validated, shell-quoted IdP endpoints for verify-idp-discovery.sh",
+    )
     args = parser.parse_args()
+    if args.env_file is None:
+        print(f"[FAIL] site configuration: {missing_env_file_message()}", file=sys.stderr)
+        return 2
     try:
         values = parse_env(args.env_file)
         cfg = validate(values)
         if args.print_install_env:
             print(install_env(cfg), end="")
+            return 0
+        if args.print_idp_env:
+            print(idp_verify_env(cfg), end="")
             return 0
         contract = yaml.safe_load(CONTRACT_PATH.read_text(encoding="utf-8"))
         if not isinstance(contract, dict) or contract.get("kind") != "PlatformContract":

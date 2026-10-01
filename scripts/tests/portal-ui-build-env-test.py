@@ -70,10 +70,12 @@ FORGEJO_BOT_TOKEN=also-never-print-this-value
         # node 는 nvm 아래 설치되는 일이 많아 sudo 의 secure_path 에서 사라진다.
         # build-local-images.sh 가 root 로 이 시험을 부르므로, 없으면 traceback 으로
         # 죽는 대신 이 항목만 건너뛴다. 파서 자체 검증은 위에서 이미 끝났다.
+        # 건너뛴 검사를 [OK]로 세면 node 없는 환경에서 래퍼 회귀가 통과로 보인다. 그래서
+        # 별도 항목으로 [SKIP]과 사유를 남긴다.
         node_bin = shutil.which("node")
-        if node_bin is None:
-            print("[WARN] node 없음: npm 래퍼 상속 시험 생략", file=sys.stderr)
-        else:
+        wrapper_result = "[SKIP] PE-02 로컬 npm 래퍼 공개값 상속: node 없음(PATH에 node를 두고 재실행)"
+        if node_bin is not None:
+            wrapper_result = "[OK]   PE-02 로컬 npm 래퍼는 공개값만 상속"
             wrapped = subprocess.run(
                 [
                     node_bin,
@@ -105,7 +107,8 @@ FORGEJO_BOT_TOKEN=also-never-print-this-value
             print("[FAIL] 공개 변수의 치환 문자를 허용함", file=sys.stderr)
             return 1
 
-    print("[OK]   PE-01 루트 .env에서 허용된 Portal UI 공개값만 추출·상속")
+    print("[OK]   PE-01 루트 .env에서 허용된 Portal UI 공개값만 추출")
+    print(wrapper_result)
     return 0
 
 

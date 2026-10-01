@@ -152,6 +152,7 @@ cluster apply는 외부 OIDC client secret이 root-only 파일로 준비됐는�
 | 핵심 검수 | `--verify-testbed` |
 | TLS/Gateway | `--verify-d5` |
 | Rancher | `--verify-d6` |
+| 외부 IdP discovery 대조(설치 전, 읽기 전용) | `--verify-idp --env-file <SITE_ENV>` |
 | Portal 인증 | `--verify-portal-auth` |
 | Squid | `--verify-squid` |
 | 백업 | `--verify-backups` |
@@ -187,8 +188,12 @@ bash ./sadp --test
 ```
 
 `--test`는 모든 `scripts/tests/*-test.py`, Helm render 회귀, `ci-guard.sh`,
-`git diff --check`를 실행합니다. `render-test.sh`의 정상 profile 검증에는 Helm이 필요합니다.
-Helm이 없으면 금지 profile의 실행 실패만으로 `[OK]`가 보일 수 있으므로 유효한 통과가 아닙니다.
+`git diff --check`를 실행합니다. `render-test.sh`는 Helm이 없으면 바로 `[FAIL]`로 멈춥니다.
+
+시험은 현재 작업 트리를 `environments/site.env.example`로 다시 렌더한 임시 사본에서 돌므로
+사이트 branch의 계약·생성물이나 `site.env` 유무에 결과가 흔들리지 않습니다. `ci-guard.sh`와
+`git diff --check`만 실제 checkout을 봅니다. 종료 코드 0이 머지 조건이며 `scripts/pre-commit`과
+CI(`.github/workflows/sadp-test.yml`)가 같은 명령을 실행합니다.
 
 개별 진단:
 

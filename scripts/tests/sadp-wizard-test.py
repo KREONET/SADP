@@ -11,8 +11,15 @@ import sys
 import tempfile
 from unittest.mock import patch
 import io
-from contextlib import redirect_stdout
+from contextlib import redirect_stderr, redirect_stdout
 
+
+sys.path.insert(0, str(pathlib.Path(__file__).resolve().parent))
+import sadp_test_fixture  # noqa: E402
+
+# 사이트 checkout의 계약·생성물에 기대는 시험이다. 직접 실행해도 예제 site.env로
+# 렌더한 fixture 사본에서 돌게 해 사이트 값 때문에 생기는 거짓 실패를 막는다.
+sadp_test_fixture.reexec_in_fixture(__file__)
 
 ROOT = pathlib.Path(__file__).resolve().parents[2]
 SCRIPT = ROOT / "scripts/install/sadp-install-wizard.py"
@@ -84,6 +91,7 @@ args = argparse.Namespace(
     phase="node",
     node_name="worker-1",
     allow_dirty=False,
+    skip_idp_verify=False,
     apply=True,
 )
 command = wizard.installer_command(args, pathlib.Path("/etc/sadp/site.env"))
@@ -91,6 +99,11 @@ check(
     "SW-03 답변형 설치도 기존 phase installer로 전달",
     command[-5:] == ["--phase", "node", "--node-name", "worker-1", "--apply"]
     and "scripts/install/sadp-install.sh" in command[1],
+)
+args.skip_idp_verify = True
+check(
+    "SW-03b 폐쇄망 IdP 대조 생략도 설치기로 그대로 전달",
+    "--skip-idp-verify" in wizard.installer_command(args, pathlib.Path("/etc/sadp/site.env")),
 )
 
 with tempfile.TemporaryDirectory() as raw_directory:
@@ -151,11 +164,14 @@ def answers(overrides: dict[str, str], *, quick: bool = False) -> str:
 
 with tempfile.TemporaryDirectory() as raw_directory:
     output = pathlib.Path(raw_directory) / "site.env"
-    command = ["bash", "./sadp", "--install", "--interactive", "--advanced", "--env-file", str(output)]
+    # 이 사례는 답변 저장과 설치기 전달을 본다. 외부 IdP 대조는 sadp-installer-test가 mock으로 본다.
+    command = ["bash", "./sadp", "--install", "--interactive", "--advanced", "--skip-idp-verify",
+               "--env-file", str(output)]
     replies = answers({"SADP_PORTAL_FORGEJO_TOKEN_FILE": "/etc/sadp/secrets/portal-token"})
     result = subprocess.run(command, cwd=ROOT, input=replies + "y\n", capture_output=True, text=True)
     check("SW-09 질문형 진입점에서 env 저장 후 all 계획 실행",
-          result.returncode == 0 and output.exists() and "[PLAN]" in result.stdout)
+          result.returncode == 0 and output.exists() and "[PLAN]" in result.stdout
+          and "[WARN] --skip-idp-verify" in result.stderr)
     saved = output.read_text() if output.exists() else ""
     check("SW-10 이전 template에 없던 Portal token 경로도 0600으로 저장",
           "SADP_PORTAL_FORGEJO_TOKEN_FILE=/etc/sadp/secrets/portal-token\n" in saved
@@ -247,7 +263,7 @@ check("SW-24 일반 설치에서 마법사 전용 옵션 오용 거부", result.
 with tempfile.TemporaryDirectory() as raw_directory:
     output = pathlib.Path(raw_directory) / "site.env"
     result = subprocess.run(
-        ["bash", "./sadp", "--install", "--interactive", "--no-detect", "--env-file", str(output)],
+        ["bash", "./sadp", "--install", "--interactive", "--no-detect", "--skip-idp-verify", "--env-file", str(output)],
         cwd=ROOT, input=answers({"SADP_PORTAL_FORGEJO_TOKEN_FILE": "/etc/sadp/secrets/portal-token"},
                                quick=True) + "y\n", capture_output=True, text=True)
     check("SW-25 간편 입력·no-detect도 env 검증·저장 후 기존 all 계획 실행",
@@ -394,7 +410,7 @@ with tempfile.TemporaryDirectory() as raw_directory:
     output = pathlib.Path(raw_directory) / "site.env"
     output.write_text(wizard.replace_values(template, {"CLUSTER_UPSTREAM_DNS": "10.20.30.11:1053"}))
     result = subprocess.run(
-        ["bash", "./sadp", "--install", "--interactive", "--no-detect", "--env-file", str(output)],
+        ["bash", "./sadp", "--install", "--interactive", "--no-detect", "--skip-idp-verify", "--env-file", str(output)],
         cwd=ROOT, input=answers({"SADP_PORTAL_FORGEJO_TOKEN_FILE": "/etc/sadp/secrets/portal-token"},
                                quick=True) + "y\n", capture_output=True, text=True)
     check("SW-43 재실행의 기본값은 template이 아닌 저장된 DNS 주소이며 검증 후 계획만 실행",
@@ -409,7 +425,7 @@ with tempfile.TemporaryDirectory() as raw_directory:
         "SADP_PORTAL_FORGEJO_TOKEN_FILE": "/etc/sadp/secrets/portal-token",
     })
     output.write_text(bad_content)
-    command = ["bash", "./sadp", "--install", "--interactive", "--repair", "--env-file", str(output)]
+    command = ["bash", "./sadp", "--install", "--interactive", "--repair", "--skip-idp-verify", "--env-file", str(output)]
     result = subprocess.run(command, cwd=ROOT, input="y\n\n10.20.30.0/24\n",
                             capture_output=True, text=True)
     repaired = wizard.parse_values(output.read_text())
@@ -441,7 +457,7 @@ with tempfile.TemporaryDirectory() as raw_directory:
     check("SW-48 저장 파일이 없으면 repair가 template으로 대체하거나 답변을 복원했다고 하지 않음",
           result.returncode == 1 and "기존 --output 파일이 필요" in result.stderr and not output.exists())
     result = subprocess.run(
-        ["bash", "./sadp", "--install", "--interactive", "--advanced", "--env-file", str(output)],
+        ["bash", "./sadp", "--install", "--interactive", "--advanced", "--skip-idp-verify", "--env-file", str(output)],
         cwd=ROOT, input=answers({"NODE_INTERNAL_CIDRS": "10.20.30.0/28",
                                 "SADP_PORTAL_FORGEJO_TOKEN_FILE": "/etc/sadp/secrets/portal-token"})
                                 + "y\n\n10.20.30.0/24\n", capture_output=True, text=True)
@@ -466,7 +482,9 @@ with tempfile.TemporaryDirectory() as raw_directory:
     output = pathlib.Path(raw_directory) / "site.env"
     content = wizard.replace_values(template, {"CERT_MANAGER_NODE_PLACEMENT": "invalid"})
     current = wizard.parse_values(content)
-    with patch("builtins.input", side_effect=["", "control-plane"]), redirect_stdout(io.StringIO()):
+    # 일부러 넣은 오류값의 [FAIL] 검증 메시지가 통과한 시험 출력에 섞이지 않게 stderr도 받는다.
+    with patch("builtins.input", side_effect=["", "control-plane"]), redirect_stdout(io.StringIO()), \
+            redirect_stderr(io.StringIO()):
         saved = wizard.save_with_repair(output, content, current)
     check("SW-52 기본 질문에 없는 유효한 설정 key도 오류 수정 결과 저장",
           saved and wizard.parse_values(output.read_text())["CERT_MANAGER_NODE_PLACEMENT"] == "control-plane")
@@ -566,7 +584,7 @@ with tempfile.TemporaryDirectory() as raw_directory:
 with tempfile.TemporaryDirectory() as raw_directory:
     output = pathlib.Path(raw_directory) / "site.env"
     result = subprocess.run(
-        ["bash", "./sadp", "--install-wizard", "--advanced", "--phase", "all", "--output", str(output)],
+        ["bash", "./sadp", "--install-wizard", "--advanced", "--skip-idp-verify", "--phase", "all", "--output", str(output)],
         cwd=ROOT, input=answers({"OIDC_SHARED_CLIENT_ID": "Authentik.Shared_123",
                                 "SADP_PORTAL_FORGEJO_TOKEN_FILE": "/etc/sadp/secrets/portal-token"}) + "y\n",
         capture_output=True, text=True)

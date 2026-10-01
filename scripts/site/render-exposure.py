@@ -847,6 +847,12 @@ def public_deployment_config(specification: dict) -> str:
             "        pod:",
             "          nodeSelector:",
             f"            kubernetes.io/hostname: {node_name}",
+            # 공인 NIC이 control-plane에 있으면 NoSchedule taint 때문에 새 Pod가 Pending에
+            # 머물고 rollout이 멈춘다. nodeSelector가 한 노드로 고정하므로 다른 노드로 퍼지지 않는다.
+            "          tolerations:",
+            "            - key: node-role.kubernetes.io/control-plane",
+            "              operator: Exists",
+            "              effect: NoSchedule",
         ]
     )
 

@@ -390,12 +390,18 @@ class Installer:
         workers = self.cfg["nodes"]["workers"]
         self.prepare_workers()
         squid = self.cfg["network"]["squidIP"]
+        # Envoy Gateway는 Squid를 쓰지 않으므로 외부 IdP 경로는 같은 egress 호스트의 SNI relay가 준다.
+        relay = self.cfg["network"].get("idpRelay", False)
         if squid == self.cfg["nodes"]["controlIP"]:
             self.run(["bash", "scripts/node/install-squid-egress.sh"])
+            if relay:
+                self.run(["bash", "scripts/node/install-idp-relay.sh", "--apply"])
         else:
             for _, address in workers:
                 if address == squid:
                     self.ssh(address, f"cd {shlex.quote(self.remote_root)}; bash scripts/node/install-squid-egress.sh")
+                    if relay:
+                        self.ssh(address, f"cd {shlex.quote(self.remote_root)}; bash scripts/node/install-idp-relay.sh --apply")
         for name, address in workers:
             print(f"[INFO] worker 순차 설정·재시작: {name}", flush=True)
             self.restart_node(name, lambda: self.configure_worker(name, address),

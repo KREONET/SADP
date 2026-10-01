@@ -7,8 +7,16 @@ import json
 import os
 import pathlib
 import subprocess
+import sys
 import tempfile
 
+
+sys.path.insert(0, str(pathlib.Path(__file__).resolve().parent))
+import sadp_test_fixture  # noqa: E402
+
+# 사이트 checkout의 계약·생성물에 기대는 시험이다. 직접 실행해도 예제 site.env로
+# 렌더한 fixture 사본에서 돌게 해 사이트 값 때문에 생기는 거짓 실패를 막는다.
+sadp_test_fixture.reexec_in_fixture(__file__)
 
 ROOT = pathlib.Path(__file__).resolve().parents[2]
 passed = 0

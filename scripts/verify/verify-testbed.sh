@@ -3,6 +3,7 @@
 set -euo pipefail
 source "$(dirname "$0")/../lib/testbed-common.sh"
 source "$(dirname "$0")/../lib/machine-auth.sh"
+source "$(dirname "$0")/../lib/openbao-oidc.sh"
 
 require_root
 require_command curl
@@ -570,6 +571,9 @@ status=$(kctl exec -n openbao openbao-0 -- env \
   bao status -format=json 2>/dev/null || true)
 jq -e '.initialized == true and .sealed == false and .storage_type == "raft"' <<<"${status}" >/dev/null \
   && ok "OpenBao initialized/unsealed/Raft" || { echo '[FAIL] OpenBao status' >&2; fail=1; }
+# OpenBao StatefulSet은 OnDelete라 템플릿 변경(oidc-preflight 추가 등)이 기존 Pod에 반영되지
+# 않아도 위 상태 검사는 통과한다. 다음 OIDC 단계가 exec 실패로 멈추기 전에 경고로 드러낸다.
+openbao_report_ondelete_revision_lag openbao
 
 # 실제 키 값은 읽거나 출력하지 않는다. Secret의 key 이름, ExternalSecret Ready, 정책의
 # 인증 방식과 sanitize 여부만 확인한다.

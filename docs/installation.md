@@ -485,6 +485,11 @@ bash ./sadp --install \
   --phase render
 ```
 
+`render`/`all`은 렌더 전에 site.env의 IdP endpoint를 실제 discovery 문서와 대조합니다
+(`bash ./sadp --verify-idp --env-file /etc/sadp/site.env`와 같음). site.env `HTTPS_PROXY`가 있으면
+그 proxy만 쓰고, 불일치 필드 이름만 출력합니다. IdP에 닿을 수 없는 폐쇄망에서만
+`--skip-idp-verify`를 붙이며 이때 `[WARN]`이 남습니다.
+
 사이트 branch의 깨끗한 checkout에서 생성합니다.
 
 ```bash
@@ -840,7 +845,11 @@ preflight의 원인별 조치는 다음과 같습니다.
 | Gateway listener 미준비 | `Accepted`/`Programmed`가 `True`가 아님 | listener condition과 renderer/Argo drift를 복구 |
 | 인증서 Secret 없음 | Certificate `spec.secretName` 대상이 없음 | DNS-01/Certificate Ready를 먼저 복구; Secret 본문은 출력하지 않음 |
 | cert-manager DNS-01 route 실패 | controller node probe가 `no-route`, `timeout`, `refused` | node 방화벽/route와 placement 계약을 고친 뒤 DNS preflight부터 재실행 |
-| OIDC issuer 불일치 | HTTP 200 JSON의 `issuer`가 계약과 정확히 다름 | 외부 IdP discovery와 계약 issuer를 byte-for-byte 수렴 |
+| OIDC issuer 불일치 | HTTP 200 JSON의 `issuer`가 계약과 정확히 다름 | 외부 IdP discovery와 계약 issuer를 byte-for-byte 수렴(끝 `/` 포함, 정규화하지 않음) |
+| `StatefulSet 템플릿에 oidc-preflight 컨테이너가 없음` | 생성물 또는 Argo 동기화 누락 | `platform/openbao/proxy-values.yaml`과 Argo `openbao` Application Synced revision 확인 |
+| `OnDelete라 기존 Pod ...가 새 템플릿으로 교체되지 않음` | Pod `controller-revision-hash` ≠ StatefulSet `updateRevision` | 유지보수 창에서 Pod만 삭제(PVC 유지) 후 `sudo bash ./sadp --unseal-openbao --apply`; [OnDelete Pod 교체](recovery.md#ondelete-pod-교체). 자동 삭제하지 않음 |
+| `oidc-preflight 컨테이너가 준비되지 않음(waiting.reason=...)` | 이미지 pull 실패 등 컨테이너 대기 | 출력된 `sudo bash ./sadp --sync-images --image <IMAGE>` 실행 후 재시도 |
+| `exec 대상 ... 컨테이너가 Pod에 없음` / `exec 권한 거부` / `kubelet exec 연결 실패` | exec 오류 분류(원문은 출력하지 않음) | Pod revision, `pods/exec` RBAC, 노드 kubelet 10250 경로 순서로 확인 |
 
 상세 복구 순서는 [복구 Runbook](recovery.md#9-openbao-oidc-discovery-오류-복구)을 따릅니다.
 
@@ -984,6 +993,12 @@ Secret 본문은 인수인계 문서에 복사하지 않습니다. 설치 뒤 �
 | 증상 | 의미 | 다음 확인 |
 | --- | --- | --- |
 | 예제 domain/IP 적용 거부 | 문서용 값이 남음 | [사이트 설정](site-configuration.md) |
+| `IdP discovery 불일치 필드: <FIELD>` | site.env IdP 값이 실제 discovery와 다름(끝 `/` 포함) | discovery 문서에서 해당 필드를 그대로 복사해 site.env를 고친 뒤 `bash ./sadp --verify-idp --env-file <SITE_ENV>` |
+| `host differs from the OIDC_ISSUER host` / `contains the ..._CLIENT_ID value` | endpoint 붙여넣기 오류(오프라인 검출) | 해당 변수를 discovery 문서에서 다시 복사; 실제 다른 IdP 호스트면 `OIDC_ENDPOINT_HOSTS` |
+| `IdP discovery: ... 연결 실패` / `CONNECT를 거부` | 설치 호스트에서 IdP에 닿지 못함 | site.env `HTTPS_PROXY`와 Squid allowlist 확인. 폐쇄망이면 `--skip-idp-verify`(`[WARN]` 기록) |
+| `--env-file is required` | site.env 자동 탐색 없음 | 출력된 후보(`environments/site.env`, `/etc/sadp/site.env`) 중 이 사이트의 상류를 명시 |
+| secure-demo SecurityPolicy `Accepted=False`(`no route to host`) | Envoy Gateway는 proxy 없이 IdP에 직접 접속하는데 worker에 외부 route가 없음 | site.env `IDP_RELAY_ENABLED=true` 후 render → Squid 노드 `--install-idp-relay --apply`/`--check` → CoreDNS 적용 → envoy-gateway 재시작. [IdP SNI relay](network-egress.md#외부-idp-sni-relay) |
+| `[WARN] openbao/<STS>: updateStrategy=OnDelete라 Pod ...가 옛 revision` | 템플릿 변경이 기존 Pod에 미반영 | [OnDelete Pod 교체](recovery.md#ondelete-pod-교체) |
 | 생성물이 env와 다름 | render 결과 미반영 | 3단계 diff와 commit/push |
 | hostname을 찾지 못함 | 노드 이름 불일치 | `hostname -s`, `WORKER_NODES` |
 | Squid 허용 주소 실패 | bootstrap/allowlist/daemon 문제 | [네트워크](network-egress.md) |

@@ -163,6 +163,10 @@ spec:
       - idp.example.invalid
       dnsProviderEndpoints: []
     clusterUpstreamDNS: 10.20.30.11:53
+    identityProviderRelay:
+      enabled: false
+      address: 10.20.30.11
+      port: 443
   public:
     mode: nat
     ip: 203.0.113.10
@@ -182,7 +186,7 @@ spec:
     clients: []
     allowedCIDRs: []
     oidc:
-      issuer: https://idp.example.invalid/application/o/sadp
+      issuer: https://idp.example.invalid/application/o/sadp/
       jwksURI: https://idp.example.invalid/application/o/sadp/jwks/
       clientClaim: azp
   platformServices:
@@ -251,7 +255,7 @@ spec:
   identityProvider:
     managed: external
     sourceProtocol: openid
-    issuer: https://idp.example.invalid/application/o/sadp
+    issuer: https://idp.example.invalid/application/o/sadp/
     authorizationEndpoint: https://idp.example.invalid/application/o/authorize/
     tokenEndpoint: https://idp.example.invalid/application/o/token/
     jwksURI: https://idp.example.invalid/application/o/sadp/jwks/
