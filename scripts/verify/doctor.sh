@@ -96,7 +96,12 @@ else
   note "이 호스트는 Squid egress 호스트가 아님. 그 호스트에서 sudo bash ./sadp --install-squid --check 를 따로 확인하라"
 fi
 python3 scripts/lib/diagnose.py node-idp-route || stop ""
-ok "이 노드의 외부 IdP 경로 판정 통과"
+# relay를 쓰면 판정 자체를 하지 않는다. 같은 [OK]로 찍으면 route를 확인한 것으로 오해한다.
+if [[ ${relay_enabled} == true ]]; then
+  ok "IdP relay 사용 중이라 이 노드의 IdP route 판정 생략"
+else
+  ok "이 노드의 외부 IdP route 확인"
+fi
 
 # --- 4. 클러스터 접근 --------------------------------------------------------------
 stage

@@ -53,7 +53,15 @@ check_installed_config() {
     return 1
   }
   # 저장소 파일만 parse 하면 daemon 이 오래된 설정으로 떠 있어도 [OK]가 된다.
-  squid -k parse -f /etc/squid/squid.conf
+  # parse는 성공해도 설정 한 줄마다 "Processing: ..."을 stderr에 찍어 [OK] 사이에서 길을 잃게
+  # 한다. 성공이면 조용히 넘어가고, 실패일 때만 오류 줄을 보여 준다.
+  local parse_output
+  if ! parse_output=$(squid -k parse -f /etc/squid/squid.conf 2>&1); then
+    echo "[FAIL] 설치된 Squid 설정 parse 실패" >&2
+    grep -E 'FATAL|ERROR|WARNING' <<<"${parse_output}" | head -20 >&2 || true
+    echo "[NEXT] sudo bash ./sadp --install-squid --skip-package-install (생성물을 다시 설치)" >&2
+    return 1
+  fi
   systemctl is-active --quiet squid || {
     echo "[FAIL] squid service가 active가 아님" >&2
     echo "[NEXT] sudo systemctl status squid 로 사유를 보고 sudo bash ./sadp --install-squid --skip-package-install" >&2
