@@ -298,6 +298,28 @@ diff -u '<ORIGINAL_REPOSITORY>/contracts/platform-production.yaml' \
 
 ## 5. 선택 기능
 
+### Portal을 루트 도메인에 두기
+
+`PORTAL_HOST=<BASE_DOMAIN>`으로 두면 Portal 주소가 `https://<BASE_DOMAIN>/`이 됩니다. Portal만 apex를
+쓸 수 있으며 `configure-site.py`가 Portal HTTPRoute의 listener를 `apex-<routeListener>`(예: `apex-https`)로
+고르고 `AUTH_URL`도 함께 바꿉니다. 재렌더 diff는 Portal values의 host, `sectionName`, `AUTH_URL` 세 줄입니다.
+
+바꾸기 **전에** 세 가지를 준비합니다. 순서를 어기면 그 사이 접속이나 로그인이 실패합니다.
+
+| 사전 조건 | 이유 | 확인 |
+| --- | --- | --- |
+| 인증서 SAN에 `<BASE_DOMAIN>` 자체 포함 | wildcard `*.<BASE_DOMAIN>`은 한 단계 아래만 덮어 apex를 덮지 못한다. ACME 생성 Certificate는 apex를 이미 포함하고, 제공 인증서는 직접 확인해야 한다 | `openssl x509 -noout -ext subjectAltName -in <PROVIDED_CERTIFICATE_PATH>`. preflight·`--doctor`가 읽기 전용으로 자동 확인한다 |
+| `<BASE_DOMAIN>` A 레코드 | 루트 이름이 Gateway 공인 주소로 해석돼야 한다 | `dig +short <BASE_DOMAIN> A` |
+| IdP redirect URI에 `https://<BASE_DOMAIN>/api/auth/callback/oidc` 추가 | 등록 전에 바꾸면 그동안 IdP가 로그인 callback을 거부한다 | IdP client 설정 화면, 적용 후 `sudo bash ./sadp --verify-portal-auth` |
+
+적용 뒤 예전 `portal.<BASE_DOMAIN>`은 HTTPRoute가 없어 404가 됩니다. 기존 IdP redirect URI는 확인이
+끝난 뒤 지웁니다. 저장소 루트 `.env`의 `NEXT_PUBLIC_*`에 Portal 주소가 들어 있으면 브라우저 번들에
+고정되므로 이미지를 다시 빌드해야 합니다(없으면 재빌드 불필요).
+
+Portal 메인 페이지는 주소 `/`에서 바로 보입니다. 비로그인 방문자는 `/`에서 메인 페이지를, 로그인
+사용자는 대시보드를 봅니다. 예전 `/portal` 링크는 `/`로 영구 이동합니다(로그인 상태에서는 메인
+페이지가 그대로 열려, 대시보드 권한이 없는 사용자도 메인 페이지에 돌아갈 수 있습니다).
+
 ### 용도별 system
 
 `SYSTEMS`는 한 Envoy Gateway 아래 별도 domain, Namespace, Rancher Project, wildcard Certificate를

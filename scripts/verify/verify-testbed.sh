@@ -378,21 +378,22 @@ portal_next() {
   diag_next "Portal 이미지와 values가 같은 revision인지 확인하라(sudo bash ./sadp --build-images 또는 --import-images → --deploy-apps)"
 }
 portal_resolve="${portal_host}:443:${vip}"
-# 홈(/)은 로그인하면 PaaS 대시보드, 미인증이면 메인 페이지(/portal)로 보낸다.
-# 로그인 후 대시보드 marker 검사는 세션이 필요하므로 scripts/verify/verify-portal-auth.sh가 맡고,
-# 여기서는 미인증 redirect와 메인 페이지 렌더링만 확인한다.
-portal_home_headers=$(curl -ksS --resolve "${portal_resolve}" --connect-timeout 5 --max-time 20 \
-  -D - -o /dev/null "${portal_url}/" || true)
-grep -Eq '^HTTP/[^ ]+ 30[2378]' <<<"${portal_home_headers}" \
-  && grep -Eiq '^location: .*(%2F|/)portal[[:space:]]*$' <<<"${portal_home_headers}" \
-  && ok "Portal 미인증 홈 -> 메인 페이지 이동" \
-  || { echo '[FAIL] Portal 홈 미인증 redirect' >&2; portal_next; fail=1; }
+# 홈(/)은 로그인하면 PaaS 대시보드, 미인증이면 메인 페이지를 주소 `/` 그대로 보여 준다(proxy rewrite).
+# 예전 /portal 링크는 미인증이면 `/`로 308. 로그인 후 대시보드 marker 검사는 세션이 필요하므로
+# scripts/verify/verify-portal-auth.sh가 맡고, 여기서는 미인증 경로만 확인한다.
 portal_main=$(curl -ksS --resolve "${portal_resolve}" --connect-timeout 5 --max-time 20 \
-  "${portal_url}/portal" || true)
+  "${portal_url}/" || true)
 grep -Eqi 'SADP' <<<"${portal_main}" \
   && grep -q '로그인' <<<"${portal_main}" \
-  && ok "Portal 메인 페이지 로그인 진입점" \
-  || { echo '[FAIL] Portal 메인 페이지 로그인 진입점 없음' >&2; portal_next; fail=1; }
+  && ok "Portal 미인증 홈(/)에 메인 페이지와 로그인 진입점" \
+  || { echo '[FAIL] Portal 미인증 홈(/)에 메인 페이지 없음' >&2; portal_next; fail=1; }
+portal_legacy_headers=$(curl -ksS --resolve "${portal_resolve}" --connect-timeout 5 --max-time 20 \
+  -D - -o /dev/null "${portal_url}/portal" || true)
+grep -Eq '^HTTP/[^ ]+ 308' <<<"${portal_legacy_headers}" \
+  && grep -Eiq '^location: (https://[^/]+)?/[[:space:]]*$' <<<"${portal_legacy_headers}" \
+  && ok "Portal 예전 /portal 주소 -> / 영구 이동" \
+  || { echo '[FAIL] Portal 예전 /portal 주소가 / 로 이동하지 않음' >&2
+       diag_next "Portal 이미지가 /portal 제거 이후 버전인지 확인하라(sudo bash ./sadp --build-images → --deploy-apps)"; fail=1; }
 portal_providers=$(curl -ksS --resolve "${portal_resolve}" --connect-timeout 5 --max-time 20 \
   "${portal_url}/api/auth/providers" || true)
 jq -e '.oidc.id == "oidc" and .oidc.type == "oidc"' <<<"${portal_providers}" >/dev/null \

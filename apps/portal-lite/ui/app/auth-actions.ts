@@ -33,6 +33,8 @@ async function authToken(): Promise<OIDCTokenState | null> {
 export async function signOutFromOIDC(): Promise<never> {
   const clientId = requiredRuntimeEnvironment("AUTH_OIDC_ID");
   const authURL = new URL(requiredRuntimeEnvironment("AUTH_URL"));
+  // IdP에 이미 등록된 post-logout URI를 바꾸지 않는다. 로그아웃 뒤에는 세션 쿠키가 없으므로
+  // proxy가 `/portal`을 `/`(메인 페이지)로 보낸다.
   const postLogoutRedirectUri = new URL("/portal", authURL).toString();
   const token = await authToken();
   await signOut({ redirect: false });

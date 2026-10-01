@@ -1051,6 +1051,18 @@ git push
 - **생성물**: 어느 쪽이든 고르고 위 `--write`로 덮어씁니다. 손으로 병합하지 않습니다.
 - **`environments/site.env.example`**: upstream 쪽을 택하고, 새로 생긴 key를 `/etc/sadp/site.env`에 옮깁니다.
 
+Portal UI 코드가 바뀐 merge(예: 주소창의 `/portal` 제거)는 Argo 동기화만으로 반영되지 않습니다.
+이미지를 다시 만들어 모든 노드에 넣고 Pod를 재시작합니다.
+
+```bash
+sudo bash ./sadp --build-images
+sudo bash ./sadp --deploy-apps \
+  --registry-pull-dockerconfig <SADP_REGISTRY_PULL_DOCKERCONFIG> \
+  --registry-push-dockerconfig <SADP_REGISTRY_PUSH_DOCKERCONFIG>
+sudo bash ./sadp --verify-portal-auth
+sudo bash ./sadp --verify-testbed     # 비로그인 / 200, /portal -> / 308 확인
+```
+
 `--write` 결과에 `platform/network/idp-relay/haproxy.cfg`, `platform/network/squid/squid.conf`,
 `platform/dns/rke2-coredns-config.yaml` 변경이 있으면 클러스터에도 반영합니다.
 
@@ -1068,6 +1080,8 @@ sudo bash ./sadp --verify-testbed
 | 어디서 막혔는지 모름 | 여러 단계가 함께 실패 | `sudo bash ./sadp --doctor --env-file /etc/sadp/site.env`가 처음 막힌 단계와 `[NEXT]`를 출력 |
 | 예제 domain/IP 적용 거부 | 문서용 값이 남음 | [사이트 설정](site-configuration.md) |
 | Portal 503 / `deployment-requests -> 503` | ExternalSecret에 `FORGEJO_BOT_TOKEN`이 없음 | `sudo bash scripts/cluster/install-portal-backend.sh --token-only --forgejo-token-file <SADP_PORTAL_FORGEJO_TOKEN_FILE>` |
+| `Portal 예전 /portal 주소가 / 로 이동하지 않음` | Portal 이미지가 `/portal` 제거 이전 버전 | `--build-images` → `--deploy-apps`(위 "사이트 저장소 운영") |
+| Portal을 루트 도메인으로 옮긴 뒤 접속·로그인 실패 | 인증서 SAN, A 레코드, IdP redirect URI 중 누락 | [Portal을 루트 도메인에 두기](site-configuration.md#portal을-루트-도메인에-두기) |
 | `Portal 외부 OIDC 인증 흐름` FAIL, `[CAUSE] ... fetch-failed` | Portal Node fetch가 proxy를 쓰지 않아 IdP에 못 닿음 | `IDP_RELAY_ENABLED=true` 후 render → relay 설치 → `--deploy-apps`(Portal NetworkPolicy에 relay:443 추가) |
 | `rollout이 멈춤` + `taint node-role.kubernetes.io/control-plane` | 새 Pod가 control-plane taint로 Pending, 옛 Pod가 트래픽을 받아 겉으로 정상 | direct 모드 Envoy는 `render-exposure.py` 재렌더(toleration 포함) 후 노출 리소스 동기화 |
 | `Devtron Helm release가 있지만 ... Ready가 아님` + `노드 ... inotify 한도 부족` | NATS reloader가 `too many open files`로 죽어 Service DNS가 비고 나머지가 CrashLoop | [inotify 복구](recovery.md#11-devtronnats-reloader-too-many-open-files) |

@@ -252,6 +252,38 @@ with tempfile.TemporaryDirectory(prefix="node-sysctl-") as raw:
           result.stdout + result.stderr)
 
 
+# --- Portal 루트 도메인 인증서 ------------------------------------------------------
+
+import shutil  # noqa: E402
+
+import yaml  # noqa: E402
+
+with tempfile.TemporaryDirectory(prefix="apex-tls-") as raw:
+    work = pathlib.Path(raw)
+    for relative in ("contracts/platform-production.yaml", "apps/portal-lite/values-beta.yaml"):
+        (work / relative).parent.mkdir(parents=True, exist_ok=True)
+        shutil.copy2(ROOT / relative, work / relative)
+    base_domain = yaml.safe_load((work / "contracts/platform-production.yaml").read_text())["spec"]["baseDomain"]
+    values_path = work / "apps/portal-lite/values-beta.yaml"
+    values = yaml.safe_load(values_path.read_text())
+    values["exposure"]["host"] = base_domain
+    values_path.write_text(yaml.safe_dump(values, allow_unicode=True, sort_keys=False))
+
+    def apex_check(dns_names: list[str]) -> subprocess.CompletedProcess:
+        script = (f'TESTBED_ROOT={work}; kctl() {{ printf "%s" "$CERT_JSON"; }}; '
+                  f'source {ROOT}/scripts/lib/diagnose.sh; diag_portal_apex_tls')
+        env = dict(os.environ, CERT_JSON=json.dumps({"spec": {"dnsNames": dns_names}}))
+        return subprocess.run(["bash", "-c", script], capture_output=True, text=True, env=env, check=False)
+
+    result = apex_check([f"*.{base_domain}"])
+    check("DG-20 Portal이 루트 도메인인데 Certificate dnsNames에 apex가 없으면 원인과 다음 명령",
+          result.returncode == 1 and "wildcard는 apex를 덮지 못함" in result.stderr and "[NEXT]" in result.stderr,
+          result.stderr)
+    result = apex_check([f"*.{base_domain}", base_domain])
+    check("DG-21 apex가 dnsNames에 있으면 통과(출력 없음)", result.returncode == 0 and not result.stderr,
+          result.stderr)
+
+
 # --- doctor ------------------------------------------------------------------------
 
 FAKE_KUBECTL = r'''#!/usr/bin/env python3

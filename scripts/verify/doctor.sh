@@ -171,6 +171,7 @@ envoy_deployment=$(kctl get deployment -n "${gateway_values[0]}" \
 if [[ -n ${envoy_deployment} ]]; then
   diag_deployment "${gateway_values[0]}" "${envoy_deployment##*/}" || stop ""
 fi
+diag_portal_apex_tls || stop ""
 if kctl get securitypolicy -n "${WORKLOAD_NAMESPACE}" secure-demo-oidc >/dev/null 2>&1; then
   diag_security_policy "${WORKLOAD_NAMESPACE}" secure-demo-oidc || stop ""
 else

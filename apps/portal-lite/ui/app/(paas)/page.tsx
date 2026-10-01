@@ -26,7 +26,7 @@ export async function generateMetadata() {
 /**
  * 홈(`/`)은 로그인 여부로 갈린다.
  * - 로그인 O → 아래 사용자 대시보드
- * - 로그인 X → 기존 SADP 메인 페이지(`/portal`)
+ * - 로그인 X → 기존 SADP 메인 페이지. 주소는 `/` 그대로이며 proxy.ts가 내부 rewrite한다
  *
  * 비로그인 분기는 (paas)/layout.tsx 의 requirePaasSession() 이 처리한다.
  */

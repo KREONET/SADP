@@ -13,3 +13,38 @@ it("sets CSP and pathname without invoking authentication", () => {
   expect(response.headers.get("X-Frame-Options")).toBe("DENY");
   expect(response.headers.get("Set-Cookie")).toBeNull();
 });
+
+it("shows the main page at / for anonymous visitors without a /portal address", () => {
+  const response = proxy(new NextRequest("https://portal.example.invalid/"));
+  expect(response.status).toBe(200);
+  expect(response.headers.get("x-middleware-rewrite")).toBe("https://portal.example.invalid/portal");
+  expect(response.headers.get("Location")).toBeNull();
+});
+
+it("permanently redirects anonymous /portal links to / without caching", () => {
+  const response = proxy(new NextRequest("https://portal.example.invalid/portal?lang=en"));
+  expect(response.status).toBe(308);
+  expect(response.headers.get("Location")).toBe("https://portal.example.invalid/?lang=en");
+  expect(response.headers.get("Cache-Control")).toBe("no-store");
+  expect(response.headers.get("X-Frame-Options")).toBe("DENY");
+});
+
+it("keeps the dashboard at / and the main page at /portal when a session cookie exists", () => {
+  for (const name of ["authjs.session-token", "__Secure-authjs.session-token.0"]) {
+    const headers = { cookie: `${name}=opaque` };
+    const home = proxy(new NextRequest("https://portal.example.invalid/", { headers }));
+    expect(home.headers.get("x-middleware-rewrite")).toBeNull();
+    expect(home.status).toBe(200);
+    const legacy = proxy(new NextRequest("https://portal.example.invalid/portal", { headers }));
+    expect(legacy.status).toBe(200);
+    expect(legacy.headers.get("Location")).toBeNull();
+  }
+});
+
+it("does not redirect the internal / → /portal rewrite back out (no redirect loop)", () => {
+  const rewritten = proxy(new NextRequest("https://portal.example.invalid/portal", {
+    headers: { "x-sadp-home-rewrite": "1" },
+  }));
+  expect(rewritten.status).toBe(200);
+  expect(rewritten.headers.get("Location")).toBeNull();
+});
