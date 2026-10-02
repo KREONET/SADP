@@ -1,0 +1,6 @@
+*
+!requirements*.txt
+!speech_translate/
+!speech_translate/*.py
+!static/
+!static/*

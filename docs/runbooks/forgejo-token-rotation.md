@@ -3,9 +3,13 @@
 > 대상: Portal write token과 Argo repository read token을 회전하는 관리자
 > 구현: `scripts/ops/rotate-forgejo-token.sh`
 
-새 token 발급과 옛 token 폐기는 Forgejo UI에서 사람이 수행하고, 스크립트는 새 token의 신원·권한
-검증과 OpenBao/Argo/Portal 전환을 수행합니다. token 값은 문서, shell history, process argv,
-화면 캡처에 남기지 않습니다.
+토큰 회전은 서비스가 사용하는 접속 토큰을 새 값으로 교체하고 옛 값을 폐기하는 작업입니다.
+**새 토큰 발급 → 시험(dry-run) → 서비스 전환 → 정상 동작 확인 → 옛 토큰 폐기** 순서로 진행합니다.
+전환에 실패했을 때 되돌릴 수 있도록 확인이 끝나기 전에는 옛 토큰을 폐기하지 마세요.
+
+새 토큰 발급과 옛 토큰 폐기는 Forgejo 웹 화면에서 사람이 수행합니다.
+스크립트는 새 토큰의 신원·권한을 확인하고 OpenBao·Argo·Portal을 전환합니다.
+실행 위치는 control-plane의 저장소 루트입니다. 토큰 값은 문서·셸 기록·명령 인자·화면 캡처에 남기지 않습니다.
 
 ## 1. 두 token의 경계
 
@@ -22,7 +26,9 @@ read credential을 한 파일로 재사용하지 않습니다.
 site.env의 `SADP_ARGO_REPO_USERNAME` 계정으로 Forgejo UI의
 `Settings → Applications → Generate New Token`에서 두 token을 만듭니다.
 
-터미널에 값을 직접 명령 인자로 붙이지 말고 숨김 입력으로 root-only 파일을 만듭니다.
+터미널에 값을 직접 명령 인자로 붙이지 말고 숨김 입력으로 관리자(root) 전용 파일을 만듭니다.
+다음 예제는 Bash 문법입니다. 대화형 셸이 zsh라면 먼저 `bash`를 실행한 뒤 복사하세요.
+입력 중에는 화면에 문자가 표시되지 않습니다.
 
 ```bash
 sudo install -d -m 0700 /etc/sadp/secrets
@@ -49,6 +55,10 @@ sudo chmod 0600 \
 좋습니다. 위 변수 이름을 export하지 말고 입력 직후 unset합니다.
 
 ## 3. dry-run
+
+새 토큰을 서비스에 반영하기 전에 신원과 권한부터 확인합니다.
+**이 스크립트는 `--apply`가 아니라 `--dry-run`으로 시험 모드를 지정합니다.**
+이를 빼면 아래 4절처럼 실제 전환하므로 옵션을 확인하세요.
 
 ```bash
 sudo bash ./sadp --rotate-forgejo-token \

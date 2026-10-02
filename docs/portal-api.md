@@ -4,8 +4,13 @@
 > 규격 원본: [apps/portal-lite/backend/openapi.yaml](../apps/portal-lite/backend/openapi.yaml)
 > 라우팅 원본: [apps/portal-lite/backend/routes.go](../apps/portal-lite/backend/routes.go)
 
-이 문서는 사람이 빠르게 확인하기 위한 요약입니다. 필드, required 여부, 응답 schema는 OpenAPI가
-기준이며 실행 중인 Portal에서도 `GET /api/v1/openapi.yaml`로 제공합니다.
+Portal 화면에서 하는 신청·조회·상태 변경을 HTTP API로 자동화하려는 개발자를 위한 안내입니다.
+화면 사용법만 필요하면 [사용자 가이드](usage.md)를 읽으세요. 필드 이름, 필수 여부, 응답 구조는
+OpenAPI가 기준이며 실행 중인 Portal에서도 `GET /api/v1/openapi.yaml`로 제공합니다.
+
+처음 연동할 때는 **로그인 세션 준비 → catalog 조회 → 입력 검증 → 생성 신청 → 상세 상태 조회**
+순서로 진행하세요. 검증 성공은 배포 완료가 아니며, 생성 신청 후 보안 검사와 배포 승인이 필요합니다.
+BFF는 브라우저 요청을 받아 서버 API로 전달하는 Portal의 중계 계층입니다.
 
 ## 1. 인증 경계
 
@@ -28,8 +33,9 @@ sequenceDiagram
 정상 로그인 요청의 흐름입니다. 세션·권한 검증에 실패하면 해당 경계에서 거부합니다.
 
 
-브라우저는 `https://<PORTAL_HOST>`의 same-origin BFF를 호출합니다. BFF가 Auth.js 세션을 확인한
-뒤 loopback Go API에 신원을 전달합니다.
+브라우저는 Portal과 프로토콜·호스트·포트가 같은 주소(same-origin)의 BFF를 호출합니다.
+BFF가 Auth.js 로그인 세션을 확인한 뒤 같은 서버에서만 접속할 수 있는 loopback Go API로
+검증한 사용자 정보를 전달합니다. Go API를 외부에 직접 열거나 사용자 헤더를 직접 넣어 호출하지 않습니다.
 
 - 무인증 probe는 `GET /healthz` 하나뿐입니다.
 - 조회에는 `deployments:read`, 검증·생성·상태 변경·삭제에는 `deployments:write`가 필요합니다.
@@ -40,8 +46,10 @@ sequenceDiagram
   bind합니다.
 - access/refresh token과 OIDC client secret은 Client Component로 전달하지 않습니다.
 
-따라서 문서의 `curl` 예시는 정상 로그인으로 얻은 Auth.js session cookie가 있어야 합니다.
-`X-Portal-User`를 직접 넣어 사용자를 가장하는 호출은 지원하지 않습니다.
+따라서 아래 `curl` 예시는 정상 로그인으로 얻은 Auth.js 세션 쿠키가 있어야 합니다.
+`<SESSION_COOKIE_FILE>`은 승인된 시험 환경에서 준비한 curl cookie 파일 경로입니다.
+파일은 본인만 읽을 수 있는 `0600` 권한으로 관리하고 Git이나 화면 공유에 넣지 마세요.
+쿠키가 없거나 만료되면 `401`이며, `X-Portal-User`를 직접 넣어도 로그인하지 않은 호출은 지원하지 않습니다.
 
 ## 2. 실제 엔드포인트
 
@@ -75,7 +83,9 @@ sequenceDiagram
 - 검증 API는 입력을 저장하거나 Forgejo/Kubernetes를 바꾸지 않습니다.
 - 오류는 `application/problem+json` Problem Details입니다.
 
-멱등 키 규칙은 생성 종류마다 다릅니다.
+멱등 키(`Idempotency-Key`)는 네트워크 오류로 같은 신청을 다시 보냈을 때 중복 생성을 막는 식별자입니다.
+한 번의 신청과 그 재전송에는 같은 키를 사용하고, 별개의 새 신청에는 새 키를 사용합니다.
+필수 여부는 생성 종류마다 다릅니다.
 
 | 요청 | `Idempotency-Key` |
 | --- | --- |
@@ -93,6 +103,7 @@ sequenceDiagram
 
 ```bash
 curl --request POST \
+  --cookie '<SESSION_COOKIE_FILE>' \
   --header 'Content-Type: application/json' \
   --data '{
     "appName": "research-viewer",
@@ -117,6 +128,7 @@ OpenBao path, GitOps 다음 단계가 포함됩니다. `classification=openbao`�
 
 실제 생성은 같은 입력을 `POST /api/v1/deployment-requests`로 보냅니다. 서버가 다시 검증하고
 통과한 경우 `202 Accepted`와 `Location`을 반환한 뒤 백그라운드 파이프라인을 시작합니다.
+`202`는 **신청 접수**를 뜻합니다. `Location`이 가리키는 신청 상세를 조회해 배포 결과를 확인하세요.
 일반 사용자 응답은 승인·보안 상태와 source 좌표를 제공하지만 private GitOps PR URL·branch는
 제공하지 않습니다.
 
@@ -135,6 +147,7 @@ Forgejo HTTPS host만 허용합니다.
 
 ```bash
 curl --request POST \
+  --cookie '<SESSION_COOKIE_FILE>' \
   --header 'Content-Type: application/json' \
   --data '{
     "group": "mobility-platform",
@@ -215,10 +228,12 @@ deployed/stopped/failed → deleting → deleted
 
 ```bash
 curl --request PUT --header 'Content-Type: application/json' \
+  --cookie '<SESSION_COOKIE_FILE>' \
   --data '{"state":"stopped"}' \
   'https://<PORTAL_HOST>/api/v1/deployment-requests/<REQUEST_ID>/runtime-state'
 
 curl --request PUT --header 'Content-Type: application/json' \
+  --cookie '<SESSION_COOKIE_FILE>' \
   --data '{"state":"running"}' \
   'https://<PORTAL_HOST>/api/v1/deployment-requests/<REQUEST_ID>/runtime-state'
 ```

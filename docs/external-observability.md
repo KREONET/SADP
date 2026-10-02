@@ -3,11 +3,23 @@
 > 대상: 클러스터 밖 Grafana/Wazuh 등에서 SADP 내부 Prometheus·Loki 등의 API를 호출하는 관리자
 > 전제: SADP 통합 설치와 production TLS 검증이 완료됨
 
-기계 인증은 사람용 외부 OIDC IdP SSO와 별도입니다. `MACHINE_AUTH_MODE`를 `oidc` 또는
-`api-key`로 반드시 고르며, 어느 모드를 골라도 Portal·Rancher·OpenBao와 OIDC 앱의 사람 로그인은
-기존 외부 OIDC IdP 설정을 그대로 사용합니다.
+클러스터 밖의 Grafana·Wazuh 같은 프로그램이 SADP 내부 API를 호출하도록 연결하는 절차입니다.
+프로그램은 브라우저 로그인 화면을 조작할 수 없으므로 전용 인증 수단을 사용합니다.
+이를 이 문서에서는 **기계 인증(machine auth)**이라고 부릅니다.
+
+진행 순서는 **인증 방식 선택 → 허용할 서비스·프로그램·출발지 주소 설정 → 생성·적용 →
+외부 프로그램에 자격증명 전달 → 실제 연결 시험**입니다. SADP 쪽 설정과 검수는 control-plane에서,
+Grafana·Wazuh 설정과 요청 시험은 해당 외부 시스템에서 수행합니다.
+
+`MACHINE_AUTH_MODE`는 `oidc` 또는 `api-key`를 선택합니다. 이 선택은 사람의 조직 로그인과 별개이며,
+Portal·Rancher·OpenBao와 OIDC 앱은 기존 외부 IdP 로그인을 계속 사용합니다.
+용어는 [기본 개념](concepts.md), `kubectl` 준비는 [설치 가이드](installation.md#실행-위치-확인)를 참고하세요.
 
 ## 1. 모드 선택
+
+외부 프로그램이 IdP에서 짧은 수명의 JWT를 발급받아 갱신할 수 있으면 `oidc`를 검토합니다.
+전용 HTTP 헤더에 키를 넣는 방식이면 `api-key`를 사용합니다. 두 방식 모두 인증값뿐 아니라
+Gateway가 실제로 보는 출발지 IP 범위(CIDR)도 확인합니다.
 
 | 모드 | 기계 클라이언트가 보내는 값 | Gateway 검증 | Secret 원본 |
 | --- | --- | --- | --- |
@@ -136,14 +148,16 @@ sudo bash ./sadp --install \
 client ID는 `MACHINE_AUTH_CLIENTS`와 같아야 하고 client secret은 외부 시스템의 Secret 저장소에만
 둡니다. SADP는 이 모드에서 API 키를 생성하거나 변경하지 않습니다.
 
+client secret은 시험을 실행하는 시스템의 본인 전용 파일(`0600`)에 준비합니다.
+아래 `<CLIENT_SECRET_FILE>`은 해당 파일 경로입니다. curl이 파일을 읽도록 해 실제 값을 명령 인자에
+넣지 않습니다. `TOKEN`은 응답을 메모리에 담는 Bash 변수이며 출력하지 않습니다.
+
 ```bash
-read -rs -p 'Machine client secret: ' MACHINE_CLIENT_SECRET; echo
 TOKEN=$(curl --fail --silent --show-error \
   --request POST 'https://<SSO_HOST>/realms/<REALM>/protocol/openid-connect/token' \
   --data grant_type=client_credentials \
   --data client_id='<CLIENT_ID>' \
-  --data-urlencode client_secret="${MACHINE_CLIENT_SECRET}" | jq -r .access_token)
-unset MACHINE_CLIENT_SECRET
+  --data-urlencode 'client_secret@<CLIENT_SECRET_FILE>' | jq -r .access_token)
 ```
 
 token을 출력하지 말고 시험 후 `unset TOKEN`합니다.
@@ -351,6 +365,7 @@ KV 버전을 destroy합니다. `--confirm-connected` 없이 이전 키를 폐기
 ## 10. 운영 제약
 
 - `MACHINE_AUTH_SERVICES`는 backend Namespace나 Service를 만들지 않습니다.
+  노출할 내부 서비스는 먼저 설치돼 있어야 합니다.
 - Prometheus/Loki에는 클러스터 메타데이터와 로그가 있으므로 `defaultAction: Deny`를 유지합니다.
 - API-key에서 외부 OIDC IdP으로 바꿔도 사람 SSO 설정은 바뀌지 않습니다. 남은 API 키를 일반 bootstrap이
   자동 회전하거나 임의 삭제하지도 않습니다.

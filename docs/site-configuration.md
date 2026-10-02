@@ -3,15 +3,23 @@
 > 대상: `/etc/sadp/site.env`와 계약·생성물을 관리하는 플랫폼 관리자
 > 전체 key template: [environments/site.env.example](../environments/site.env.example)
 
-다른 사이트에 배포할 때 생성된 YAML의 IP·도메인·이름을 검색 치환하지 않습니다. Git 밖의
-`site.env`를 검증한 뒤 생성기 한 번으로 계약과 하위 파일을 만듭니다.
+`site.env`에 적을 값과 설정 변경 절차를 설명합니다. `site.env`는 사이트 주소·노드·네트워크 등
+설치 입력을 모아 둔 파일이고, **계약**은 이 입력으로 만들어지는 플랫폼 설정의 기준 파일입니다.
+생성된 YAML을 일일이 바꾸면 파일끼리 달라질 수 있으므로 입력을 고치고 다시 생성합니다.
+
+처음 준비한다면 [파일 준비](#2-파일-준비) → [필수 입력](#3-필수-입력-묶음) →
+[검증·생성](#4-검증생성드리프트-확인) 순서로 읽으세요. 운영 중 인증서를 전환한다면
+아래 [상태 기록 값](#상태-기록-값은-설정이-아니다)을 먼저 확인합니다.
+선택 기능은 해당 기능이 필요한 사이트에서만 읽으면 됩니다.
 
 ## 상태 기록 값은 설정이 아니다
 
-아래 세 key는 "원하는 상태"가 아니라 **이미 끝낸 단계의 기록**입니다. 실제로 끝낸 순서대로만
-올립니다. 클러스터가 앞서 나갔는데 이 값이 뒤처지면 `configure-site.py --write`가 계약을 과거로
-되돌려(예: HTTPS route를 HTTP로) 서비스가 내려갑니다. 반대로 끝내지 않은 단계를 미리 올리면 아직 없는
-인증서를 참조합니다.
+ACME 발급을 쓰는 사이트에서는 아래 값을 **실제 발급 단계에 맞춰** 바꿔야 합니다.
+`ACME_STAGING_VERIFIED`와 `EXISTING_GATEWAY_TLS_READY`는 확인한 완료 사실이며,
+`TLS_ISSUER_MODE`는 staging 확인 뒤 운영 발급으로 전환하는 값입니다.
+발급을 확인하기 전에 완료 기록을 `true`로 올리거나 `TLS_ISSUER_MODE`를 `production`으로 바꾸지 마세요.
+아직 없는 인증서를 사용하려다 실패할 수 있습니다.
+반대로 실제 HTTPS 전환 뒤 파일이 옛 값으로 남으면 다음 생성이 접속 경로를 HTTP로 되돌릴 수 있습니다.
 
 | key | 언제 올리나 | 확인 명령 | 뒤처지면 | 앞서가면 |
 | --- | --- | --- | --- | --- |
@@ -54,11 +62,25 @@ flowchart TD
 `configure-site.py`는 env를 shell로 source하지 않고 직접 파싱합니다. 알 수 없는 key, 중복 key,
 shell expansion, credential처럼 보이는 key/value, placeholder가 남은 적용을 거부합니다.
 
-운영 `site.env`가 존재하면 그것이 상류입니다. 계약과 생성물을 손으로 고쳐도 다음 `--write`에서
-되돌아갑니다. 실제 env가 없는 생성기 개발 checkout에서는 계약을 직접 수정할 수 있지만,
-renderer와 테스트를 함께 갱신해야 합니다.
+설정을 바꾸기 전에 다음 두 위치에 파일이 있는지 확인하세요.
+없는 파일은 `No such file or directory`로 표시되며, 이 확인만으로 설정은 바뀌지 않습니다.
+
+```bash
+sudo ls -l environments/site.env /etc/sadp/site.env
+```
+
+- 하나만 있으면 해당 파일이 이 사이트에서 쓰는 입력인지 확인하고 `--env-file`에 명시합니다.
+- 둘 다 있으면 운영 담당자에게 어느 파일을 사용하는지 확인합니다. 도구가 자동으로 고르지 않습니다.
+- 둘 다 없고 별도로 지정한 입력도 없는 개발 저장소라면 계약을 직접 관리할 수 있습니다.
+  계약 변경 후 `render-*.py`로 하위 파일을 다시 만들고 시험·가드를 확인합니다.
+
+운영 `site.env`가 있으면 그것이 입력의 기준(상류)입니다. 계약과 생성물을 손으로 고쳐도 다음
+`--write`에서 되돌아가므로 사이트 입력과 생성 결과를 함께 맞춰야 합니다.
 
 ## 2. 파일 준비
+
+**새 사이트에서 파일을 처음 만들 때만** 아래 복사 명령을 실행합니다.
+기존 `/etc/sadp/site.env`가 있으면 백업과 변경 검토 후 편집하세요. 예제를 다시 복사하면 기존 설정을 덮어씁니다.
 
 ```bash
 sudo install -d -m 0700 /etc/sadp /etc/sadp/secrets
@@ -88,11 +110,14 @@ SADP_GIT_PUSH_TOKEN_FILE=/etc/sadp/secrets/<FORGEJO_WRITE_TOKEN_FILE>
 SADP_PORTAL_FORGEJO_TOKEN_FILE=/etc/sadp/secrets/<PORTAL_BOT_TOKEN_FILE>
 ```
 
-pull/push Docker config 경로와 권한은 분리합니다.
+pull은 이미지를 내려받는 권한, push는 이미지를 올리는 권한입니다. 두 Docker config의 파일과
+권한을 분리합니다. `_FILE`이나 `_DOCKERCONFIG` 변수에는 비밀값 자체가 아닌 파일 경로를 적으세요.
 
 ## 3. 필수 입력 묶음
 
-정확한 key와 주석은 template이 기준입니다.
+아래 정보는 서버 조회 결과나 사이트 담당자가 확정한 값으로 채웁니다.
+모르는 IP·CIDR·인증 주소를 예제에서 가져와 그대로 사용하지 마세요.
+정확한 key와 형식은 [입력 예제](../environments/site.env.example)가 기준입니다.
 
 | 영역 | 확인할 사실 |
 | --- | --- |
@@ -146,6 +171,9 @@ single도 Gateway VIP·DNS·외부 IdP·StorageClass 등 기존 서비스 선행
 
 ### NIC와 CIDR
 
+NIC는 서버의 네트워크 연결 장치이고, interface는 운영체제가 부르는 장치 이름입니다.
+CIDR은 네트워크 주소 범위입니다. 아래 명령은 **실행한 서버 한 대**의 장치·IPv4·경로를 조회합니다.
+
 ```bash
 ip -br link
 ip -br -4 address
@@ -164,6 +192,9 @@ Pod/Service CIDR과 cluster DNS는 이미 설치된 RKE2와 일치해야 합니�
 바꾸는 migration 입력이 아닙니다.
 
 ### public mode
+
+공인 IP를 누가 가지고 있는지에 따라 외부 접속 경로가 달라집니다.
+공인 IP를 가질 후보 노드에서 아래 조회를 실행하고, 경계 장비 설정도 네트워크 담당자와 확인하세요.
 
 ```bash
 ip -brief address | grep '<PUBLIC_IP>'
@@ -253,7 +284,18 @@ bash ./sadp --verify-idp --env-file /etc/sadp/site.env
 
 ## 4. 검증·생성·드리프트 확인
 
-읽기 전용 검증:
+이 절의 명령은 해당 `site.env`를 읽을 수 있는 작업 서버의 저장소에서 실행합니다.
+기본 `/etc/sadp/site.env`는 관리자 전용이므로 그 파일을 읽을 수 있는 셸이 필요합니다.
+파일을 읽기 위해 권한을 넓히지는 마세요.
+
+| 옵션 | 확인하거나 바꾸는 것 |
+| --- | --- |
+| `--check` | 입력 형식과 값의 조합 확인. 파일 변경 없음 |
+| `--check-rendered` | 입력으로 생성할 결과와 현재 저장소 파일이 일치하는지 확인. 파일 변경 없음 |
+| `--write` | 계약과 하위 설정 파일 생성. 실제 서버 적용이나 Git 전송은 하지 않음 |
+
+드리프트(drift)는 기준 입력과 현재 파일 또는 실제 상태의 차이를 뜻합니다.
+먼저 읽기 전용으로 입력을 검증합니다.
 
 ```bash
 python3 scripts/site/configure-site.py \

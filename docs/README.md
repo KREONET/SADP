@@ -1,88 +1,106 @@
-# SADP 문서
+# SADP 문서 — 여기서 시작하세요
 
-필요한 문서 하나부터 읽으십시오. 설치 명령은 [설치 가이드](installation.md), 일상 운영은
-[관리자 가이드](administrator-guide.md)가 기준입니다.
+SADP는 이미 준비된 Kubernetes(RKE2) 클러스터에 웹 앱을 올리고 관리하는 테스트베드입니다.
+사용자는 Portal에서 앱을 신청하고, 관리자는 배포 승인·로그인 연결·네트워크·백업을 운영합니다.
+운영체제와 RKE2를 새로 설치하는 작업은 별도로 준비해야 합니다.
 
-## 역할별 시작
+문서를 모두 읽을 필요는 없습니다. 아래에서 지금 하려는 일을 고르세요.
 
-아래 그림에서 자신의 작업을 고른 뒤 표의 문서를 여십시오. 문서의 흐름도는 GitHub에서
-그림으로 표시되는 Mermaid 형식이며, 세부 조건과 명령은 그림 아래 본문을 따릅니다.
+## 처음 읽는 순서
+
+| 지금 하려는 일 | 읽는 순서 | 준비할 것 |
+| --- | --- | --- |
+| Portal에서 앱 신청하기 | [사용자 가이드](usage.md) | Portal 주소, 조직 로그인 계정, 신청 권한 |
+| 내 프로그램을 배포할 수 있게 준비하기 | [개발자 가이드](developer-guide.md) → [사용자 가이드](usage.md) | 소스 저장소와 Dockerfile 또는 미리 만든 이미지 |
+| 플랫폼을 처음 설치하기 | [기본 개념](concepts.md) → [설치 가이드](installation.md) → [사이트 설정](site-configuration.md) | 실행 중인 RKE2, 사이트 주소·네트워크 정보, 외부 인증 담당자 |
+| 설치된 플랫폼 운영하기 | [관리자 가이드](administrator-guide.md) → 증상에 맞는 상세 문서 | control-plane 접속 권한, 운영 설정 파일 위치 |
+
+Kubernetes 용어가 낯설면 [기본 개념과 용어](concepts.md)를 먼저 읽으세요.
+앱 신청만 하는 사람은 서버 명령을 실행하지 않아도 됩니다.
+
+## 앱 신청부터 실행까지
 
 ```mermaid
-flowchart TD
-    Start["무엇을 하려 하나요?"] --> User["앱 신청·상태 확인"]
-    Start --> Dev["배포할 앱 준비"]
-    Start --> Admin["플랫폼 설치·운영"]
-    User --> Usage["사용자 가이드"]
-    Dev --> Developer["개발자 가이드"]
-    Admin --> Install["처음 설치: 설치 가이드"]
-    Admin --> Operate["운영 중: 관리자 가이드"]
-    Operate --> Detail["네트워크 · 인증 · 백업·복구"]
+flowchart LR
+    Request["사용자: Portal에서 신청"] --> PR["Portal: 배포 변경안 생성"]
+    PR --> Review["보안 검사·관리자 승인"]
+    Review --> Deploy["이미지 준비·배포"]
+    Deploy --> Ready["내 앱에서 RUNNING 확인"]
 ```
 
+신청 버튼을 눌렀다고 앱이 바로 실행되지는 않습니다. 보안 검사와 배포 승인이 모두 필요합니다.
+`RUNNING`이 되면 목표 개수의 앱이 준비된 상태입니다. 실제 화면과 기능도 앱 주소에서 확인하세요.
 
-| 역할 | 먼저 읽을 문서 | 이 문서에서 해결하는 일 |
-| --- | --- | --- |
-| 사용자 | [사용자 가이드](usage.md) | 로그인, 앱 신청, 상태 확인, 중지·재개·삭제 |
-| 앱 개발자 | [개발자 가이드](developer-guide.md) | 저장소와 이미지 준비, 배포 정책, Secret 분류 |
-| 플랫폼 관리자 | [관리자 가이드](administrator-guide.md) | 설치, 권한, GitOps, 장애, 백업 |
-| 신규 설치 담당자 | [설치 가이드](installation.md) | 10단계 설치와 인수인계 |
+## 명령 예제를 읽는 방법
 
-## 설치 방법 두 가지
+설치·운영 명령은 별도 표시가 없으면 **SADP 저장소의 최상위 폴더**에서 실행합니다.
+이 폴더에는 `sadp`, `contracts/`, `scripts/`가 있습니다.
 
-두 방법은 같은 `configure-site.py` 검증기와 같은 `render/node/cluster` 설치기를 사용합니다.
+- **실행 위치**를 먼저 확인하세요. control-plane은 클러스터를 관리하는 서버이고,
+  worker는 앱을 실행하는 서버입니다. worker 전용 명령을 control-plane에서 대신 실행할 수는 없습니다.
+- `<PORTAL_HOST>`, `<WORKER_NODE_NAME>`처럼 꺾쇠로 표시한 부분은 실제 사이트 값으로 바꾸세요.
+  꺾쇠까지 그대로 복사하면 명령이 실패하거나 셸이 다른 의미로 해석할 수 있습니다.
+- `bash` 코드 블록은 터미널 명령입니다. `dotenv` 블록은 `site.env` 같은 파일에 적을 내용이고,
+  `yaml`·`json` 블록은 설정이나 요청 예시입니다.
+- `sudo`는 관리자 권한으로 실행한다는 뜻입니다. 읽을 수 없는 root 전용 파일은
+  권한을 넓히지 말고 해당 절에서 안내하는 관리자 권한으로 다루세요.
 
-### site.env 기반
-
-값을 미리 준비하거나 자동화할 때 사용합니다.
+통합 설치기의 계획은 다음 명령으로 확인합니다. 계획 확인만으로 설치되지는 않습니다.
 
 ```bash
 bash ./sadp --install --env-file /etc/sadp/site.env --phase all
 ```
 
-### 질문·답변형
+`--apply`를 붙이면 실제 적용합니다. **기본 `all --apply`는 Git 쓰기와 노드 재시작까지 포함**하므로
+[설치 가이드](installation.md)의 준비 사항과 서비스 중단 범위를 먼저 확인하세요.
+`--install-squid`, `--render-network`처럼 `--apply` 없이도 변경하는 명령이 있습니다.
+개별 명령의 동작은 [스크립트 안내](../scripts/README.md)와 `--help`에서 확인합니다.
 
-처음 설치하거나 변수 의미가 익숙하지 않을 때 사용합니다. Secret 값은 묻지 않고 root 전용 파일
-경로만 받습니다.
+## 설치 방법 고르기
+
+처음 설치하며 입력값의 의미를 확인하고 싶다면 질문·답변형 마법사를 사용하세요.
+마법사는 환경을 조회해 기본값을 제안하지만, 그 값이 설치 대상과 맞는지는 사람이 확인해야 합니다.
 
 ```bash
 sudo bash ./sadp --install-wizard
 ```
 
-간편 모드에서는 RKE2와 로컬 NIC를 먼저 조회해 확인된 실제 IP·CIDR·DNS를 기본값으로 제안합니다.
-조회되지 않은 기존값·예제값은 미확인으로 표시합니다. 묶음에서 Enter로 수락하거나 `n`으로 수정할 수 있습니다.
-노드·NIC 역할과 공인 IP·공개 방식·인증 설정은 별도로 확인합니다.
-모든 활성 항목을 직접 입력하려면 `--advanced`,
-자동 조회만 생략하려면
-`--no-detect`를 붙입니다. 자세한 선택 방법은 [설치 가이드](installation.md)를 따릅니다.
+이미 사이트 값을 정리했다면 `/etc/sadp/site.env`에 기록하고 설치 계획을 확인합니다.
+두 방법은 같은 설치기를 사용합니다. 세부 순서는 [설치 입력 방식 선택](installation.md#설치-입력-방식-선택)을 따르세요.
 
-마법사가 만든 `/etc/sadp/site.env`도 반드시 render 계획, 생성, test, commit/push 순서를 거칩니다.
-검증 오류가 나면 다른 답변을 유지한 채 해당 항목만 수정합니다. 기존 파일의 오류만 고치려면
-`sudo bash ./sadp --install-wizard --repair`를 사용합니다. 저장되지 않은 이전 답변은 복원하지 않습니다.
+## 필요한 상세 문서 찾기
 
-## 설치 후 참고 문서
-
-| 작업 | 문서 |
+| 궁금한 내용 또는 증상 | 문서 |
 | --- | --- |
-| 모든 `site.env` key와 생성 규칙 | [사이트 설정](site-configuration.md) |
-| NIC, 방화벽, Squid, DNS | [네트워크·egress](network-egress.md) |
-| wildcard staging → production | [Let's Encrypt DNS-01](letsencrypt-dns01.md) |
-| 외부 OpenID/SAML 연결 | [외부 인증](identity-provider.md) |
-| 외부 Grafana/Wazuh 기계 인증 | [기계 인증](external-observability.md) |
-| 안전 기동·종료, SADP/RKE2 업데이트 | [운영 수명주기](operations-lifecycle.md) |
-| Portal API | [Portal API](portal-api.md) · [OpenAPI](../apps/portal-lite/backend/openapi.yaml) |
-| 백업과 복원 | [복구](recovery.md) |
-| 보안 보장·비보장과 앱 사고 격리 | [보안 경계](security-boundaries.md) |
-| Forgejo token 회전 | [token 회전](runbooks/forgejo-token-rotation.md) |
-| 개별 명령 진단 | [스크립트 안내](../scripts/README.md) |
+| `site.env`에 무엇을 적고 어떤 파일이 생성되는가 | [사이트 설정](site-configuration.md) |
+| 외부 접속·DNS·이미지 다운로드가 안 된다 | [네트워크와 외부 통신](network-egress.md) |
+| HTTPS 인증서를 발급하거나 갱신해야 한다 | [Let's Encrypt DNS-01](letsencrypt-dns01.md) |
+| 조직 로그인과 연결하거나 로그인 오류를 확인한다 | [외부 인증](identity-provider.md) |
+| 외부 Grafana/Wazuh가 내부 API를 호출해야 한다 | [프로그램 간 인증](external-observability.md) |
+| 서버를 끄고 켜거나 SADP/RKE2를 업데이트한다 | [기동·종료·업데이트](operations-lifecycle.md) |
+| Portal API로 신청 과정을 자동화한다 | [Portal API](portal-api.md) · [OpenAPI 규격](../apps/portal-lite/backend/openapi.yaml) |
+| 백업하거나 장애에서 복구한다 | [백업·복원](recovery.md) |
+| 플랫폼이 막아 주는 보안 문제와 앱의 책임을 확인한다 | [보안 보장과 한계](security-boundaries.md) |
+| Forgejo 접속 토큰을 교체한다 | [토큰 교체 절차](runbooks/forgejo-token-rotation.md) |
+| 앱 등록에 필요한 관리자 준비를 확인한다 | [템플릿 앱 등록](template-app-onboarding.md) |
+| 앱 이미지를 한 번 만들어 여러 사이트에서 재사용한다 | [사전 빌드 이미지](prebuilt-images.md) |
 
-## 공통 안전 규칙
+다음은 구현을 점검한 **기술 기록**입니다. 처음 설치할 때 순서대로 실행하는 안내서가 아니며,
+기록에 나온 버전·줄 번호·시험 결과는 해당 점검 시점의 내용입니다.
 
-- 실제 IP, FQDN, 저장소 URL, 사용자명, token, password, 인증서, 개인키를 Git 문서에 쓰지 않습니다.
-- `# Generated by` 파일은 직접 수정하지 않습니다. `/etc/sadp/site.env`에서 다시 생성합니다.
-- Secret 본문은 Git이나 `site.env`가 아니라 root 전용 파일 또는 OpenBao에 둡니다.
-- 통합 설치와 `--apply`를 지원하는 관리 명령은 먼저 계획을 확인합니다.
-  `--install-squid`, `--render-network`처럼 기본 실행이 변경인 명령도 있으므로
-  [스크립트 안내](../scripts/README.md)와 해당 `--help`에서 실행 경계를 확인합니다.
-- node phase는 RKE2를 자동 재시작하지 않습니다.
-- 문서와 명령이 다르면 `bash ./sadp --list`와 각 명령의 `--help`가 우선입니다.
+| 기술 기록 | 다루는 내용 |
+| --- | --- |
+| [단일 서버 설치 점검](installation-findings.md) | 설치 중 발견한 문제와 반영 범위 |
+| [Portal 동시성 감사](portal-concurrency-audit.md) | 여러 요청이 겹칠 때의 제약과 알려진 문제 |
+| [OIDC 갱신 점검](portal-oidc-refresh.md) | 로그인 토큰 갱신 요청이 겹치는 문제 |
+| [파생 프로젝트 비교](derivative-common-core-audit.md) | 제공된 소스 사이의 공통화 검토 |
+
+## 설정을 바꾸기 전에 기억할 것
+
+운영 사이트에서는 사용하는 `site.env`를 고치고 설정 파일을 다시 생성합니다.
+`# Generated by`로 시작하는 파일을 직접 수정하면 다음 생성 때 변경이 사라집니다.
+`site.env`의 위치 확인과 예외는 [사이트 설정](site-configuration.md#1-값의-소유-위치)을 따르세요.
+
+비밀번호·토큰·개인키 같은 **Secret 실제 값**은 Git이나 `site.env`에 적지 않습니다.
+관리자 전용 파일 또는 OpenBao에 보관하고, Git에는 이름과 참조 정보만 남깁니다.
+실제 IP·도메인·계정 정보도 공개 문서에 쓰지 말고 `<PLACEHOLDER>`로 표시합니다.

@@ -3,9 +3,13 @@
 > 문서 경로: [문서 홈](README.md) → [관리자 가이드](administrator-guide.md) → 외부 인증
 > 대상: 조직 IdP와 SADP를 연결하는 플랫폼·인증 관리자
 
-SADP는 인증 서버를 설치하거나 realm, tenant, client, 사용자, 그룹을 자동 생성하지 않습니다.
-계약에는 SADP가 소비할 공개 OIDC endpoint와 claim 이름만 둡니다. IdP 설정과 계정 수명주기는
-조직의 인증 관리자가 소유합니다.
+Portal과 앱을 **조직 계정 로그인**에 연결하는 절차입니다. IdP는 로그인을 제공하는 외부 서버이고,
+SADP는 그 서버가 확인한 신원을 사용합니다. 플랫폼 관리자와 조직 인증 관리자가 함께 진행하세요.
+
+준비 순서는 **IdP에 앱 등록 → 로그인 후 돌아올 주소 등록 → 공개 주소를 site.env에 기록 →
+client secret을 관리자 전용 파일로 전달 → 설치 적용과 로그인 시험**입니다.
+SADP는 IdP의 realm·tenant(계정 관리 영역), client(등록 앱), 사용자·그룹을 자동 생성하지 않습니다.
+IdP 설정과 계정의 생성·변경·삭제는 조직 인증 담당자가 관리합니다.
 
 SADP 런타임의 인증 소비자는 OIDC를 사용합니다. 상위 인증원이 SAML만 제공한다면 조직이 운영하는
 broker에서 SAML을 받아 OIDC로 내보내고, SADP에는 그 broker의 OIDC endpoint를 연결합니다.
@@ -30,11 +34,24 @@ flowchart LR
 
 ## 1. 외부 IdP에서 준비할 항목
 
+인증 담당자에게 다음 항목을 요청하세요. 주소는 IdP 관리 화면의 주소가 아니라
+OIDC discovery 문서가 제공하는 값이어야 합니다.
+
+| 항목 | 사용하는 이유 |
+| --- | --- |
+| `issuer` | 인증 정보를 발급한 주체가 맞는지 확인. 끝 `/`까지 정확히 유지 |
+| authorization endpoint | 브라우저를 조직 로그인 화면으로 보냄 |
+| token endpoint | 로그인 결과를 토큰으로 교환 |
+| JWKS URI | 토큰 서명을 확인하는 공개 키 조회 |
+| client ID와 client secret | IdP에 등록한 앱의 식별자와 비밀값. 사용자 비밀번호와 다름 |
+| 그룹 claim | 사용자가 어떤 그룹에 속하는지 확인하는 인증 결과 필드 |
+
 OIDC discovery가 제공하는 `issuer`, authorization endpoint, token endpoint, JWKS URI를 확인합니다.
 모든 endpoint는 credential이 없는 HTTPS URL이어야 합니다. SADP가 사용하는 최소 scope는
 `openid email profile`이며, 권한 판정에 사용할 배열형 그룹 claim도 하나 정합니다.
 
-IdP 관리자가 confidential client를 직접 만들고 다음 redirect URI를 정확히 등록합니다.
+IdP 관리자가 client secret으로 인증하는 앱(confidential client)을 직접 만들고,
+로그인 뒤 돌아올 주소(redirect URI)를 다음과 같이 정확히 등록합니다.
 
 | 소비자 | client ID | redirect URI |
 | --- | --- | --- |
@@ -73,7 +90,10 @@ broker의 upstream SAML 설정은 broker 관리자가 해당 제품의 절차로
 
 ## 3. client secret 전달
 
-IdP에서 발급한 secret은 Git이나 `site.env`에 쓰지 않고 control-plane의 root 전용 파일로 전달합니다.
+**실행 위치: control-plane.** IdP에서 발급한 secret은 Git이나 `site.env`에 쓰지 않고 관리자(root)
+전용 파일로 전달합니다. 아래 `<..._SECRET_FILE>`은 담당자로부터 안전하게 받은 원본 파일 경로입니다.
+각 파일에는 secret 문자열 하나만 저장하며, 파일 내용을 화면에 출력하지 않습니다.
+Provider 하나를 공유하는 사이트는 [공통 Client ID 설정](installation.md#한-명령으로-설치)의 별도 파일을 사용합니다.
 
 ```bash
 sudo install -d -m 0700 /var/lib/sadp/credentials
@@ -89,6 +109,8 @@ cluster bootstrap은 이 값을 OpenBao→ESO 경로에 넣고 SADP 소비자 �
 호출하지 않습니다.
 
 ## 4. 검증
+
+입력 파일을 읽을 수 있는 권한으로 형식을 검사하고, control-plane에서 Portal 인증 흐름을 검사합니다.
 
 ```bash
 python3 scripts/site/configure-site.py --env-file /etc/sadp/site.env --check

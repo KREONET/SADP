@@ -30,7 +30,7 @@ jobs:
           node-version: "24"
 
       - name: Python 의존성
-        run: python3 -m pip install --disable-pip-version-check pyyaml
+        run: python3 -m pip install --disable-pip-version-check pyyaml -r apps/speech-translate/requirements-test.txt
 
       # helm이 없으면 render-test.sh가 실패한다. 버전은 versions.lock.yaml 고정값만 쓰고
       # 공식 checksum을 확인한 바이너리만 PATH에 올린다.

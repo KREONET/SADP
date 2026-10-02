@@ -1,26 +1,103 @@
 # SADP 설치 가이드
 
-대상은 기존 단일 서버 또는 1+N 노드 RKE2 위에 SADP를 설치하는 플랫폼 관리자입니다. SADP는 운영체제와 RKE2 자체를
-설치하지 않습니다.
+실행 중인 RKE2 클러스터에 SADP를 설치하는 관리자를 위한 안내입니다.
+설치를 마치면 기본 앱과 Portal에 접속하고, 조직 로그인과 Secret 공급이 동작하는지 확인합니다.
+운영체제와 RKE2 신규 설치는 먼저 별도로 준비해야 합니다.
+
+## 이 문서를 따라가는 방법
+
+1. [필요한 도구](#먼저-설치할-도구--docker-nodejs-helm)와 [선행 조건](#1-선행-조건-확인)을 확인합니다.
+2. [입력 방식](#설치-입력-방식-선택)을 골라 사이트 설정과 관리자 전용 Secret 파일을 준비합니다.
+3. [통합 설치](#한-명령으로-설치) 또는 [단계별 설치](#처음-설치-10단계) 중 하나를 선택합니다.
+4. [설치 검수](#10-acceptance와-인수인계)가 통과하면 운영 담당자에게 결과를 넘깁니다.
+
+**통합 설치**는 준비된 입력으로 전체 과정을 자동으로 진행하며 노드 재시작과 Git 쓰기를 포함합니다.
+**단계별 설치**는 아래 본문 1~10절을 따라가며 설정 검토와 재시작을 직접 진행합니다.
+두 절차를 한꺼번에 실행하지 마세요. 단일 서버(single)는 worker 작업을 건너뜁니다.
+제공받은 인증서(`TLS_SOURCE=provided`)를 사용하는 사이트는 ACME의 staging/production 발급을 진행하지 않습니다.
+
+설정 이름이 낯설면 [기본 개념](concepts.md)을 먼저 읽으세요.
+`<PLACEHOLDER>`는 실제 값으로 바꿀 자리이며, `dotenv` 블록은 터미널 명령이 아니라 파일에 넣을 내용입니다.
+
+### 실행 위치 확인
+
+| 위치 | 실행할 작업 |
+| --- | --- |
+| 관리 워크스테이션 또는 control-plane의 저장소 | 설정 생성, diff 검토, `bash ./sadp --test`, Git 기록 |
+| control-plane(클러스터 관리 서버) | 통합 `all`, `cluster` 단계, 설치 검수, OpenBao 초기화·잠금 해제 |
+| 각 노드 자신 | `node` 단계, 자기 RKE2 서비스의 설정·재시작·검사 |
+| Squid 담당 노드 | 프록시 적용과 외부 통신 검사. 다른 노드보다 먼저 준비 |
+
+이후 명령은 별도 표시가 없으면 해당 서버의 **SADP 저장소 루트**에서 실행합니다.
+짧게 쓴 `kubectl` 명령은 control-plane에서 RKE2 도구와 kubeconfig가 설정된 셸을 기준으로 합니다.
+해당 절의 관리자 권한이 있는 셸에서 필요하면 다음을 설정하세요.
+
+```bash
+export PATH="/var/lib/rancher/rke2/bin:${PATH}"
+export KUBECONFIG=/etc/rancher/rke2/rke2.yaml
+```
+
+kubeconfig는 클러스터 관리자 접속 정보입니다. 읽기 권한을 넓히거나 일반 사용자에게 전달하지 마세요.
+
+## 먼저 설치할 도구 — Docker, Node.js, Helm
+
+SADP 설치기는 아래 세 도구를 **설치하지 않고 있는지만 확인합니다.** 처음 설치 10단계를 시작하기
+전에 먼저 설치합니다.
+
+| 도구 | 필요한 곳 | 쓰는 단계 | 없으면 |
+| --- | --- | --- | --- |
+| Docker Engine (`docker.service` 실행 중) | control-plane | 통합 설치기 사전 검사, 모니터링 이미지 동기화 | 설치 중단 |
+| Helm (`versions.lock.yaml`의 `delivery.helm`, 현재 3.21.3) | control-plane, 관리 워크스테이션 | `bash ./sadp --test`의 `render-test.sh`, cluster phase | `--test`가 `[FAIL]` |
+| Node.js 22.15+ 또는 24+ (`apps/portal-lite/ui/package.json`의 `engines`) | 관리 워크스테이션 | `--test`의 Portal UI 래퍼 시험, UI `npm run dev/build` | 래퍼 시험이 `[SKIP]` |
+
+Docker 설치 명령과 상태 확인은 [한 명령으로 설치](#한-명령으로-설치)의 Docker 절을 따릅니다.
+Helm은 고정 버전 바이너리를 공식 checksum으로 확인한 뒤 PATH에 둡니다.
+아래 예시는 Linux `amd64`용이며, Python의 PyYAML 모듈이 먼저 필요합니다.
+다른 CPU 아키텍처에서는 맞는 배포 파일을 사용하세요. checksum은 내려받은 파일의 손상 여부를 확인합니다.
+
+```bash
+version=$(python3 -c 'import yaml; print(yaml.safe_load(open("versions.lock.yaml"))["delivery"]["helm"])')
+archive="helm-v${version}-linux-amd64.tar.gz"
+curl -fsSLO "https://get.helm.sh/${archive}"
+curl -fsSLO "https://get.helm.sh/${archive}.sha256sum"
+sha256sum -c "${archive}.sha256sum"
+tar -xzf "${archive}" linux-amd64/helm
+sudo install -m 0755 linux-amd64/helm /usr/local/bin/helm
+```
+
+Node.js를 nvm으로 설치했다면 `sudo`의 `secure_path`에서 `node`가 보이지 않습니다. `--test`는
+일반 사용자로 실행하거나 PATH에 `node`를 둔 채 실행합니다. Portal 이미지 빌드는 이미지 안의
+Node.js를 쓰므로 노드에 Node.js를 설치할 필요는 없습니다.
+
+```bash
+docker version --format '{{.Server.Version}}'   # control-plane
+helm version --short
+node --version
+```
 
 ## 처음 설치 10단계
 
-처음 설치한다면 이 표만 따라가면 됩니다. 단계마다 성공 확인 명령이 하나 있고, 실패하면 오른쪽 절을
-봅니다. 어디서 막혔는지 모르겠으면 언제든 `sudo bash ./sadp --doctor --env-file /etc/sadp/site.env`를
-실행합니다. 처음 막힌 단계 하나와 다음 명령만 출력하며 클러스터를 바꾸지 않습니다.
+아래 표는 **단계별 설치의 길잡이**입니다. 각 행의 할 일을 링크된 본문에서 수행한 뒤 성공 조건을
+확인하세요. 성공 확인 명령만 실행해서는 설치되지 않습니다.
+어디서 막혔는지 모르겠으면 control-plane에서 다음 진단을 실행합니다.
+처음 막힌 단계와 다음 명령을 안내하며 클러스터를 바꾸지 않습니다.
+
+```bash
+sudo bash ./sadp --doctor --env-file /etc/sadp/site.env
+```
 
 | # | 할 일 | 성공 확인 | 실패하면 |
 | --- | --- | --- | --- |
 | 1 | RKE2 노드와 도구 확인 | `sudo /var/lib/rancher/rke2/bin/kubectl --kubeconfig /etc/rancher/rke2/rke2.yaml get nodes` 모두 `Ready`, 각 노드 `sudo bash ./sadp --install-node-sysctl --check` | [1. 선행 조건](#1-선행-조건-확인) |
-| 2 | `/etc/sadp/site.env` 작성 | `python3 scripts/site/configure-site.py --env-file /etc/sadp/site.env --check`가 `[OK]` | [2. site.env](#2-sitenv와-root-전용-secret-파일-준비), [사이트 설정](site-configuration.md) |
+| 2 | `/etc/sadp/site.env` 작성 | `python3 scripts/site/configure-site.py --env-file /etc/sadp/site.env --check`가 `[OK]` | [2. site.env](#2-siteenv와-root-전용-secret-파일-준비), [사이트 설정](site-configuration.md) |
 | 3 | 외부 IdP 값 대조 | `bash ./sadp --verify-idp --env-file /etc/sadp/site.env`가 `[OK]` | [외부 인증 연결](site-configuration.md#외부-인증-연결) |
-| 4 | 렌더·시험·commit/push | `bash ./sadp --test` 종료 코드 0 | [3. render](#3-render-계획--생성--테스트--commitpush) |
+| 4 | 설정 생성·시험·commit/push, node bundle 배포 | `bash ./sadp --test` 종료 코드 0, 노드별 bundle checksum 일치 | [3. render](#3-render-계획--생성--테스트--commitpush), [4. node bundle](#4-secret-없는-node-bundle을-모든-노드에-배포) |
 | 5 | Squid 노드 적용(Squid, 필요 시 IdP relay) | `sudo bash ./sadp --install-squid --check` (relay를 켰으면 `--install-idp-relay --check`) | [5. Squid 노드](#5-squid-담당-노드부터-node-phase-적용), [IdP relay](network-egress.md#외부-idp-sni-relay) |
 | 6 | 나머지 노드 적용·재시작 | 1단계 명령에서 모든 노드 `Ready` | [6. 노드 재시작](#6-나머지-노드-적용과-수동-재시작) |
 | 7 | cluster phase | `sudo bash ./sadp --doctor --env-file /etc/sadp/site.env`가 5단계(OpenBao)까지 `[OK]` | [7. cluster phase](#7-control-plane-cluster-phase) |
 | 8 | staging → production TLS | `sudo bash ./sadp --verify-d5` | [8. TLS](#8-staging--production-tls-진행값-반영), [상태 기록 값](site-configuration.md#상태-기록-값은-설정이-아니다) |
 | 9 | 서비스 초기화·앱 배포 | `sudo bash ./sadp --doctor --env-file /etc/sadp/site.env`가 `모든 단계 정상` | [9. 서비스·앱](#9-서비스-초기화앱-배포), [설치가 멈췄을 때](#설치가-멈췄을-때) |
-| 10 | acceptance | `sudo bash ./sadp --verify-testbed` 종료 코드 0 | 각 `[FAIL]` 아래 `[NEXT]` 줄 |
+| 10 | 설치 결과 검수(acceptance) | `sudo bash ./sadp --verify-testbed` 종료 코드 0 | 각 `[FAIL]` 아래 `[NEXT]` 줄 |
 
 `verify-testbed`와 각 preflight는 `[FAIL]`마다 `[CAUSE]`(분류된 원인)와 `[NEXT]`(다음 명령)를
 붙입니다. 이 출력에는 Secret 값, 로그 원문, URL, IP가 들어가지 않으므로 그대로 공유해도 됩니다.
@@ -31,8 +108,8 @@
 
 ```mermaid
 flowchart TD
-    Ready["1–2. 사전 준비"] --> Render["3. 렌더·테스트<br/>commit/push"]
-    Render --> Nodes["4–5. 노드 적용<br/>Squid 노드부터"]
+    Ready["1–3. 노드·입력·인증 준비"] --> Render["4. 설정 생성·시험·Git 반영<br/>node bundle 배포"]
+    Render --> Nodes["5. Squid 노드 먼저 적용"]
     Nodes --> Restart["6. 노드별 수동 재시작<br/>Ready 확인"]
     Restart --> Cluster["7. cluster phase<br/>GitOps 준비"]
     Cluster --> TLS["8–9. TLS 전환<br/>서비스·앱 배포"]
@@ -48,7 +125,14 @@ production 순으로 발급을 확인한 뒤 HTTPS로 전환합니다.
 
 ### 한 명령으로 설치
 
-기존 RKE2가 Ready인 control-plane에서 실행합니다. OS/RKE2 신규 설치는 포함하지 않습니다.
+**실행 위치: control-plane.** 기존 RKE2가 Ready이고 아래 입력·권한을 모두 준비한 상태에서 실행합니다.
+먼저 계획으로 대상 노드와 선택 단계를 확인하세요.
+
+```bash
+sudo bash ./sadp --install --env-file /etc/sadp/site.env --phase all
+```
+
+계획이 맞고 서비스 중단이 가능한 시간에 실제 설치를 실행합니다.
 
 ```bash
 sudo bash ./sadp --install --env-file /etc/sadp/site.env --apply
@@ -190,6 +274,8 @@ cordon이 남은 노드는 자동 해제하지 않으므로 상태를 확인해 
 ### 방법 A — site.env 기반 원툴 설치
 
 이미 사이트 값을 알고 있거나 반복 설치·자동화를 할 때 사용합니다.
+`site.env`는 설치 대상의 주소·노드·정책을 기록하는 입력 파일입니다.
+**아래 복사 명령은 새 파일을 만들 때만 사용하세요.** 기존 파일이 있으면 예제로 덮어쓰지 말고 편집합니다.
 
 ```bash
 sudo install -d -m 0700 /etc/sadp /etc/sadp/secrets
@@ -324,13 +410,14 @@ sudo bash ./sadp --install --interactive --apply
 ### 관리 워크스테이션
 
 - 저장소의 사이트 branch에 commit/push할 수 있음
-- `bash`, Python 3, Git, Helm 사용 가능
+- `bash`, Python 3, Git, Helm, Node.js 사용 가능([먼저 설치할 도구](#먼저-설치할-도구--docker-nodejs-helm))
 - dirty worktree의 기존 변경을 구분할 수 있음
 
 ```bash
 git status --short
 bash ./sadp --list
 helm version --short
+node --version
 ```
 
 ### RKE2 클러스터
@@ -406,7 +493,8 @@ single에서는 node phase를 서버 한 대에만 실행한 뒤 cluster phase�
 
 ## 2. site.env와 root 전용 Secret 파일 준비
 
-`site.env`에는 비밀이 아닌 사이트 사실과 Secret 파일의 절대경로만 적습니다. 전체 key는
+**완료 조건: 사이트 설정 검증 성공, 필요한 Secret 파일의 소유자와 권한 확인.**
+`site.env`에는 주소·노드 같은 사이트 정보와 Secret 파일의 절대경로만 적습니다. 전체 key는
 [site.env 예제](../environments/site.env.example)와 [사이트 설정](site-configuration.md)을
 참조합니다.
 
@@ -492,7 +580,8 @@ root-only 파일로 전달해야 cluster phase를 적용할 수 있습니다. �
 
 ### Portal UI 공개 빌드값
 
-필요한 사이트만 저장소 루트의 Git 밖 `.env`에 다음 공개값을 둡니다.
+Portal 화면의 버전·링크·클러스터 표시를 사이트에 맞추려는 경우에만 사용합니다.
+저장소 루트의 Git 밖 `.env`에 다음 공개값을 둡니다. 설치 입력인 `site.env`와 다른 파일입니다.
 
 ```dotenv
 NEXT_PUBLIC_PAAS_VERSION=<VERSION>
@@ -506,10 +595,14 @@ NEXT_PUBLIC_RANCHER_BASE_URL=https://<RANCHER_HOST>
 ```
 
 `AUTH_SECRET`, OIDC client Secret, Forgejo/Registry token은 넣지 않습니다. 값 변경 후에는 Portal
-이미지를 다시 빌드해야 합니다.
+이미지를 다시 빌드해야 합니다. 이 값은 브라우저에 전달되는 코드에 고정되므로
+파일 수정이나 Argo 동기화만으로 기존 화면이 바뀌지는 않습니다.
 
 ## 3. render 계획 → 생성 → 테스트 → commit/push
 
+**실행 위치: 사이트 설정 파일을 읽을 수 있는 작업 서버의 저장소.**
+render는 설정 파일을 생성하는 단계이며 이 단계만으로 서버나 앱이 바뀌지는 않습니다.
+완료 조건은 변경 검토, 전체 시험 통과, 사이트 branch에 commit/push입니다.
 먼저 읽기 전용 계획을 확인합니다.
 
 ```bash
@@ -540,6 +633,10 @@ bash ./sadp --test
 cluster는 현재 checkout이 `site.env`와 정확히 일치하지 않으면 중단됩니다.
 
 ## 4. Secret 없는 node bundle을 모든 노드에 배포
+
+node bundle은 노드에서 필요한 일부 스크립트와 생성 설정만 묶은 압축 파일입니다.
+checksum은 전송 중 파일이 손상되지 않았는지 확인하는 값입니다. 아래에서는 압축 파일 전체를
+확인한 뒤, 압축을 풀고 내부 파일 목록도 검사합니다. single은 worker 전송을 생략합니다.
 
 render → 전체 test/guard → diff 검토가 끝난 같은 control-plane checkout에서 bundle을 한 번만
 만듭니다. 저장소 전체를 SCP하지 않습니다. bundle은 고정 allowlist의 node proxy installer,
@@ -603,6 +700,9 @@ sudo bash /opt/sadp-node/sadp-node-bundle/sadp --install-containerd-proxy --appl
 
 ## 5. Squid 담당 노드부터 node phase 적용
 
+**실행 위치: `SQUID_INTERNAL_IP`를 가진 노드.** 다른 노드의 이미지 다운로드 등이 이 프록시를
+사용하므로 먼저 준비합니다. 완료 조건은 Squid 설치 상태와 허용·차단 통신 검사 통과입니다.
+
 전체 노드는 같은 Git revision과 같은 `/etc/sadp/site.env`를 사용합니다. `SQUID_INTERNAL_IP`를 가진
 노드에서 먼저 계획과 적용을 실행합니다.
 
@@ -628,6 +728,10 @@ bash ./sadp --verify-squid
 검증이 실패하면 다른 노드로 진행하지 않습니다.
 
 ## 6. 나머지 노드 적용과 수동 재시작
+
+**실행 위치: 설정·재시작은 각 노드, 클러스터의 Node 상태 확인은 control-plane.**
+drain은 기존 Pod를 안전하게 비우는 작업이고, uncordon은 새 Pod 배치를 다시 허용하는 작업입니다.
+어느 노드가 실패하면 그 노드를 복구하기 전에는 다음 노드를 재시작하지 마세요.
 
 개별 phase로 설치할 때 control-plane과 각 worker에서 같은 node 계획·적용 명령을 실행합니다.
 이 개별 단계는 RKE2와 Docker를 자동 재시작하지 않습니다. 통합 all은 위 절차를 자동 수행합니다.
@@ -656,7 +760,8 @@ sudo bash /opt/sadp-node/sadp-node-bundle/sadp --install-containerd-proxy --chec
 
 ## 7. control-plane cluster phase
 
-먼저 계획을 확인하고 적용합니다.
+**실행 위치: control-plane.** cluster 단계는 인증서·Gateway·Secret 공급·GitOps 같은
+공통 서비스를 설치합니다. 모든 노드가 Ready인 것을 확인한 뒤 계획을 읽고 적용합니다.
 
 ```bash
 sudo bash ./sadp --install \
@@ -789,6 +894,10 @@ DaemonSet을 삭제합니다. digest 입력은 원 digest와 같은 target임을
 
 ## 8. staging → production TLS 진행값 반영
 
+이 절은 **ACME 인증서를 단계별로 발급하는 사이트**에 해당합니다.
+staging은 DNS 발급 경로를 시험하는 환경이고, production은 브라우저가 신뢰하는 운영 인증서를
+발급하는 환경입니다. 통합 `all --apply`는 실제 상태를 확인하며 아래 진행값을 자동 갱신합니다.
+
 TLS 진행값은 설정이 아니라 완료한 단계의 기록입니다. cluster가 앞서 있는데 `site.env`가 뒤처지면
 다음 render가 HTTPS 경로를 과거 상태로 되돌릴 수 있습니다.
 
@@ -811,6 +920,9 @@ EXISTING_GATEWAY_TLS_READY=true
 활성화됩니다. 상세 절차는 [DNS-01 Runbook](letsencrypt-dns01.md)을 따릅니다.
 
 ## 9. 서비스 초기화·앱 배포
+
+**실행 위치: control-plane.** 이 단계에서는 HTTPS 경로 위에 Secret 공급과 기본 앱을 준비합니다.
+OpenBao가 sealed라면 잠겨 있어 Secret을 제공할 수 없으므로, 안내된 잠금 해제(unseal)를 먼저 완료하세요.
 
 `EXISTING_GATEWAY_TLS_READY=true`인 cluster phase는 다음 작업을 이어서 실행합니다.
 
@@ -999,7 +1111,8 @@ server/worker에 동일하게 배포하고 각 노드에서 검증합니다.
 
 ## 10. acceptance와 인수인계
 
-control-plane에서 확인합니다.
+acceptance는 설치 결과 검수입니다. 파일이 만들어졌는지만 보지 않고 실제 접속·인증·Secret
+공급 상태를 확인합니다. control-plane에서 아래 명령을 실행하고 실패 항목을 해결합니다.
 
 ```bash
 sudo bash ./sadp --verify-portal-auth

@@ -3,8 +3,21 @@
 > 대상: SADP wildcard 인증서를 발급·전환·복구하는 DNS/플랫폼 관리자
 > 입력 기준: `environments/site.env.example`의 TLS/DNS-01 절
 
-현재 SADP template은 `TLS_SOURCE=acme`, RFC2136, staging부터 시작합니다. 예제 domain/IP/TSIG
-metadata를 실제 사이트 값으로 바꾸지 않은 상태에서는 통합 installer가 적용을 거부합니다.
+HTTPS에 사용할 도메인 인증서를 자동 발급하는 절차입니다. DNS-01은 DNS에 임시 TXT 레코드를
+등록해 도메인 관리 권한을 증명하는 방식입니다. cert-manager가 발급을 요청하고 Gateway가 인증서를 사용합니다.
+DNS 변경 권한과 네트워크 경로는 DNS 담당자와 먼저 준비해야 합니다.
+
+**읽는 순서:** DNS 운영 방식 선택 → TSIG 비밀 파일 준비 → 시험 발급(staging) → 운영 발급(production)
+→ HTTPS 활성화입니다. 통합 `all --apply`는 발급 상태를 확인하며 전환을 자동 진행합니다.
+아래 4~6절은 단계를 직접 진행할 때 사용하세요.
+
+실행 위치는 기본적으로 control-plane의 저장소 루트입니다. Squid 로그는 Squid 담당 노드에서,
+DNS 권한·레코드는 DNS 담당자와 확인합니다. `kubectl` 준비는
+[설치 가이드](installation.md#실행-위치-확인)를 따릅니다.
+
+현재 예제는 `TLS_SOURCE=acme`, RFC2136, staging부터 시작합니다. 문서용 도메인·IP·TSIG 정보를
+실제 값으로 바꾸지 않은 상태에서는 적용을 거부합니다. 제공받은 인증서를 쓰는 사이트는
+[설치 가이드의 제공 인증서 설정](installation.md#한-명령으로-설치)을 따르며 이 발급 절차를 건너뜁니다.
 
 ## 1. 발급 구조
 
@@ -23,13 +36,16 @@ flowchart TD
 화살표는 발급에 필요한 통신과 결과의 흐름입니다. staging 발급 성공만으로 HTTPS를 활성화하지
 않으며, production 인증서 Ready까지 확인한 뒤 전환합니다.
 
-wildcard는 apex를 포함하지 않으므로 Certificate는 두 SAN을 모두 요청합니다. cert-manager
+wildcard는 `*.<BASE_DOMAIN>`처럼 한 단계 아래 이름들을 포함하는 인증서입니다.
+루트 도메인(apex)인 `<BASE_DOMAIN>` 자체는 포함하지 않으므로, Certificate는 인증서에 넣을 이름
+목록(SAN)에 둘 다 요청합니다. cert-manager
 controller에만 proxy가 들어가고 webhook/cainjector에는 들어가지 않습니다. raw DNS UPDATE는
 HTTP가 아니므로 Squid로 보낼 수 없습니다.
 
 ## 2. DNS 운영 방식 선택
 
-SADP는 cert-manager 기본 RFC2136 solver를 사용합니다.
+RFC2136은 DNS 레코드를 갱신하는 규격이고, TSIG은 그 갱신 요청을 인증하는 공유 비밀키입니다.
+SADP는 이를 사용하는 cert-manager 기본 solver(도메인 검증 처리기)를 사용합니다.
 
 | DNS 운영자가 제공할 수 있는 것 | mode |
 | --- | --- |
@@ -110,6 +126,9 @@ writer가 생기지 않게 합니다.
 
 ## 4. 1단계 — staging
 
+목표는 **DNS 갱신과 도메인 검증 경로가 정상인지 시험**하는 것입니다.
+staging 인증서는 브라우저가 신뢰하는 운영 인증서가 아닙니다. 이 단계에서 사용자용 HTTPS를 켜지 마세요.
+
 초기 값:
 
 ```dotenv
@@ -151,6 +170,9 @@ staging Certificate `Ready=True`와 SAN 두 개를 확인한 뒤에만 다음 �
 
 ## 5. 2단계 — production 발급
 
+staging Certificate가 `Ready=True`인 것을 확인했을 때만 진행합니다.
+목표는 운영 인증서 발급이며, 접속 경로를 HTTPS로 바꾸는 것은 다음 단계입니다.
+
 site.env를 다음처럼 바꿉니다.
 
 ```dotenv
@@ -172,6 +194,9 @@ Secret을 삭제해 전환하지 않습니다. staging과 production Secret은 �
 갱신을 감지합니다.
 
 ## 6. 3단계 — HTTPS 활성화
+
+운영 인증서가 준비됐을 때 외부 접속 경로를 HTTPS로 전환합니다.
+파일의 진행값만 바꾸지 말고 실제 인증서 상태를 먼저 확인하세요.
 
 production Certificate `Ready=True`, apex/wildcard SAN, 유효기간을 확인한 뒤:
 

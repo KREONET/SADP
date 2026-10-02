@@ -2,8 +2,12 @@
 
 > 대상: Portal에서 앱 하나를 등록하는 신규 사용자와 이를 준비하는 플랫폼 관리자
 
-Portal은 앱 정보를 검증한 뒤 플랫폼 공용 Forgejo 봇으로 GitOps Pull Request를 만듭니다.
-사용자는 Forgejo token, Registry credential, OIDC client secret을 입력하지 않습니다.
+앱 하나를 처음 등록할 때 **사용자가 준비할 입력**과 **관리자가 미리 연결할 항목**을 나눠 설명합니다.
+화면 조작은 [사용자 가이드](usage.md), 프로그램 준비는 [개발자 가이드](developer-guide.md)를 참고하세요.
+
+Portal은 앱 정보를 검증하고 공용 Forgejo 봇으로 배포 변경안(PR)을 만듭니다.
+사용자는 플랫폼용 Forgejo 토큰, Registry 접속 자격증명, OIDC client secret을 입력하지 않습니다.
+앱 자체의 데이터베이스 비밀번호처럼 실행에 필요한 Secret은 별도로 분류해 입력합니다.
 
 ## 사용자가 입력하는 값
 
@@ -11,8 +15,8 @@ Portal은 앱 정보를 검증한 뒤 플랫폼 공용 Forgejo 봇으로 GitOps 
 | --- | --- |
 | 기본 | 앱 이름, 프로젝트 |
 | 프로그램 | HTTPS Git URL·branch·Dockerfile 또는 `<REGISTRY>/<IMAGE>:<FIXED_TAG>` |
-| 실행 | container port, replica 수, 자원 preset |
-| 접근 | `external` 또는 `internal`, 인증 없음 또는 OIDC, egress 정책 |
+| 실행 | 앱이 듣는 포트, 실행 복제본 수(replica), CPU·메모리 묶음(preset) |
+| 접근 | 외부 공개(`external`) 또는 내부용(`internal`), 조직 로그인 여부, 앱의 외부 통신(egress) 정책 |
 | 앱 설정 | 일반 환경변수와, 앱 자체가 필요로 하는 runtime Secret key/value |
 
 `latest`, `main`, `master`, `stable` 같은 가변 image tag는 사용할 수 없습니다. OIDC를
@@ -56,7 +60,8 @@ flowchart TD
 시험과 코드 검토 증거가 있어야 승인합니다. 기준은 [보안 보장과 한계](security-boundaries.md)입니다.
 
 Secret이 없는 `authentication.mode=none` 앱은 OIDC client나 앱별 ExternalSecret을 만들지
-않습니다. runtime Secret이 있는 앱에만 다음 canonical 경계를 사용합니다.
+않습니다. 실행할 때 Secret이 필요한 앱은 아래의 정해진 공급 경로를 사용합니다.
+OpenBao가 실제 값을 보관하고, ESO가 선언된 key를 가져와 앱에 공급합니다.
 
 ```mermaid
 flowchart TD

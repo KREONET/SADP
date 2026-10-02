@@ -4,8 +4,25 @@
 > 백업 구현: `scripts/ops/backup-testbed.sh`
 > 검증 구현: `scripts/verify/verify-backups.sh`
 
-복원은 기존 상태를 덮어쓸 수 있는 별도 변경 작업입니다. 일반 장애 조사 중 바로 실행하지 않고
-백업 시각, 영향 범위, 서비스 중지, 롤백 기준을 승인받습니다.
+백업을 만들고 확인하는 방법과, 장애 종류별 복구 절차를 안내합니다.
+**복원은 선택한 백업 시점의 상태로 되돌리는 작업**이므로 그 이후 변경을 잃거나 현재 상태를 덮어쓸 수 있습니다.
+일반 장애 조사 중 바로 실행하지 말고 백업 시각, 영향 범위, 서비스 중지, 되돌리기 기준을 승인받습니다.
+
+## 필요한 복구 절차 고르기
+
+| 현재 상황 | 읽을 절 |
+| --- | --- |
+| 정상 상태에서 백업하고 파일을 확인한다 | [백업과 비파괴 검증](#2-백업과-비파괴-검증) |
+| 클러스터 설정을 백업 시점으로 되돌려야 한다 | [복원 전 절차](#3-복원-전-공통-절차) → [RKE2 etcd 복원](#4-rke2-etcd-복원) |
+| OpenBao 데이터를 백업 시점으로 되돌려야 한다 | [복원 전 절차](#3-복원-전-공통-절차) → [OpenBao Raft 복원](#5-openbao-raft-복원) |
+| 재기동 뒤 Secret 공급이 멈추거나 기다리다 timeout이 난다 | [OpenBao 잠금·ESO 복구](#7-openbao-sealexternalsecret-timeout-복구) |
+| 노출 설정 적용 중 Namespace가 없다고 나온다 | [Namespace 적용 복구](#8-exposure-namespacereferencegrant-적용-복구) |
+| OpenBao에 OIDC 설정을 쓰는 단계가 실패한다 | [OIDC discovery 오류 복구](#9-openbao-oidc-discovery-오류-복구) |
+| Devtron/NATS가 `too many open files`로 실패한다 | [inotify 한도 복구](#11-devtronnats-reloader-too-many-open-files) |
+
+실행 위치는 **control-plane의 저장소 루트**가 기본입니다. 특정 노드의 sysctl 수정은 그 노드에서
+수행합니다. `kubectl` 준비는 [설치 가이드](installation.md#실행-위치-확인)를 참고하세요.
+잠금 해제나 네트워크 복구로 해결할 수 있는 장애에 snapshot 복원을 먼저 시도하지 마세요.
 
 ## 1. 실제 백업 산출물
 
@@ -23,8 +40,9 @@ flowchart TD
     Separate["별도 보관: openbao-init.json"] -.-> Drill
 ```
 
-백업 파일 검증과 복원 성공 검증은 별개입니다. 외부 IdP·broker와 앱 PVC 데이터의 복구를
-이 백업만으로 보장하지 않습니다.
+etcd snapshot은 Kubernetes가 관리하는 설정을, OpenBao Raft snapshot은 비밀 저장소의 데이터를
+보관합니다. **앱 PVC의 파일·데이터베이스 내용과 외부 IdP·broker 데이터는 기본 백업에 포함되지 않습니다.**
+checksum 검증은 백업 파일의 손상 여부를 확인할 뿐 실제 복원이 가능한지까지 증명하지 않습니다.
 
 
 백업은 `/var/lib/sadp/backups/<UTC_TIMESTAMP>/`에 생성되고 `latest` symlink가 마지막 run을
@@ -41,7 +59,7 @@ flowchart TD
 
 외부 IdP와 SAML→OIDC broker의 백업·복원은 해당 인증 운영팀의 책임이며 SADP 백업에 포함되지 않습니다.
 
-백업에는 cluster 복원 material과 인증 데이터가 포함됩니다. 디렉터리는 root-only로 유지하고
+백업에는 클러스터 복구 재료와 인증 데이터가 포함됩니다. 디렉터리는 관리자(root) 전용으로 유지하고
 별도 호스트 또는 암호화된 객체 저장소에 2차 복제합니다. `openbao-init.json`은 snapshot에 포함되지
 않으므로 승인된 별도 보안 매체에도 보관합니다.
 
@@ -156,9 +174,11 @@ SADP의 issuer/callback/client ID 계약과 client secret 전달 상태를 읽�
 error: timed out waiting for the condition on externalsecrets/<EXTERNAL_SECRET_NAME>
 ```
 
-OpenBao 재기동 뒤 sealed 상태가 실제 원인일 수 있습니다. 이때 ESO provider는 HTTP 503 `Vault is
+sealed는 OpenBao가 잠겨 비밀값을 제공할 수 없는 상태입니다. 재기동 뒤 이 상태가 실제 원인일 수 있습니다.
+이때 ESO provider는 HTTP 503 `Vault is
 sealed`를 받고 SecretStore 또는 ClusterSecretStore도 일시적으로 Ready가 아닐 수 있습니다.
-OpenBao를 unseal해도 ExternalSecret이 이전 실패 condition에 머물면 force-sync가 필요합니다.
+unseal은 복구 재료로 잠금을 푸는 작업입니다. 잠금을 풀어도 ExternalSecret이 이전 실패 상태에
+머물면 다시 동기화를 요청하는 `force-sync`가 필요합니다.
 
 control-plane에서 plan부터 실행합니다. 첫 명령이 이미 unsealed라고 확인하면 `--apply`는 생략합니다.
 

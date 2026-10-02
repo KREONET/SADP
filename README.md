@@ -107,5 +107,6 @@ cluster phase는 Devtron과 번들 Argo CD가 완전히 없으면 승인된 고�
 > `--apply`가 없으면 검증과 계획 출력만 합니다. 기본 `all --apply`는 생성물 commit/push,
 > SSH를 통한 노드 순차 재시작, TLS 진행값 갱신, OpenBao 초기화·unseal까지 수행합니다.
 > 유지보수 창에 실행하며 [통합 설치 선행 조건](docs/installation.md)을 먼저 준비합니다.
+> 특히 Docker·Node.js·Helm은 설치기가 설치하지 않으므로 [먼저 설치](docs/installation.md#먼저-설치할-도구--docker-nodejs-helm)합니다.
 > 개별 `render/node/cluster` phase는 기존 수동 경계를 유지합니다.
 

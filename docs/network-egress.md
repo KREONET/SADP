@@ -3,8 +3,25 @@
 > 대상: 다중 NIC, Squid, CoreDNS, cert-manager 경로를 운영하는 관리자
 > 입력 기준: `site.env` → 계약 → `render-network.py`
 
-SADP는 RKE2 Canal(Flannel VXLAN + Calico NetworkPolicy)을 사용합니다. Worker의 일반 인터넷
-직접 egress는 열지 않고 승인된 HTTP(S)는 Squid로 보냅니다.
+앱 접속, 이미지 다운로드, DNS, 외부 로그인 서버 연결이 실패할 때 참고하는 운영 문서입니다.
+**들어오는 접속(ingress)**과 **밖으로 새로 만드는 연결(egress)**을 나눠 보면 원인을 좁히기 쉽습니다.
+SADP는 RKE2의 Canal로 Pod 네트워크와 연결 정책을 구성합니다.
+worker의 일반 인터넷 직접 통신을 열지 않고, 승인된 HTTP(S) 통신은 프록시(Squid)를 사용합니다.
+
+## 증상에 맞는 절부터 읽기
+
+| 증상 또는 작업 | 먼저 읽을 절 | 주로 확인하는 위치 |
+| --- | --- | --- |
+| 노드가 잘못된 NIC나 IP를 사용한다 | [NIC와 노드 주소](#3-다중-nic와-rke2-identity) | 문제 노드 자신 |
+| 외부 NIC의 관리 포트를 차단한다 | [interface guard](#4-interface-guard) | 각 보호 대상 노드 |
+| 승인된 외부 주소에 접속되지 않는다 | [Squid](#5-squid) | Squid 담당 노드와 요청을 보낸 쪽 |
+| `ImagePullBackOff`로 앱이 시작되지 않는다 | [containerd proxy](#6-rke2-embedded-containerd-proxy) | 문제 노드, 중앙 검사는 control-plane |
+| 도메인 이름을 찾지 못한다 | [CoreDNS](#7-coredns-upstream) | control-plane과 DNS 담당 노드 |
+| 내부망 worker에서 OIDC 연결만 실패한다 | [IdP relay](#외부-idp-sni-relay) | Squid 담당 노드와 control-plane |
+| 인증서 발급이 실패한다 | [cert-manager 통신](#8-cert-manager-egress) · [DNS-01 안내](letsencrypt-dns01.md) | control-plane, 실제 controller가 실행되는 노드 |
+
+명령은 안내된 서버의 저장소 루트에서 실행합니다. `kubectl` 실행 준비는
+[설치 가이드](installation.md#실행-위치-확인), 용어는 [기본 개념](concepts.md)을 참고하세요.
 
 ## 1. 통신 경계
 
@@ -27,8 +44,9 @@ flowchart TD
 
 앱 영역은 NetworkPolicy가 허용하는 범위이며 실제 인터넷 경로의 연결 성공까지 보장하지 않습니다.
 
-기본 Kubernetes NetworkPolicy는 FQDN allowlist를 제공하지 않으므로 앱의 `web` mode는 내부
-대역을 제외한 TCP 80/443 포트 정책입니다.
+NetworkPolicy는 Pod의 연결을 제한하는 규칙입니다. 기본 Kubernetes NetworkPolicy는
+도메인별 허용 목록을 제공하지 않으므로 `web`은 내부 대역을 제외한 TCP 80/443 포트 정책입니다.
+허용 정책이 있어도 서버의 라우팅이나 방화벽에서 막히면 실제 연결은 실패할 수 있습니다.
 
 NetworkPolicy는 허용된 연결의 응답 트래픽도 허용합니다. 앱이 정상 요청의 응답에 자신이 읽은
 자료를 담는 유출, 사용자별 인가 오류, 외부 통신 없는 변조·삭제는 egress 정책의 보장 범위가
@@ -71,9 +89,10 @@ bash ./sadp --test
 `flannel.iface`에 사용됩니다. `EXTERNAL_INTERFACE`와 guarded NIC에는 Kubernetes
 관리 port 차단이 적용됩니다.
 
-이름이 실제 식별자이며 MAC으로 대체할 수 없습니다. MAC은 노드마다 다르므로 site.env에 넣지
-않고, 개별 스크립트를 진단할 때 `--internal-mac`, `--external-mac`으로 이름과 실제
-NIC의 일치만 단언합니다. 노드별 이름이 다르면 `systemd.link`로 먼저 통일합니다.
+설정에서 사용하는 식별자는 interface 이름입니다. MAC 주소로 바꾸면 이 이름을 사용하는
+네트워크·방화벽 설정이 동작하지 않습니다. MAC은 노드마다 다르므로 `site.env`에 넣지 않습니다.
+개별 스크립트의 `--internal-mac`, `--external-mac`은 입력한 이름의 NIC가 예상한 장치인지
+추가로 확인하는 옵션입니다. 노드별 이름이 다르면 `systemd.link`로 먼저 통일합니다.
 
 통합 적용:
 
@@ -146,8 +165,9 @@ sudo bash ./sadp --install-interface-guard \
   --apply
 ```
 
-guard unit은 fail-open입니다. unit 실패가 RKE2 시작을 막지 않으므로 다음을 모니터링하고 외부
-방화벽에서도 관리 port를 차단합니다.
+guard 서비스가 실패해도 RKE2는 시작합니다. 이를 **fail-open**이라고 합니다.
+이때 관리 포트 보호가 빠질 수 있으므로 아래 서비스·규칙 상태를 확인하고 외부 방화벽에서도
+관리 포트를 차단합니다. RKE2가 실행 중이라는 사실만으로 guard 성공을 판단하지 마세요.
 
 ```bash
 systemctl status sadp-rke2-interface-guard.service
@@ -180,10 +200,16 @@ curl --fail --proxy 'http://<SQUID_INTERNAL_IPV4>:<SQUID_PORT>' \
   'https://<APPROVED_HOST>/'
 ```
 
-로그가 없으면 ACL보다 client proxy 설정/DNS/route 문제입니다. `TCP_DENIED`가 있을 때만
-site.env의 allowlist 입력과 생성 결과를 확인합니다.
+요청을 보냈는데 로그가 없으면 먼저 요청한 쪽의 프록시 설정·DNS·네트워크 경로를 확인합니다.
+`TCP_DENIED`는 요청이 Squid에 도착했지만 허용 규칙(ACL)에서 거부됐다는 뜻입니다.
+이때 `site.env`의 허용 목록과 생성 결과를 확인하세요. 로그에는 사이트 정보가 있을 수 있으므로
+원문 전체를 공개 채팅이나 티켓에 붙이지 않습니다.
 
 ## 6. RKE2 embedded containerd proxy
+
+containerd는 노드에서 이미지를 내려받고 컨테이너를 실행하는 프로그램입니다.
+RKE2는 자체 containerd를 실행하므로, Docker나 다른 containerd의 프록시 설정만 맞춰서는 충분하지 않습니다.
+**설정 파일 반영 → 유지보수 재시작 → 실제 프로세스 검사 → 이미지 다운로드 검사**를 모두 확인하세요.
 
 각 노드의 `/etc/default/rke2-server` 또는 `rke2-agent`에 RKE2가 containerd로 전달할 관리 환경을
 설치하고, 재시작 뒤 두 process에서 실제 이름을 따로 확인합니다.
@@ -356,7 +382,8 @@ private 앱 image에는 별도 pull Secret이 필요하며 kaniko push credentia
 
 ## 7. CoreDNS upstream
 
-Worker가 node `/etc/resolv.conf`의 resolver에 닿지 못하면 CoreDNS가 외부 이름을 `SERVFAIL`로
+CoreDNS는 클러스터의 이름 조회를 처리하고 모르는 외부 이름은 상위 DNS(upstream)로 보냅니다.
+worker가 노드 `/etc/resolv.conf`의 DNS 서버(resolver)에 닿지 못하면 CoreDNS가 외부 이름을 `SERVFAIL`로
 반환합니다. 이때 `CLUSTER_UPSTREAM_DNS=<INTERNAL_IPV4>:53`을 설정하고 그 주소의 노드에 내부 DNS
 forwarder를 설치합니다.
 
@@ -373,6 +400,10 @@ self-check용 `DNS_RECURSIVE_NAMESERVERS`와 다릅니다. upstream은 일반 �
 nameserver는 public `_acme-challenge` 권위 응답을 보기 위한 경로입니다.
 
 ### 외부 IdP SNI relay
+
+SNI relay는 외부 IdP의 TLS 연결을 내부망에서 중계하는 선택 기능입니다.
+로그인 서버 주소를 바꾸거나 TLS를 해독하지 않고, 허용한 IdP 호스트로만 전달합니다.
+일반 HTTP 프록시를 사용하지 않는 인증 소비자에게 외부 경로가 없을 때 필요합니다.
 
 Envoy Gateway의 OIDC SecurityPolicy는 controller가 issuer discovery를, data plane Envoy가 token
 교환과 JWKS 조회를 직접 수행합니다. 둘 다 `HTTPS_PROXY`를 쓰지 않으므로 외부 route가 없는 worker에서는

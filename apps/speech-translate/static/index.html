@@ -1,0 +1,32 @@
+<!doctype html>
+<html lang="ko">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>한국어 → 영어 실시간 번역</title>
+  <link rel="stylesheet" href="/static/style.css">
+  <script type="module" src="/static/app.js"></script>
+</head>
+<body>
+  <main>
+    <header><span class="badge">LIVE TRANSLATION</span><span>KO → EN</span></header>
+    <h1>한국어로 말하면,<br>영어로 전달됩니다.</h1>
+    <p class="intro">마이크로 말한 내용을 짧은 발화 단위로 번역합니다. 잠시 말을 멈추면 영어 텍스트가 표시됩니다.</p>
+    <form id="controls">
+      <label for="token">API 토큰</label>
+      <input id="token" type="password" autocomplete="off" spellcheck="false" required minlength="32" placeholder="서버에 설정한 API 토큰을 입력하세요">
+      <div class="actions">
+        <button id="start" type="submit">마이크 켜고 번역 시작</button>
+        <button id="stop" type="button" disabled>종료</button>
+      </div>
+    </form>
+    <p id="status" role="status" aria-live="polite">대기 중</p>
+    <section class="transcript" aria-label="영어 번역 결과">
+      <div class="section-heading"><h2>English transcript</h2><button id="clear" type="button">지우기</button></div>
+      <p id="empty">번역된 문장이 여기에 순서대로 표시됩니다.</p>
+      <div id="results" role="log" aria-live="polite"></div>
+    </section>
+    <footer>오디오와 번역은 서버 파일로 저장하지 않습니다. 토큰은 이 화면의 메모리에만 유지됩니다.<br>마이크 사용에는 HTTPS 또는 localhost가 필요합니다.</footer>
+  </main>
+</body>
+</html>

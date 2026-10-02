@@ -4,8 +4,20 @@
 > 제품 버전: 저장소 루트 `VERSION`
 > 구성요소 버전: `versions.lock.yaml`
 
-이 Runbook은 전체 테스트베드 종료/기동과 버전 업그레이드를 다룹니다. 두 작업의 노드 순서는
-다릅니다.
+서버 전원을 끄기 전 준비, 다시 켠 뒤 확인, SADP와 RKE2 버전 업데이트 절차입니다.
+**전체 종료와 업데이트는 노드 처리 순서가 다릅니다.** 지금 하려는 작업의 절만 선택해 진행하세요.
+
+| 하려는 일 | 시작할 절 |
+| --- | --- |
+| 전체 서버 종료 | [안전 종료](#1-전체-테스트베드-안전-종료) |
+| 종료한 서버 다시 기동 | [안전 기동](#2-전체-테스트베드-안전-기동) |
+| SADP 코드와 플랫폼 설정 업데이트 | [SADP 업데이트](#3-github-main과-version-기반-sadp-업데이트) |
+| 기존 RKE2 버전 업데이트 | [RKE2 업데이트](#4-rke2-업데이트) |
+
+control-plane은 관리 서버(server), worker는 앱 실행 서버(agent)입니다.
+각 명령은 안내된 서버의 저장소 루트에서 실행합니다. single은 worker 작업을 건너뜁니다.
+`kubectl` 준비와 유지보수 용어는 [설치 가이드](installation.md#실행-위치-확인)와
+[기본 개념](concepts.md)을 참고하세요.
 
 | 작업 | 순서 | 이유 |
 | --- | --- | --- |
@@ -55,8 +67,10 @@ sudo bash ./sadp --power prepare-off --role server --apply
 3. 모든 worker cordon과 drain(single은 생략)
 4. `/var/lib/sadp/power/prepared-off`에 백업 경로와 worker 목록 기록
 
-drain은 DaemonSet을 무시하고 `emptyDir` 데이터 삭제를 승인하지만, PDB나 unmanaged Pod를 강제로
-우회하지 않습니다. drain이 실패하면 원인을 해결하기 전에는 다음 단계로 진행하지 않습니다.
+cordon은 새 Pod 배치를 막고, drain은 기존 Pod를 안전하게 비우는 작업입니다.
+drain은 노드마다 실행되는 DaemonSet을 제외하고 `emptyDir`의 임시 데이터를 삭제하지만,
+앱의 최소 가용성을 지키는 PDB나 관리 객체가 없는 Pod를 강제로 무시하지 않습니다.
+실패하면 원인을 해결하기 전에는 다음 단계로 진행하지 않습니다.
 
 ### 1.2 각 worker에서 agent 중지
 
@@ -149,6 +163,9 @@ bash ./sadp --update-sadp
 `VERSION`도 함께 올려야 합니다. 원격 버전이 낮으면 downgrade로 보고 거부합니다.
 
 ### 3.2 checkout 업데이트
+
+이 단계는 로컬 저장소 코드를 업데이트합니다. 실행 중인 앱과 Kubernetes 설정 적용은
+다음 [사이트 계약과 패키지 적용](#33-사이트-계약과-패키지-적용)에서 별도로 진행합니다.
 
 ```bash
 bash ./sadp --update-sadp --apply
